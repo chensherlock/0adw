@@ -1,0 +1,43 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+dist-ssr/
+*.local
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# TypeScript & test caches
+*.tsbuildinfo
+coverage/
+.vitest/
+
+# Environment variables
+.env
+.env.*
+!.env.example
+
+# Editor & IDE
+.vscode/*
+!.vscode/extensions.json
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# OS files
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Optional: uncomment to exclude downloaded 0 A.D. assets (~95 MB, re-fetchable via `npm run fetch-assets`)
+# public/assets/0ad/

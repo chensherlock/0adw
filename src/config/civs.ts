@@ -1,0 +1,48 @@
+import { CivConfig, CivId } from './types';
+
+export const CIVS: Record<CivId, CivConfig> = {
+  athenians: {
+    id: 'athenians',
+    name: 'Athenians',
+    subtitle: 'Hellenic League • Maritime & Hoplite Mastery',
+    primaryColor: 0x2b6cb0,
+    secondaryColor: 0xe2e8f0,
+    cssColor: '#3b82f6',
+    roofColor: 0xc25938,
+    stoneColor: 0xede6d6,
+    bonusText: '+10% Food & Wood gather rate, +1 Pierce Armor on infantry',
+    gatherMultiplier: { food: 1.1, wood: 1.1 },
+    infantryArmorBonus: { pierce: 1 },
+    infantryAttackBonusPct: 0,
+    buildingHpBonusPct: 0,
+    units: {
+      woman: 'female_citizen',
+      infantryMelee: 'athen_hoplite',
+      infantryRanged: 'athen_archer',
+      cavalry: 'athen_cavalry',
+      champion: 'athen_champion',
+    },
+  },
+  romans: {
+    id: 'romans',
+    name: 'Romans',
+    subtitle: 'Roman Republic • Disciplined Legions & Fortifications',
+    primaryColor: 0xc53030,
+    secondaryColor: 0xf6e05e,
+    cssColor: '#ef4444',
+    roofColor: 0x9b2c2c,
+    stoneColor: 0xe5dcc8,
+    bonusText: '+10% Infantry attack damage, +15% Building HP',
+    gatherMultiplier: {},
+    infantryArmorBonus: {},
+    infantryAttackBonusPct: 0.1,
+    buildingHpBonusPct: 0.15,
+    units: {
+      woman: 'female_citizen',
+      infantryMelee: 'rome_hastatus',
+      infantryRanged: 'rome_velite',
+      cavalry: 'rome_cavalry',
+      champion: 'rome_champion',
+    },
+  },
+};

@@ -1,0 +1,23 @@
+{
+  "name": "web-0ad",
+  "version": "0.1.0",
+  "description": "Browser-based 3D historical RTS inspired by 0 A.D.: Empires Ascendant",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "fetch-assets": "node scripts/fetch-0ad-assets.mjs"
+  },
+  "dependencies": {
+    "three": "^0.175.0"
+  },
+  "devDependencies": {
+    "@types/three": "^0.175.0",
+    "typescript": "^5.8.2",
+    "vite": "^6.2.0",
+    "vitest": "^3.1.1"
+  }
+}
