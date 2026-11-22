@@ -100,6 +100,7 @@ describe('0 A.D. Asset Catalog & Model Specs', () => {
       'sea_monster',
       'sea_kraken',
       'lake_nessie',
+      'beacon_tower',
       'merchant_ship',
       'warship_trireme',
       'fish_shoal',

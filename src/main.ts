@@ -97,7 +97,13 @@ class Web0ADApp {
         this.hud.applyLanguage();
         this.syncTopBar();
       },
-      onJumpTo: (x, z) => this.sceneManager.rtsCamera.jumpTo(x, z),
+      onJumpTo: (x, z) => {
+        this.sceneManager.rtsCamera.jumpTo(x, z);
+        if (this.world) {
+          const y = this.world.terrain.getHeightAt(x, z);
+          this.sceneManager.spawnClickPing(x, z, y, 0xef4444);
+        }
+      },
     });
 
     // Boot cleanly from saved Skirmish Settings, paused behind Setup Modal so reload NEVER flashes a chaotic screen!
@@ -363,7 +369,23 @@ class Web0ADApp {
         case 'building_upgraded':
           if (ev.playerId === 1) {
             const bName = getTemplateText(ev.templateId).name;
-            this.hud.pushToast(`🏢 ${bName} → ${ev.floors} 層!`, 'good', { x: ev.x, z: ev.z });
+            const msg =
+              ev.templateId === 'beacon_tower'
+                ? `🔥 ${bName} → Lv.${ev.floors}!`
+                : ev.templateId === 'stone_gate' || ev.templateId === 'stone_wall'
+                  ? `🧱 ${bName} 升級完成！`
+                  : `🏢 ${bName} → ${ev.floors} 層!`;
+            this.hud.pushToast(msg, 'good', { x: ev.x, z: ev.z });
+          }
+          break;
+        case 'beacon_lit':
+          if (ev.playerId === 1) {
+            this.audio.playSelect();
+            this.hud.pushToast(
+              ev.autoDetected ? t('beaconAutoLitToast') : t('beaconLitToast'),
+              ev.autoDetected ? 'warn' : 'good',
+              { x: ev.x, z: ev.z }
+            );
           }
           break;
         case 'trade_payout':

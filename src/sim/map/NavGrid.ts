@@ -1,3 +1,4 @@
+import { GateMode } from '../../config/types';
 import { TerrainMap } from './TerrainMap';
 
 interface HeapNode {
@@ -77,6 +78,8 @@ export class NavGrid {
   private readonly terrain: TerrainMap;
   /** Number of blocking structures covering each tile */
   private readonly blockedCount: Uint16Array;
+  /** Gate access rules per tile: 'auto' = own nation only, 'open' = everyone, 'locked' = nobody */
+  private readonly gateTiles = new Map<number, { owner: number; mode: GateMode }>();
 
   // Reusable A* buffers to avoid per-query allocations
   private readonly gScore: Float32Array;
@@ -98,10 +101,47 @@ export class NavGrid {
     this.closedStamp = new Uint32Array(total);
   }
 
+  reset(): void {
+    this.blockedCount.fill(0);
+    this.gateTiles.clear();
+  }
+
+  setGateTile(tx: number, tz: number, owner: number, mode: GateMode | null): void {
+    if (tx < 0 || tz < 0 || tx >= this.width || tz >= this.height) return;
+    const idx = tz * this.width + tx;
+    if (!mode) {
+      this.gateTiles.delete(idx);
+    } else {
+      this.gateTiles.set(idx, { owner, mode });
+    }
+  }
+
   isWalkable(tx: number, tz: number): boolean {
+    return this.isWalkableFor(tx, tz);
+  }
+
+  isGateBlockedFor(tx: number, tz: number, unitOwner?: number): boolean {
+    if (this.gateTiles.size === 0) return false;
+    if (tx < 0 || tz < 0 || tx >= this.width || tz >= this.height) return false;
+    const gate = this.gateTiles.get(tz * this.width + tx);
+    if (!gate) return false;
+    if (gate.mode === 'locked') return true;
+    if (gate.mode === 'auto' && unitOwner !== undefined && unitOwner !== gate.owner) return true;
+    return false;
+  }
+
+  isWalkableFor(tx: number, tz: number, unitOwner?: number): boolean {
     if (tx < 0 || tz < 0 || tx >= this.width || tz >= this.height) return false;
     const idx = tz * this.width + tx;
-    return this.terrain.staticPassable[idx] === 1 && this.blockedCount[idx] === 0;
+    if (this.terrain.staticPassable[idx] !== 1 || this.blockedCount[idx] !== 0) return false;
+    if (this.gateTiles.size > 0) {
+      const gate = this.gateTiles.get(idx);
+      if (gate) {
+        if (gate.mode === 'locked') return false;
+        if (gate.mode === 'auto' && unitOwner !== undefined && unitOwner !== gate.owner) return false;
+      }
+    }
+    return true;
   }
 
   isWaterPassable(tx: number, tz: number): boolean {
@@ -179,9 +219,10 @@ export class NavGrid {
     tz: number,
     maxRadius = 10,
     preferTx?: number,
-    preferTz?: number
+    preferTz?: number,
+    unitOwner?: number
   ): { tx: number; tz: number } | null {
-    if (this.isWalkable(tx, tz)) return { tx, tz };
+    if (this.isWalkableFor(tx, tz, unitOwner)) return { tx, tz };
     const px = preferTx ?? tx;
     const pz = preferTz ?? tz;
     for (let r = 1; r <= maxRadius; r++) {
@@ -192,7 +233,7 @@ export class NavGrid {
           if (Math.abs(dx) !== r && Math.abs(dz) !== r) continue;
           const nx = tx + dx;
           const nz = tz + dz;
-          if (!this.isWalkable(nx, nz)) continue;
+          if (!this.isWalkableFor(nx, nz, unitOwner)) continue;
           const d2 = (nx - px) * (nx - px) + (nz - pz) * (nz - pz);
           if (d2 < bestD2) {
             bestD2 = d2;
@@ -215,11 +256,13 @@ export class NavGrid {
     goalX: number,
     goalZ: number,
     maxExpansions = 4500,
-    naval = false
+    naval = false,
+    unitOwner?: number
   ): Array<{ x: number; z: number }> {
-    const canPass = (tx: number, tz: number) => (naval ? this.isWaterPassable(tx, tz) : this.isWalkable(tx, tz));
+    const canPass = (tx: number, tz: number) =>
+      naval ? this.isWaterPassable(tx, tz) : this.isWalkableFor(tx, tz, unitOwner);
     const findNearest = (tx: number, tz: number, r: number, ptx: number, ptz: number) =>
-      naval ? this.findNearestWater(tx, tz, r, ptx, ptz) : this.findNearestWalkable(tx, tz, r, ptx, ptz);
+      naval ? this.findNearestWater(tx, tz, r, ptx, ptz) : this.findNearestWalkable(tx, tz, r, ptx, ptz, unitOwner);
 
     const sTile = this.terrain.worldToTile(startX, startZ);
     const gTileRaw = this.terrain.worldToTile(goalX, goalZ);
@@ -241,7 +284,7 @@ export class NavGrid {
     }
 
     // Fast direct line-of-sight shortcut
-    if (this.hasLineOfSight(start.tx, start.tz, goal.tx, goal.tz, naval)) {
+    if (this.hasLineOfSight(start.tx, start.tz, goal.tx, goal.tz, naval, unitOwner)) {
       const targetWorld = goalWasWalkable
         ? { x: goalX, z: goalZ }
         : this.terrain.tileToWorldCenter(goal.tx, goal.tz);
@@ -349,7 +392,7 @@ export class NavGrid {
     while (i < tilePath.length) {
       let furthest = i;
       for (let j = Math.min(tilePath.length - 1, i + 12); j > i; j--) {
-        if (this.hasLineOfSight(anchorTx, anchorTz, tilePath[j].tx, tilePath[j].tz, naval)) {
+        if (this.hasLineOfSight(anchorTx, anchorTz, tilePath[j].tx, tilePath[j].tz, naval, unitOwner)) {
           furthest = j;
           break;
         }
@@ -374,8 +417,9 @@ export class NavGrid {
     return Math.max(dx, dz) + 0.4142 * Math.min(dx, dz);
   }
 
-  private hasLineOfSight(x0: number, z0: number, x1: number, z1: number, naval = false): boolean {
-    const canPass = (tx: number, tz: number) => (naval ? this.isWaterPassable(tx, tz) : this.isWalkable(tx, tz));
+  private hasLineOfSight(x0: number, z0: number, x1: number, z1: number, naval = false, unitOwner?: number): boolean {
+    const canPass = (tx: number, tz: number) =>
+      naval ? this.isWaterPassable(tx, tz) : this.isWalkableFor(tx, tz, unitOwner);
     let cx = x0;
     let cz = z0;
     const dx = Math.abs(x1 - x0);

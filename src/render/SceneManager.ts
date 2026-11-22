@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { ASSET_BASE } from '../config/assets';
 import { TEMPLATES } from '../config/entities';
 import { CivId, Entity, TerraformMode } from '../config/types';
 import { SOIL_UNITS_PER_TILE, WATER_LEVEL } from '../sim/map/TerrainMap';
@@ -29,6 +30,9 @@ interface ManagedVisual {
   lastResourceRemaining: number;
   /** Smooth collapse interpolation 0..1 for slain wildlife */
   deathCollapse: number;
+  /** Floating overhead countdown sprite for newly spawned Civic Center workers */
+  countdownSprite?: THREE.Sprite;
+  countdownLastVal?: number;
 }
 
 interface ClickPing {
@@ -46,6 +50,7 @@ export class SceneManager {
   private readonly visuals = new Map<number, ManagedVisual>();
   private readonly projectileMeshes = new Map<number, THREE.Mesh>();
   private readonly pings: ClickPing[] = [];
+  private readonly countdownTextures = new Map<number, THREE.CanvasTexture>();
 
   // Building placement ghost preview
   private ghostGroup: THREE.Group | null = null;
@@ -70,7 +75,42 @@ export class SceneManager {
   private lastTerraformElevKey = '';
   private readonly tunnelDragGroup = new THREE.Group();
   private readonly tunnelLinksGroup = new THREE.Group();
+  private readonly xrayScene = new THREE.Scene();
+  private readonly tunnelXrayCorridorGroup = new THREE.Group();
+  private readonly tunnelXrayCanvas: HTMLCanvasElement;
+  private readonly tunnelXrayTex: THREE.CanvasTexture;
+  private readonly tunnelXraySprite: THREE.Sprite;
+  private lastTunnelXrayLabel = '';
+  private readonly placementHintCanvas: HTMLCanvasElement;
+  private readonly placementHintTex: THREE.CanvasTexture;
+  private readonly placementHintSprite: THREE.Sprite;
+  private lastPlacementHintText = '';
+  private readonly beaconRangeRing: THREE.Mesh;
   private readonly soilProgressGroup = new THREE.Group();
+  private readonly shoreFishingGroup = new THREE.Group();
+  private readonly rodMat = new THREE.MeshStandardMaterial({ color: 0x8b5a2b, roughness: 0.85 });
+  private readonly lineMat = new THREE.LineBasicMaterial({ color: 0xe2e8f0, transparent: true, opacity: 0.88 });
+  private readonly bobberMat = new THREE.MeshBasicMaterial({ color: 0xef4444 });
+  private readonly netMat = new THREE.MeshBasicMaterial({
+    color: 0xd6c7a1,
+    wireframe: true,
+    transparent: true,
+    opacity: 0.85,
+  });
+  private readonly fishRippleMat = new THREE.MeshBasicMaterial({
+    color: 0xbae6fd,
+    transparent: true,
+    opacity: 0.55,
+    side: THREE.DoubleSide,
+  });
+  private readonly rodGeom = new THREE.CylinderGeometry(0.02, 0.035, 2.35, 5);
+  private readonly bobberGeom = new THREE.SphereGeometry(0.11, 6, 5);
+  private readonly netGeom = new THREE.CircleGeometry(1.15, 10);
+  private readonly fishRippleGeom = new THREE.RingGeometry(0.35, 0.52, 16);
+  private readonly tunnelTexLoader = new THREE.TextureLoader();
+  private tunnelRockTex: THREE.Texture | null = null;
+  private tunnelFloorTex: THREE.Texture | null = null;
+  private tunnelRibTex: THREE.Texture | null = null;
   private readonly soilMarkers = new Map<
     number,
     {
@@ -199,6 +239,59 @@ export class SceneManager {
     this.scene.add(this.tunnelDragGroup);
     this.scene.add(this.tunnelLinksGroup);
     this.scene.add(this.soilProgressGroup);
+    this.netGeom.rotateX(-Math.PI / 2);
+    this.fishRippleGeom.rotateX(-Math.PI / 2);
+    this.scene.add(this.shoreFishingGroup);
+
+    // Dedicated X-Ray Scene for underground vaulted tunnels + REAL 0 A.D. animated underground workers & travelers!
+    const xrayHemi = new THREE.HemisphereLight(0xffe8c2, 0x3b2c1a, 1.35);
+    const xrayDir = new THREE.DirectionalLight(0xfff1d6, 1.4);
+    xrayDir.position.set(25, 45, 25);
+    this.xrayScene.add(xrayHemi, xrayDir, this.tunnelXrayCorridorGroup);
+
+    // Floating X-Ray status banner shown when inspecting a selected underground tunnel
+    this.tunnelXrayCanvas = document.createElement('canvas');
+    this.tunnelXrayCanvas.width = 440;
+    this.tunnelXrayCanvas.height = 68;
+    this.tunnelXrayTex = new THREE.CanvasTexture(this.tunnelXrayCanvas);
+    this.tunnelXrayTex.minFilter = THREE.LinearFilter;
+    this.tunnelXraySprite = new THREE.Sprite(
+      new THREE.SpriteMaterial({ map: this.tunnelXrayTex, transparent: true, depthTest: false })
+    );
+    this.tunnelXraySprite.scale.set(7.8, 1.25, 1);
+    this.tunnelXraySprite.renderOrder = 15;
+    this.tunnelXraySprite.visible = false;
+    this.scene.add(this.tunnelXraySprite);
+
+    // Floating red placement-blocked reason badge shown when hovering invalid building spots
+    this.placementHintCanvas = document.createElement('canvas');
+    this.placementHintCanvas.width = 420;
+    this.placementHintCanvas.height = 64;
+    this.placementHintTex = new THREE.CanvasTexture(this.placementHintCanvas);
+    this.placementHintTex.minFilter = THREE.LinearFilter;
+    this.placementHintSprite = new THREE.Sprite(
+      new THREE.SpriteMaterial({ map: this.placementHintTex, transparent: true, depthTest: false })
+    );
+    this.placementHintSprite.scale.set(6.8, 1.05, 1);
+    this.placementHintSprite.renderOrder = 18;
+    this.placementHintSprite.visible = false;
+    this.scene.add(this.placementHintSprite);
+
+    // Translucent ground signal/rally radius ring shown when a Great Wall Beacon Tower is selected
+    const beaconRingGeom = new THREE.RingGeometry(0.975, 1.0, 64);
+    beaconRingGeom.rotateX(-Math.PI / 2);
+    this.beaconRangeRing = new THREE.Mesh(
+      beaconRingGeom,
+      new THREE.MeshBasicMaterial({
+        color: 0xf97316,
+        transparent: true,
+        opacity: 0.45,
+        side: THREE.DoubleSide,
+        depthWrite: false,
+      })
+    );
+    this.beaconRangeRing.visible = false;
+    this.scene.add(this.beaconRangeRing);
 
     // Floating elevation height label shown while hovering in Dig / Raise / Level mode!
     this.terraformElevCanvas = document.createElement('canvas');
@@ -230,6 +323,37 @@ export class SceneManager {
     this.pings.push({ mesh, age: 0, duration: 0.55 });
   }
 
+  /** Displays or hides the floating placement-blocked reason badge directly over the invalid ghost/preview */
+  updatePlacementHint(x: number, y: number, z: number, reason: string | null): void {
+    if (!reason) {
+      this.placementHintSprite.visible = false;
+      return;
+    }
+    this.placementHintSprite.position.set(x, Math.max(WATER_LEVEL + 0.8, y) + 3.4, z);
+    this.placementHintSprite.visible = true;
+    const text = `❌ ${reason}`;
+    if (this.lastPlacementHintText !== text) {
+      this.lastPlacementHintText = text;
+      const ctx = this.placementHintCanvas.getContext('2d');
+      if (ctx) {
+        ctx.clearRect(0, 0, 420, 64);
+        ctx.fillStyle = 'rgba(45, 10, 14, 0.92)';
+        ctx.strokeStyle = '#ef4444';
+        ctx.lineWidth = 3;
+        ctx.beginPath();
+        ctx.roundRect(6, 6, 408, 52, 11);
+        ctx.fill();
+        ctx.stroke();
+        ctx.font = 'bold 20px system-ui, sans-serif';
+        ctx.fillStyle = '#fecaca';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(text, 210, 32, 388);
+        this.placementHintTex.needsUpdate = true;
+      }
+    }
+  }
+
   updateGhostPreview(
     templateId: string | null,
     civId: CivId,
@@ -237,7 +361,8 @@ export class SceneManager {
     z: number,
     y: number,
     isValid: boolean,
-    facingY = 0
+    facingY = 0,
+    invalidReason?: string | null
   ): void {
     if (!templateId) {
       if (this.ghostGroup) {
@@ -245,6 +370,7 @@ export class SceneManager {
         this.ghostGroup = null;
         this.ghostTemplateId = null;
       }
+      this.placementHintSprite.visible = false;
       return;
     }
 
@@ -268,15 +394,17 @@ export class SceneManager {
           obj.castShadow = false;
         }
       });
+      this.updatePlacementHint(x, gy, z, !isValid && invalidReason ? invalidReason : null);
     }
   }
 
   updateWallLinePreview(
-    segments: Array<{ x: number; y: number; z: number; facing: number; valid: boolean; slopeYX?: number }>,
+    segments: Array<{ x: number; y: number; z: number; facing: number; valid: boolean; slopeYX?: number; reason?: string }>,
     isBridge = false
   ): void {
     this.wallDragGroup.clear();
     const geom = isBridge ? this.bridgePreviewGeom : this.wallPreviewGeom;
+    let firstInvalid: { x: number; y: number; z: number; reason: string } | null = null;
     for (const seg of segments) {
       const holder = new THREE.Group();
       holder.position.set(seg.x, isBridge ? WATER_LEVEL + 0.48 : seg.y + 1.18, seg.z);
@@ -290,6 +418,14 @@ export class SceneManager {
       }
       holder.add(m);
       this.wallDragGroup.add(holder);
+      if (!seg.valid && seg.reason && !firstInvalid) {
+        firstInvalid = { x: seg.x, y: seg.y, z: seg.z, reason: seg.reason };
+      }
+    }
+    if (firstInvalid) {
+      this.updatePlacementHint(firstInvalid.x, firstInvalid.y, firstInvalid.z, firstInvalid.reason);
+    } else if (segments.length === 0 || segments.every((s) => s.valid)) {
+      this.placementHintSprite.visible = false;
     }
   }
 
@@ -414,6 +550,38 @@ export class SceneManager {
     const revealAll = this.terrainRenderer.isRevealAll();
     const seen = new Set<number>();
 
+    // Pre-collect fortification nodes (walls, gates, beacon towers) for zero-gap continuous 0 A.D. wall stitching!
+    const wallNodes: Entity[] = [];
+    for (const e of world.entities.values()) {
+      if (!e.alive) continue;
+      const t = TEMPLATES[e.templateId];
+      if (t.isWall || t.isGate || t.isBeaconTower) {
+        wallNodes.push(e);
+      }
+    }
+
+    // Identify currently selected underground tunnel pair (if any) so REAL 0 A.D. underground unit models render via xrayScene!
+    let selectedTunnelPair: { a: Entity; b: Entity; ay: number; by: number } | null = null;
+    for (const selId of selectedIds) {
+      const selE = world.entities.get(selId);
+      if (selE && selE.alive && selE.owner === humanPlayerId && selE.linkedTunnelId) {
+        const partner = world.entities.get(selE.linkedTunnelId);
+        if (partner && partner.alive) {
+          // Canonicalize order so portalA is the foundation anchor (or smaller id)
+          const a = selE.id < partner.id ? selE : partner;
+          const b = selE.id < partner.id ? partner : selE;
+          selectedTunnelPair = {
+            a,
+            b,
+            ay: world.terrain.getHeightAt(a.x, a.z),
+            by: world.terrain.getHeightAt(b.x, b.z),
+          };
+          break;
+        }
+      }
+    }
+    const xrayUndergroundRoots: THREE.Group[] = [];
+
     // 1. Sync Entities
     for (const e of world.entities.values()) {
       if (!e.alive) continue;
@@ -430,10 +598,23 @@ export class SceneManager {
         this.scene.add(mv.parts.root);
       }
 
-      // Visibility rules (garrisoned, underground in tunnel transit, or shrouded enemy units are hidden)
+      // Visibility rules (garrisoned, underground in tunnel transit/shaft excavation, or shrouded enemy units)
       const tpl = TEMPLATES[e.templateId];
       const inTunnelTransit = e.order.type === 'enter_tunnel' && (e.order.transitRemaining ?? 0) > 0;
-      let visible = e.garrisonedIn === null && !inTunnelTransit;
+      const inTunnelShaft = e.order.type === 'build' && Boolean(e.order.inShaft);
+      const isUndergroundInSelectedTunnel =
+        selectedTunnelPair !== null &&
+        ((inTunnelShaft &&
+          e.order.type === 'build' &&
+          (e.order.targetId === selectedTunnelPair.a.id || e.order.targetId === selectedTunnelPair.b.id)) ||
+          (inTunnelTransit &&
+            e.order.type === 'enter_tunnel' &&
+            (e.order.portalId === selectedTunnelPair.a.id ||
+              e.order.portalId === selectedTunnelPair.b.id ||
+              e.order.exitPortalId === selectedTunnelPair.a.id ||
+              e.order.exitPortalId === selectedTunnelPair.b.id)));
+
+      let visible = e.garrisonedIn === null && ((!inTunnelTransit && !inTunnelShaft) || isUndergroundInSelectedTunnel);
       if (visible && !revealAll && e.owner !== humanPlayerId) {
         if (tpl.kind === 'unit') {
           visible = world.fog.isVisibleTo(humanPlayerId, e.x, e.z);
@@ -447,7 +628,17 @@ export class SceneManager {
       const ix = e.prevX + (e.x - e.prevX) * alpha;
       const iz = e.prevZ + (e.z - e.prevZ) * alpha;
       let iy: number;
-      if (tpl.isFlying) {
+      let wallAutoFacing: number | null = null;
+      if (isUndergroundInSelectedTunnel && selectedTunnelPair) {
+        // Place REAL 0 A.D. animated worker/soldier right on the underground tunnel floor!
+        const { a, b, ay, by } = selectedTunnelPair;
+        const tdx = b.x - a.x;
+        const tdz = b.z - a.z;
+        const tLenSq = Math.max(0.01, tdx * tdx + tdz * tdz);
+        const projT = Math.max(0, Math.min(1, ((ix - a.x) * tdx + (iz - a.z) * tdz) / tLenSq));
+        iy = ay + (by - ay) * projT + 0.02;
+        xrayUndergroundRoots.push(mv.parts.root);
+      } else if (tpl.isFlying) {
         const groundOrWater = Math.max(world.terrain.getHeightAt(ix, iz), WATER_LEVEL);
         iy = groundOrWater + (tpl.flightAltitude ?? 12.5) + Math.sin(elapsedSec * 1.55 + e.id * 1.3) * 0.85;
       } else if (tpl.isSeaMonster) {
@@ -461,19 +652,69 @@ export class SceneManager {
       } else if (tpl.isAquatic) {
         iy = WATER_LEVEL - 0.12;
       } else if (tpl.isWall && mv.parts.wallShearGroup) {
-        // Connect sloped mountain walls seamlessly by shearing vertically along the wall's exact terrain grade (zero stair-stepping!)
-        const halfSpan = 1.44;
-        const cosF = Math.cos(e.facing);
-        const sinF = Math.sin(e.facing);
+        // Continuous 0 A.D. wall auto-stitching: align & scale smoothly across adjacent wall/gate/beacon neighbors with 0 gaps!
+        const adj: Array<{ ent: Entity; dist: number; dx: number; dz: number }> = [];
+        for (let wi = 0; wi < wallNodes.length; wi++) {
+          const nb = wallNodes[wi];
+          if (nb.id === e.id || nb.owner !== e.owner) continue;
+          const dx = nb.x - ix;
+          const dz = nb.z - iz;
+          const dist = Math.hypot(dx, dz);
+          const maxLink = TEMPLATES[nb.templateId].isGate ? 5.2 : 3.35;
+          if (dist >= 1.2 && dist <= maxLink) {
+            adj.push({ ent: nb, dist, dx, dz });
+          }
+        }
+        adj.sort((a1, a2) => a1.dist - a2.dist);
+
+        let useFacing = e.facing;
+        let spanMeters = 2.65;
+        let showBastion = adj.length <= 1;
+
+        if (adj.length >= 2) {
+          const n1 = adj[0];
+          const n2 = adj[1];
+          // Check angle between the two neighbors: straight/gentle curve -> smooth continuous wall; sharp corner -> bastion turret!
+          const dot = (n1.dx * n2.dx + n1.dz * n2.dz) / Math.max(0.01, n1.dist * n2.dist);
+          if (dot < -0.55) {
+            // Neighbors are roughly opposite: bridge smoothly along vector from n1 -> n2!
+            const vx = n2.ent.x - n1.ent.x;
+            const vz = n2.ent.z - n1.ent.z;
+            useFacing = Math.atan2(-vz, vx);
+            spanMeters = Math.min(3.55, Math.max(2.15, Math.hypot(vx, vz) * 0.56));
+            showBastion = dot > -0.9; // Add corner turret only on bends > ~25 deg
+          } else {
+            // Sharp 90-deg corner!
+            useFacing = Math.atan2(-n1.dz, n1.dx);
+            spanMeters = Math.min(3.2, Math.max(2.2, n1.dist * 1.05));
+            showBastion = true;
+          }
+        } else if (adj.length === 1) {
+          const n1 = adj[0];
+          useFacing = Math.atan2(-n1.dz, n1.dx);
+          spanMeters = Math.min(3.25, Math.max(2.2, n1.dist * 1.08));
+          showBastion = true;
+        }
+
+        wallAutoFacing = useFacing;
+        const scaleX = spanMeters / 2.0;
+        const halfSpan = spanMeters * 0.5;
+        const cosF = Math.cos(useFacing);
+        const sinF = Math.sin(useFacing);
         const hPlus = world.terrain.getHeightAt(ix + cosF * halfSpan, iz - sinF * halfSpan);
         const hMinus = world.terrain.getHeightAt(ix - cosF * halfSpan, iz + sinF * halfSpan);
         iy = (hPlus + hMinus) * 0.5;
-        const slopeYX = THREE.MathUtils.clamp((hPlus - hMinus) / (halfSpan * 2), -1.35, 1.35);
+        const slopeYX = THREE.MathUtils.clamp((hPlus - hMinus) / Math.max(0.5, halfSpan * 2), -1.35, 1.35);
         const sg = mv.parts.wallShearGroup;
         sg.matrixAutoUpdate = false;
         sg.matrix.identity();
-        sg.matrix.elements[1] = slopeYX; // y' = y + slopeYX * x (plumb vertical walls matching slope!)
+        sg.matrix.elements[0] = scaleX; // Stretch wall curtain cleanly across exact neighbor spacing
+        sg.matrix.elements[1] = slopeYX * scaleX; // y' = y + slopeYX * (scaleX * x) -> exact plumb vertical wall matching slope!
         sg.matrixWorldNeedsUpdate = true;
+
+        if (mv.parts.wallCornerBastion) {
+          mv.parts.wallCornerBastion.visible = showBastion && !e.isFoundation;
+        }
       } else if (tpl.kind === 'building' && !tpl.isFarmField) {
         // Seat land buildings flush on the ground at centerY (0 A.D. buildings already have real underground foundations!)
         iy = world.terrain.getHeightAt(ix, iz);
@@ -512,9 +753,10 @@ export class SceneManager {
         }
         mv.parts.bodyGroup.rotation.y = mv.smoothFacing;
       } else {
-        mv.parts.bodyGroup.rotation.y = e.facing;
+        const bFacing = wallAutoFacing !== null ? wallAutoFacing : e.facing;
+        mv.parts.bodyGroup.rotation.y = bFacing;
         if (mv.parts.foundationPlinth) {
-          mv.parts.foundationPlinth.rotation.y = e.facing;
+          mv.parts.foundationPlinth.rotation.y = bFacing;
         }
       }
 
@@ -572,6 +814,52 @@ export class SceneManager {
             if (mv.parts.floor2Roof) mv.parts.floor2Roof.visible = floors < 3;
             if (mv.parts.floor3Group) mv.parts.floor3Group.visible = floors >= 3;
           }
+          // Animated Stone Gate double doors & Crimson Lock Bar
+          if (tpl.isGate && mv.parts.gateDoorLeft && mv.parts.gateDoorRight) {
+            const openAmt = e.gateOpenAmount ?? 0;
+            mv.parts.gateDoorLeft.rotation.y = -openAmt * (Math.PI * 0.48);
+            mv.parts.gateDoorRight.rotation.y = openAmt * (Math.PI * 0.48);
+            if (mv.parts.gateLockBar) {
+              mv.parts.gateLockBar.visible = e.gateMode === 'locked' && openAmt < 0.15;
+            }
+          }
+          // Great Wall Beacon Tower 3 visual tiers + blazing signal fire & soaring wolf-smoke column!
+          if (tpl.isBeaconTower) {
+            const lv = e.beaconLevel ?? 1;
+            if (mv.parts.beaconTier2) mv.parts.beaconTier2.visible = lv >= 2;
+            if (mv.parts.beaconTier3) mv.parts.beaconTier3.visible = lv >= 3;
+            const lit = (e.beaconLitTimer ?? 0) > 0;
+            const fireBaseY = lv >= 3 ? 8.15 : lv === 2 ? 6.5 : 5.05;
+            if (mv.parts.beaconFireGroup) {
+              mv.parts.beaconFireGroup.visible = lit;
+              if (lit) {
+                mv.parts.beaconFireGroup.position.y = fireBaseY;
+                const flick = 0.88 + Math.sin(elapsedSec * 14 + e.id * 2.1) * 0.18;
+                const sway = Math.cos(elapsedSec * 9 + e.id) * 0.1;
+                mv.parts.beaconFireGroup.scale.set(0.95 + sway, flick, 0.95 - sway);
+              }
+            }
+            if (mv.parts.beaconSmokeGroup) {
+              mv.parts.beaconSmokeGroup.visible = lit;
+              if (lit) {
+                mv.parts.beaconSmokeGroup.position.y = fireBaseY + 0.45;
+                const puffs = mv.parts.beaconSmokeGroup.children;
+                for (let pi = 0; pi < puffs.length; pi++) {
+                  const cyc = (elapsedSec * 0.42 + pi / puffs.length + e.id * 0.17) % 1.0;
+                  const puff = puffs[pi];
+                  puff.position.set(
+                    Math.sin(elapsedSec * 1.1 + pi * 1.4) * (0.25 + cyc * 1.45),
+                    cyc * (11.5 + lv * 2.2),
+                    Math.cos(elapsedSec * 0.9 + pi) * (0.2 + cyc * 0.9)
+                  );
+                  const sc = 0.55 + cyc * 1.45;
+                  puff.scale.setScalar(sc);
+                  const mat = (puff as THREE.Mesh).material as THREE.MeshBasicMaterial;
+                  mat.opacity = Math.max(0.05, (1 - cyc) * 0.62);
+                }
+              }
+            }
+          }
         }
       } else if (tpl.kind === 'unit') {
         const gatherResType = e.order.type === 'gather' ? e.order.resourceType : null;
@@ -623,7 +911,8 @@ export class SceneManager {
         const isSlainPrey = isPrey && e.hp <= 0;
         const preyAnimState = isSlainPrey ? 'death' : e.animState;
         const preySpeedMag = Math.hypot(e.vx, e.vz);
-        const preySpeedRatio = preyAnimState === 'walk' ? Math.max(0.85, preySpeedMag / 3.8) : 1.0;
+        const preySpeedRatio =
+          preyAnimState === 'attack' ? 1.35 : preyAnimState === 'walk' ? Math.max(0.85, preySpeedMag / 3.8) : 1.0;
         if (mv.parts.animator) {
           mv.parts.animator.update(dt, preyAnimState, null, preySpeedRatio);
         }
@@ -709,11 +998,28 @@ export class SceneManager {
             // ALWAYS topple slain land animals smoothly onto their side on the ground so every dead animal visibly falls down!
             const ease = 1 - (1 - mv.deathCollapse) * (1 - mv.deathCollapse);
             mv.parts.bodyGroup.rotation.z = Math.PI * 0.48 * ease;
-            mv.parts.bodyGroup.position.y = 0.26 * ease;
+            mv.parts.bodyGroup.rotation.x = 0;
+            mv.parts.bodyGroup.position.set(0, 0.26 * ease, 0);
+          } else if (preyAnimState === 'attack') {
+            // Lively animal strike animation: pounce/lunge forward, bear rear-up / elephant tusk thrust / lion bite!
+            const atkCycle = (elapsedSec * 5.6 + e.id * 1.7) % (Math.PI * 2);
+            const strike = Math.pow(Math.max(0, Math.sin(atkCycle)), 1.4);
+            const isRearing = e.templateId === 'predator_bear' || e.templateId === 'wild_elephant';
+            mv.parts.bodyGroup.rotation.z = Math.sin(atkCycle) * 0.08;
+            mv.parts.bodyGroup.rotation.x = isRearing ? -strike * 0.34 : strike * 0.24;
+            mv.parts.bodyGroup.position.set(
+              Math.sin(mv.smoothFacing) * strike * 0.42,
+              strike * (isRearing ? 0.32 : 0.2),
+              Math.cos(mv.smoothFacing) * strike * 0.42
+            );
           } else {
             mv.parts.bodyGroup.rotation.z = 0;
-            mv.parts.bodyGroup.position.y =
-              !playingSkeletal && preyAnimState === 'walk' ? Math.abs(Math.sin(elapsedSec * 12 + e.id)) * 0.14 : 0;
+            mv.parts.bodyGroup.rotation.x = 0;
+            mv.parts.bodyGroup.position.set(
+              0,
+              !playingSkeletal && preyAnimState === 'walk' ? Math.abs(Math.sin(elapsedSec * 12 + e.id)) * 0.14 : 0,
+              0
+            );
           }
         }
         if (mv.parts.sparkleSprites) {
@@ -764,20 +1070,55 @@ export class SceneManager {
           mv.capFill.position.x = -(1 - ownerCap) * 0.5;
         }
       }
+
+      // Floating overhead countdown badge (10..1) while newly trained Civic Center workers wait to auto-work
+      const autoDelay = e.autoWorkDelay ?? 0;
+      if (e.owner === humanPlayerId && autoDelay > 0) {
+        const sec = Math.max(1, Math.ceil(autoDelay));
+        if (!mv.countdownSprite) {
+          const mat = new THREE.SpriteMaterial({
+            map: this.getCountdownTexture(sec),
+            transparent: true,
+            depthTest: false,
+          });
+          const sprite = new THREE.Sprite(mat);
+          sprite.position.set(0, 3.15, 0);
+          sprite.scale.set(0.95, 0.95, 1);
+          sprite.renderOrder = 12;
+          mv.parts.root.add(sprite);
+          mv.countdownSprite = sprite;
+          mv.countdownLastVal = sec;
+        } else if (mv.countdownLastVal !== sec) {
+          (mv.countdownSprite.material as THREE.SpriteMaterial).map = this.getCountdownTexture(sec);
+          (mv.countdownSprite.material as THREE.SpriteMaterial).needsUpdate = true;
+          mv.countdownLastVal = sec;
+        }
+        const frac = autoDelay - Math.floor(autoDelay);
+        const pulse = 0.92 + Math.sin(frac * Math.PI) * 0.14;
+        mv.countdownSprite.scale.set(pulse, pulse, 1);
+        mv.countdownSprite.visible = true;
+      } else if (mv.countdownSprite) {
+        mv.countdownSprite.visible = false;
+      }
     }
 
     // Remove dead visuals
     for (const [id, mv] of this.visuals.entries()) {
       if (!seen.has(id)) {
+        if (mv.countdownSprite) {
+          (mv.countdownSprite.material as THREE.SpriteMaterial).dispose();
+        }
         this.scene.remove(mv.parts.root);
         this.visuals.delete(id);
       }
     }
 
-    // 2. Sync Rally Point indicator, Linked Tunnel arcs & Live Terraforming Soil Progress Markers!
+    // 2. Sync Rally Point indicator, Linked Tunnel X-Ray Cutaway, Beacon Range Ring & Live Terraforming Soil Progress Markers!
     this.syncRallyMarker(world, humanPlayerId, selectedIds, dt);
-    this.syncTunnelLinks(world, humanPlayerId, selectedIds);
+    this.syncTunnelLinks(world, humanPlayerId, selectedIds, elapsedSec);
+    this.syncBeaconRangeRing(world, humanPlayerId, selectedIds);
     this.syncSoilProgressOverlays(world, humanPlayerId);
+    this.syncShoreFishingVisuals(world, elapsedSec);
 
     // 3. Sync Projectiles
     const activeProj = new Set<number>();
@@ -835,6 +1176,20 @@ export class SceneManager {
     }
 
     this.renderer.render(this.scene, this.rtsCamera.camera);
+
+    // 5. Overlay X-Ray Pass: when a tunnel is selected, render textured 3D vaulted underground tunnel + REAL 0 A.D. animated underground units cleanly through mountains!
+    if (selectedTunnelPair !== null) {
+      for (let i = 0; i < xrayUndergroundRoots.length; i++) {
+        this.xrayScene.add(xrayUndergroundRoots[i]);
+      }
+      this.renderer.autoClear = false;
+      this.renderer.clearDepth();
+      this.renderer.render(this.xrayScene, this.rtsCamera.camera);
+      this.renderer.autoClear = true;
+      for (let i = 0; i < xrayUndergroundRoots.length; i++) {
+        this.scene.add(xrayUndergroundRoots[i]);
+      }
+    }
   }
 
   private ensureRallyFlagVisual(civId: CivId, teamColor: number): void {
@@ -911,7 +1266,27 @@ export class SceneManager {
 
   private lastTunnelSig = '';
 
-  private syncTunnelLinks(world: World, humanPlayerId: number, selectedIds: Set<number>): void {
+  private ensureTunnelInteriorTextures(): void {
+    if (this.tunnelRockTex) return;
+    const loadRep = (rel: string, rx: number, ry: number): THREE.Texture => {
+      const tex = this.tunnelTexLoader.load(`${ASSET_BASE}/${rel}`);
+      tex.wrapS = THREE.RepeatWrapping;
+      tex.wrapT = THREE.RepeatWrapping;
+      tex.repeat.set(rx, ry);
+      tex.colorSpace = THREE.SRGBColorSpace;
+      return tex;
+    };
+    this.tunnelRockTex = loadRep('terrain/cliff.png', 2.4, 1.5);
+    this.tunnelFloorTex = loadRep('textures/decal_stone_medit_01.png', 1.4, 3.0);
+    this.tunnelRibTex = loadRep('textures/stone_aegean_01.png', 2.0, 1.0);
+  }
+
+  /**
+   * Renders underground tunnel links AND activates full interactive 3D Textured X-Ray Cutaway view
+   * whenever the player clicks/selects a tunnel (showing real 0 A.D. animated workers digging & travelers walking
+   * inside a properly oriented, textured vaulted stone/rock tunnel!).
+   */
+  private syncTunnelLinks(world: World, humanPlayerId: number, selectedIds: Set<number>, _elapsedSec: number): void {
     const pairs: Array<{ a: Entity; b: Entity; hi: boolean; prog: number }> = [];
     const visited = new Set<number>();
     for (const e of world.entities.values()) {
@@ -921,61 +1296,323 @@ export class SceneManager {
       if (!partner || !partner.alive) continue;
       visited.add(e.id);
       visited.add(partner.id);
-      const hi = selectedIds.has(e.id) || selectedIds.has(partner.id);
-      const prog = e.isFoundation ? Math.max(0.02, Math.min(1, e.buildProgress)) : 1.0;
-      pairs.push({ a: e, b: partner, hi, prog });
+      // Canonicalize order so portalA is always the excavation anchor (smaller id)
+      const a = e.id < partner.id ? e : partner;
+      const b = e.id < partner.id ? partner : e;
+      const hi = selectedIds.has(a.id) || selectedIds.has(b.id);
+      const prog = a.isFoundation ? Math.max(0.03, Math.min(1, a.buildProgress)) : 1.0;
+      pairs.push({ a, b, hi, prog });
     }
-    const sig = pairs.map((p) => `${p.a.id}-${p.b.id}-${p.hi ? 1 : 0}-${Math.round(p.prog * 50)}`).join('|');
-    if (sig === this.lastTunnelSig) return;
-    this.lastTunnelSig = sig;
-    this.tunnelLinksGroup.clear();
 
-    for (const { a, b, hi, prog } of pairs) {
-      const ay = world.terrain.getHeightAt(a.x, a.z) + 0.9;
-      const by = world.terrain.getHeightAt(b.x, b.z) + 0.9;
+    const sig = pairs.map((p) => `${p.a.id}-${p.b.id}-${p.hi ? 1 : 0}-${Math.round(p.prog * 100)}`).join('|');
+    if (sig !== this.lastTunnelSig) {
+      this.lastTunnelSig = sig;
+      this.tunnelLinksGroup.clear();
+      this.tunnelXrayCorridorGroup.clear();
 
-      // Hidden straight underground tunnel: extends strictly as far as workers have excavated (prog * length)!
-      const dugX = a.x + (b.x - a.x) * prog;
-      const dugY = ay + (by - ay) * prog;
-      const dugZ = a.z + (b.z - a.z) * prog;
+      for (const { a, b, hi, prog } of pairs) {
+        const ay = world.terrain.getHeightAt(a.x, a.z);
+        const by = world.terrain.getHeightAt(b.x, b.z);
+        const dugX = a.x + (b.x - a.x) * prog;
+        const dugY = ay + (by - ay) * prog;
+        const dugZ = a.z + (b.z - a.z) * prog;
 
-      const dugGeom = new THREE.BufferGeometry().setFromPoints([
-        new THREE.Vector3(a.x, ay, a.z),
-        new THREE.Vector3(dugX, dugY, dugZ),
-      ]);
-      const dugMat = new THREE.LineDashedMaterial({
-        color: prog >= 1 ? (hi ? 0xfbbf24 : 0x38bdf8) : 0xf59e0b,
-        dashSize: 1.15,
-        gapSize: 0.65,
-        transparent: true,
-        opacity: hi ? 0.96 : 0.78,
-        depthTest: false,
-      });
-      const dugLine = new THREE.Line(dugGeom, dugMat);
-      dugLine.computeLineDistances();
-      dugLine.renderOrder = 10;
-      this.tunnelLinksGroup.add(dugLine);
+        if (hi) {
+          this.ensureTunnelInteriorTextures();
+          // Exact 3D alignment from Portal A doorway -> Portal B doorway (0.0 deg yaw & slope pitch error!)
+          const dugVec = new THREE.Vector3(dugX - a.x, dugY - ay, dugZ - a.z);
+          const dugLen = Math.max(1.2, dugVec.length());
 
-      // Faint planned remaining route while still digging so player sees full straight corridor to exit
-      if (prog < 1) {
-        const remGeom = new THREE.BufferGeometry().setFromPoints([
-          new THREE.Vector3(dugX, dugY, dugZ),
-          new THREE.Vector3(b.x, by, b.z),
-        ]);
-        const remMat = new THREE.LineDashedMaterial({
-          color: 0x94a3b8,
-          dashSize: 0.6,
-          gapSize: 0.9,
-          transparent: true,
-          opacity: 0.38,
-          depthTest: false,
-        });
-        const remLine = new THREE.Line(remGeom, remMat);
-        remLine.computeLineDistances();
-        remLine.renderOrder = 9;
-        this.tunnelLinksGroup.add(remLine);
+          const corridorGroup = new THREE.Group();
+          corridorGroup.position.set(a.x, ay, a.z);
+          corridorGroup.lookAt(b.x, by, b.z); // Local +Z now points EXACTLY along tunnel centerline A -> B!
+
+          // 1. Textured stone-paved underground tunnel road floor (runs z = 0 .. dugLen)
+          const floorTex = this.tunnelFloorTex!.clone();
+          floorTex.needsUpdate = true;
+          floorTex.repeat.set(1.2, Math.max(1, dugLen * 0.45));
+          const floorMat = new THREE.MeshStandardMaterial({
+            map: floorTex,
+            color: prog >= 1 ? 0xd6ccb8 : 0xb59c7a,
+            roughness: 0.92,
+            metalness: 0.04,
+          });
+          const floor = new THREE.Mesh(new THREE.BoxGeometry(2.75, 0.24, dugLen), floorMat);
+          floor.position.set(0, -0.1, dugLen * 0.5);
+          corridorGroup.add(floor);
+
+          // 2. Textured 3D upright vaulted rock/masonry arch shell (BackSide inward-facing, proper upright +Y arch!)
+          const rockTex = this.tunnelRockTex!.clone();
+          rockTex.needsUpdate = true;
+          rockTex.repeat.set(2.2, Math.max(1, dugLen * 0.35));
+          const vaultMat = new THREE.MeshStandardMaterial({
+            map: rockTex,
+            color: prog >= 1 ? 0x9b9284 : 0x8f7455,
+            roughness: 0.94,
+            metalness: 0.02,
+            side: THREE.BackSide,
+            transparent: true,
+            opacity: 0.86,
+          });
+          // CylinderGeometry axis=+Y, theta=[-PI/2..+PI/2] (+Z half) -> rotateX(-PI/2) puts arch cleanly UPRIGHT on +Y along Z!
+          const vault = new THREE.Mesh(
+            new THREE.CylinderGeometry(1.48, 1.48, dugLen, 14, 1, true, -Math.PI * 0.5, Math.PI),
+            vaultMat
+          );
+          vault.rotation.x = -Math.PI / 2;
+          vault.position.set(0, 0.02, dugLen * 0.5);
+          corridorGroup.add(vault);
+
+          // 3. Textured 3D ashlar stone support arch ribs + warm glowing wall torches spaced every ~3.4m
+          const ribMat = new THREE.MeshStandardMaterial({
+            map: this.tunnelRibTex,
+            color: 0xd8d0be,
+            roughness: 0.88,
+            metalness: 0.05,
+          });
+          const torchMat = new THREE.MeshBasicMaterial({ color: 0xffb703 });
+          const ribCount = Math.max(2, Math.floor(dugLen / 3.4));
+          for (let ri = 0; ri <= ribCount; ri++) {
+            const rz = (ri / ribCount) * dugLen;
+            const rib = new THREE.Mesh(new THREE.TorusGeometry(1.42, 0.12, 7, 14, Math.PI), ribMat);
+            rib.position.set(0, 0.02, rz);
+            corridorGroup.add(rib);
+            if (ri > 0 && ri < ribCount && ri % 2 === 1) {
+              const torchL = new THREE.Mesh(new THREE.OctahedronGeometry(0.14, 0), torchMat);
+              torchL.position.set(-1.18, 1.05, rz);
+              const torchR = new THREE.Mesh(new THREE.OctahedronGeometry(0.14, 0), torchMat);
+              torchR.position.set(1.18, 1.05, rz);
+              corridorGroup.add(torchL, torchR);
+            }
+          }
+
+          // 4. Rocky excavation bore wall cap when still digging (prog < 1)
+          if (prog < 1) {
+            const faceMat = new THREE.MeshStandardMaterial({
+              map: this.tunnelRockTex,
+              color: 0x7c5b3e,
+              roughness: 0.96,
+            });
+            const boreFace = new THREE.Mesh(new THREE.CircleGeometry(1.46, 12, 0, Math.PI), faceMat);
+            boreFace.rotation.y = Math.PI;
+            boreFace.position.set(0, 0.02, dugLen);
+            corridorGroup.add(boreFace);
+          }
+
+          this.tunnelXrayCorridorGroup.add(corridorGroup);
+        }
+
+        // Subtle surface guide line when unselected, or remaining dashed planned bore line while digging
+        if (!hi) {
+          const dugGeom = new THREE.BufferGeometry().setFromPoints([
+            new THREE.Vector3(a.x, ay + 0.65, a.z),
+            new THREE.Vector3(dugX, dugY + 0.65, dugZ),
+          ]);
+          const dugMat = new THREE.LineDashedMaterial({
+            color: prog >= 1 ? 0x38bdf8 : 0xf59e0b,
+            dashSize: 1.15,
+            gapSize: 0.65,
+            transparent: true,
+            opacity: 0.62,
+            depthTest: false,
+          });
+          const dugLine = new THREE.Line(dugGeom, dugMat);
+          dugLine.computeLineDistances();
+          dugLine.renderOrder = 10;
+          this.tunnelLinksGroup.add(dugLine);
+        }
+
+        if (prog < 1) {
+          const remGeom = new THREE.BufferGeometry().setFromPoints([
+            new THREE.Vector3(dugX, dugY + 0.65, dugZ),
+            new THREE.Vector3(b.x, by + 0.65, b.z),
+          ]);
+          const remMat = new THREE.LineDashedMaterial({
+            color: hi ? 0xfde68a : 0x94a3b8,
+            dashSize: 0.65,
+            gapSize: 0.85,
+            transparent: true,
+            opacity: hi ? 0.78 : 0.35,
+            depthTest: false,
+          });
+          const remLine = new THREE.Line(remGeom, remMat);
+          remLine.computeLineDistances();
+          remLine.renderOrder = 9;
+          this.tunnelLinksGroup.add(remLine);
+        }
       }
     }
+
+    const selectedPair = pairs.find((p) => p.hi);
+    if (!selectedPair) {
+      this.tunnelXraySprite.visible = false;
+      return;
+    }
+
+    const { a, b, prog } = selectedPair;
+    const ay = world.terrain.getHeightAt(a.x, a.z);
+    const by = world.terrain.getHeightAt(b.x, b.z);
+    const totalDx = b.x - a.x;
+    const totalDz = b.z - a.z;
+
+    let diggerCount = 0;
+    let walkerCount = 0;
+    for (const u of world.entities.values()) {
+      if (!u.alive || u.garrisonedIn !== null) continue;
+      if (u.order.type === 'build' && u.order.inShaft && (u.order.targetId === a.id || u.order.targetId === b.id)) {
+        diggerCount++;
+      } else if (
+        u.order.type === 'enter_tunnel' &&
+        (u.order.transitRemaining ?? 0) > 0 &&
+        (u.order.portalId === a.id || u.order.portalId === b.id || u.order.exitPortalId === a.id || u.order.exitPortalId === b.id)
+      ) {
+        walkerCount++;
+      }
+    }
+
+    // Update floating X-Ray status banner above the tunnel bore face / center!
+    const pct = Math.round(prog * 100);
+    const lenTiles = a.tunnelLengthTiles ?? Math.round(Math.hypot(totalDx, totalDz) / 2);
+    const labelText =
+      prog < 1
+        ? `👁️ 隧道透視 ${pct}% • 地下挖掘工人: ${diggerCount} 人 (長 ${lenTiles} 格)`
+        : `👁️ 隧道透視 (已貫通 • 長 ${lenTiles} 格) • 地下通行中: ${walkerCount} 人`;
+    const anchorT = prog < 1 ? prog : 0.5;
+    const lx = a.x + totalDx * anchorT;
+    const lz = a.z + totalDz * anchorT;
+    const ly = Math.max(world.terrain.getHeightAt(lx, lz), ay + (by - ay) * anchorT) + 3.2;
+    this.tunnelXraySprite.position.set(lx, ly, lz);
+    this.tunnelXraySprite.visible = true;
+
+    if (this.lastTunnelXrayLabel !== labelText) {
+      this.lastTunnelXrayLabel = labelText;
+      const ctx = this.tunnelXrayCanvas.getContext('2d');
+      if (ctx) {
+        ctx.clearRect(0, 0, 440, 68);
+        ctx.fillStyle = 'rgba(15, 23, 42, 0.90)';
+        ctx.strokeStyle = prog < 1 ? '#f59e0b' : '#38bdf8';
+        ctx.lineWidth = 3;
+        ctx.beginPath();
+        ctx.roundRect(6, 6, 428, 56, 12);
+        ctx.fill();
+        ctx.stroke();
+        ctx.font = 'bold 20px system-ui, sans-serif';
+        ctx.fillStyle = '#f8fafc';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(labelText, 220, 34);
+        this.tunnelXrayTex.needsUpdate = true;
+      }
+    }
+  }
+
+  /** Renders 3D bamboo fishing rods + bobbers & cast fishing nets whenever land workers fish at the water's edge! */
+  private syncShoreFishingVisuals(world: World, elapsedSec: number): void {
+    this.shoreFishingGroup.clear();
+    for (const u of world.entities.values()) {
+      if (!u.alive || u.garrisonedIn !== null || u.animState !== 'gather' || u.order.type !== 'gather') continue;
+      const uTpl = TEMPLATES[u.templateId];
+      if (!uTpl || uTpl.isNaval) continue;
+      const fish = world.entities.get(u.order.targetId);
+      if (!fish || !fish.alive || !TEMPLATES[fish.templateId]?.isAquatic) continue;
+
+      const uY = world.terrain.getHeightAt(u.x, u.z);
+      const dx = fish.x - u.x;
+      const dz = fish.z - u.z;
+      const dist = Math.max(0.5, Math.hypot(dx, dz));
+      const dirX = dx / dist;
+      const dirZ = dz / dist;
+
+      const handX = u.x + dirX * 0.35;
+      const handY = uY + 1.15;
+      const handZ = u.z + dirZ * 0.35;
+
+      const waterY = WATER_LEVEL + 0.08;
+      const useCastNet = u.id % 2 === 1;
+
+      if (useCastNet) {
+        // Cast fishing net expanding & rippling across the water onto the fish shoal!
+        const castCycle = (elapsedSec * 0.85 + u.id * 0.37) % 1.0;
+        const flyT = Math.min(1, castCycle * 2.2);
+        const netX = handX + (fish.x - handX) * flyT;
+        const netZ = handZ + (fish.z - handZ) * flyT;
+        const netY = handY * (1 - flyT) + waterY * flyT + Math.sin(flyT * Math.PI) * 1.15;
+
+        const net = new THREE.Mesh(this.netGeom, this.netMat);
+        net.position.set(netX, netY, netZ);
+        const netScale = 0.45 + flyT * 0.85;
+        net.scale.set(netScale, 1, netScale);
+        this.shoreFishingGroup.add(net);
+
+        // Rope tether from worker's hand to the cast net
+        const ropeGeom = new THREE.BufferGeometry().setFromPoints([
+          new THREE.Vector3(handX, handY, handZ),
+          new THREE.Vector3(netX, netY, netZ),
+        ]);
+        this.shoreFishingGroup.add(new THREE.Line(ropeGeom, this.lineMat));
+
+        if (flyT >= 0.95) {
+          const rip = new THREE.Mesh(this.fishRippleGeom, this.fishRippleMat);
+          rip.position.set(fish.x, waterY + 0.02, fish.z);
+          rip.scale.setScalar(1.0 + (castCycle - 0.45) * 2.2);
+          this.shoreFishingGroup.add(rip);
+        }
+      } else {
+        // Bamboo fishing rod + dipping fishing line + bobbing red float on the water!
+        const bob = Math.sin(elapsedSec * 4.5 + u.id) * 0.07;
+        const tipX = handX + dirX * 1.75;
+        const tipY = handY + 1.25 + bob * 0.6;
+        const tipZ = handZ + dirZ * 1.75;
+
+        const rod = new THREE.Mesh(this.rodGeom, this.rodMat);
+        rod.position.set((handX + tipX) * 0.5, (handY + tipY) * 0.5, (handZ + tipZ) * 0.5);
+        rod.lookAt(tipX, tipY, tipZ);
+        rod.rotateX(Math.PI / 2);
+        this.shoreFishingGroup.add(rod);
+
+        const floatX = fish.x - dirX * 0.2;
+        const floatZ = fish.z - dirZ * 0.2;
+        const floatY = waterY + bob;
+        const bobber = new THREE.Mesh(this.bobberGeom, this.bobberMat);
+        bobber.position.set(floatX, floatY, floatZ);
+        this.shoreFishingGroup.add(bobber);
+
+        const lineGeom = new THREE.BufferGeometry().setFromPoints([
+          new THREE.Vector3(tipX, tipY, tipZ),
+          new THREE.Vector3((tipX + floatX) * 0.5, (tipY + floatY) * 0.5 - 0.25, (tipZ + floatZ) * 0.5),
+          new THREE.Vector3(floatX, floatY, floatZ),
+        ]);
+        this.shoreFishingGroup.add(new THREE.Line(lineGeom, this.lineMat));
+
+        const rip = new THREE.Mesh(this.fishRippleGeom, this.fishRippleMat);
+        rip.position.set(floatX, waterY + 0.02, floatZ);
+        const rPulse = 0.75 + ((elapsedSec * 0.9 + u.id * 0.2) % 1.0) * 1.2;
+        rip.scale.setScalar(rPulse);
+        this.shoreFishingGroup.add(rip);
+      }
+    }
+  }
+
+  /** Shows the Great Wall Beacon Tower's signal/rally radius ring on the terrain when selected */
+  private syncBeaconRangeRing(world: World, humanPlayerId: number, selectedIds: Set<number>): void {
+    if (selectedIds.size !== 1) {
+      this.beaconRangeRing.visible = false;
+      return;
+    }
+    const id = selectedIds.values().next().value!;
+    const e = world.entities.get(id);
+    if (!e || !e.alive || e.owner !== humanPlayerId || e.isFoundation || !TEMPLATES[e.templateId]?.isBeaconTower) {
+      this.beaconRangeRing.visible = false;
+      return;
+    }
+    const stats = World.getBeaconStats(e.beaconLevel ?? 1);
+    const groundY = world.terrain.getHeightAt(e.x, e.z);
+    this.beaconRangeRing.position.set(e.x, groundY + 0.35, e.z);
+    this.beaconRangeRing.scale.set(stats.relayRange, 1, stats.relayRange);
+    const mat = this.beaconRangeRing.material as THREE.MeshBasicMaterial;
+    const hasSoldiers = world.getBeaconGarrisonSoldiers(e).length > 0;
+    mat.color.setHex((e.beaconLitTimer ?? 0) > 0 ? 0xff6b00 : hasSoldiers ? 0xfbbf24 : 0x94a3b8);
+    this.beaconRangeRing.visible = true;
   }
 
   /**
@@ -1096,12 +1733,13 @@ export class SceneManager {
           ctx.fill();
           ctx.stroke();
 
-          // Label text: progress + exact ground elevation!
+          // Label text: exact 0.01m excavation depth + live ground elevation!
           const icon = info.mode === 'raise' ? '⬆' : info.mode === 'level' ? '📐' : '⛏';
-          ctx.font = 'bold 21px system-ui, sans-serif';
+          const depthMeters = (info.current * 0.01).toFixed(2);
+          ctx.font = 'bold 20px system-ui, sans-serif';
           ctx.fillStyle = '#f8fafc';
           ctx.textAlign = 'center';
-          ctx.fillText(`${icon} ${info.current}/${info.max} • 高${heightLabel}`, 128, 33);
+          ctx.fillText(`${icon} ${depthMeters}m/1.00m • 高${heightLabel}`, 128, 33);
 
           // Progress bar track + fill
           ctx.fillStyle = 'rgba(255, 255, 255, 0.16)';
@@ -1251,7 +1889,52 @@ export class SceneManager {
     };
   }
 
+  private getCountdownTexture(sec: number): THREE.CanvasTexture {
+    const cached = this.countdownTextures.get(sec);
+    if (cached) return cached;
+
+    const canvas = document.createElement('canvas');
+    canvas.width = 96;
+    canvas.height = 96;
+    const ctx = canvas.getContext('2d');
+    if (ctx) {
+      ctx.clearRect(0, 0, 96, 96);
+      // Dark circular badge with gold/emerald ring border
+      ctx.beginPath();
+      ctx.arc(48, 48, 39, 0, Math.PI * 2);
+      ctx.fillStyle = 'rgba(15, 23, 42, 0.88)';
+      ctx.fill();
+      ctx.lineWidth = 6;
+      ctx.strokeStyle = sec <= 3 ? '#4ade80' : '#fbbf24';
+      ctx.stroke();
+
+      // Bold high-contrast countdown digit
+      ctx.font = 'bold 46px system-ui, -apple-system, sans-serif';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.lineWidth = 5;
+      ctx.strokeStyle = 'rgba(0, 0, 0, 0.75)';
+      ctx.strokeText(String(sec), 48, 50);
+      ctx.fillStyle = sec <= 3 ? '#dcfce7' : '#fef3c7';
+      ctx.fillText(String(sec), 48, 50);
+    }
+
+    const tex = new THREE.CanvasTexture(canvas);
+    tex.colorSpace = THREE.SRGBColorSpace;
+    this.countdownTextures.set(sec, tex);
+    return tex;
+  }
+
   dispose(): void {
+    for (const tex of this.countdownTextures.values()) {
+      tex.dispose();
+    }
+    this.countdownTextures.clear();
+    this.tunnelXrayTex.dispose();
+    this.placementHintTex.dispose();
+    this.tunnelRockTex?.dispose();
+    this.tunnelFloorTex?.dispose();
+    this.tunnelRibTex?.dispose();
     this.terrainRenderer.dispose();
     this.renderer.dispose();
     this.renderer.domElement.remove();

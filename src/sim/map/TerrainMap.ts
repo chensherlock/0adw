@@ -5,6 +5,7 @@ export const MAP_TILES = 128;
 export const TILE_SIZE = 2.0;
 export const WORLD_SIZE = MAP_TILES * TILE_SIZE; // 256 world units (default medium)
 export const WATER_LEVEL = 0.0;
+export const DIG_STEP_METERS = 0.01;
 
 export const MAP_SIZE_TILES: Record<MapSize, number> = {
   small: 96,
@@ -21,6 +22,7 @@ export const ALL_MAP_TYPES: readonly ResolvedMapType[] = [
   'open_plains',
   'alpine_passes',
   'island',
+  'archipelago',
   'mountain',
   'plateau',
   'hills',
@@ -39,6 +41,7 @@ export const MAP_TYPE_LABELS: Record<ResolvedMapType, string> = {
   open_plains: 'Peloponnesian Plains',
   alpine_passes: 'Alpine Snow Passes',
   island: 'Sea Island',
+  archipelago: 'Archipelago',
   mountain: 'Mountain Range',
   plateau: 'Highland Plateau',
   hills: 'Rolling Hills',
@@ -461,6 +464,40 @@ export class TerrainMap {
     const seedB = this.seed + 521;
     const seedC = this.seed + 911;
 
+    // Pre-generate Archipelago islands (each spawn gets a home island + 14 scattered resource islets!)
+    const archipelagoIslands: Array<{ x: number; z: number; r: number; peak: number }> = [];
+    if (this.resolvedMapType === 'archipelago') {
+      for (const s of this.spawns) {
+        archipelagoIslands.push({
+          x: s.tileX,
+          z: s.tileZ,
+          r: rng.range(16.5, 20.5) * sizeScale,
+          peak: rng.range(2.8, 3.8),
+        });
+      }
+      // Central hub island
+      archipelagoIslands.push({
+        x: midX + rng.range(-5, 5) * sizeScale,
+        z: midZ + rng.range(-5, 5) * sizeScale,
+        r: rng.range(11.5, 14.5) * sizeScale,
+        peak: rng.range(3.6, 5.2),
+      });
+      // Ring of scattered small islets across the sea
+      const isletCount = 14;
+      for (let i = 0; i < isletCount; i++) {
+        const ang = (i / isletCount) * Math.PI * 2 + rng.range(-0.22, 0.22);
+        const dist = rng.range(20, 48) * sizeScale;
+        const ix = Math.max(12, Math.min(this.width - 12, midX + Math.cos(ang) * dist));
+        const iz = Math.max(12, Math.min(this.height - 12, midZ + Math.sin(ang) * dist));
+        archipelagoIslands.push({
+          x: ix,
+          z: iz,
+          r: rng.range(7.0, 12.5) * sizeScale,
+          peak: rng.range(2.2, 4.6),
+        });
+      }
+    }
+
     for (let vz = 0; vz < vh; vz++) {
       for (let vx = 0; vx < vw; vx++) {
         // 1. Rich rolling Mediterranean hills, terraced swells & winding valleys
@@ -514,6 +551,20 @@ export class TerrainMap {
             const drop = Math.max(0, (distCenter - (islandRad - 10 * sizeScale)) / (18 * sizeScale));
             h -= drop * drop * 11.5;
           }
+        } else if (this.resolvedMapType === 'archipelago') {
+          // Multi-island Archipelago: deep sea dotted with many lush islands & scenic islets!
+          let seaH = -2.75 + (nBroad - 0.5) * 0.65;
+          for (const isl of archipelagoIslands) {
+            const coastJitter = (nMed - 0.5) * 3.2 + (nDetail - 0.5) * 1.4;
+            const dIsl = Math.hypot(vx - isl.x, vz - isl.z) + coastJitter;
+            if (dIsl < isl.r) {
+              const t = 1 - dIsl / isl.r;
+              const dome = Math.pow(Math.min(1, t * 1.35), 1.25);
+              const islH = -2.4 + dome * (isl.peak + 2.4) + (nDetail - 0.5) * 0.45;
+              if (islH > seaH) seaH = islH;
+            }
+          }
+          h = seaH;
         } else if (this.resolvedMapType === 'plateau') {
           // High flat-topped central Highland Plateau with sheer cliff rim dropping to outer ring
           const platRad = 48 * sizeScale + (nBroad - 0.5) * 10;
@@ -563,7 +614,8 @@ export class TerrainMap {
           this.resolvedMapType === 'mesa' ||
           this.resolvedMapType === 'forest' ||
           this.resolvedMapType === 'volcano' ||
-          this.resolvedMapType === 'island';
+          this.resolvedMapType === 'island' ||
+          this.resolvedMapType === 'archipelago';
         if (!isInlandArchetype) {
           const dBay1 = Math.hypot(vx - bay1X, vz - bay1Z);
           const dBay2 = Math.hypot(vx - bay2X, vz - bay2Z);
@@ -575,11 +627,10 @@ export class TerrainMap {
           }
         }
 
-        // Outer map coastal drop
+        // Outer map coastal drop (only on coastal sea-bay archetypes, keeping inland borders dry so walls can seal map edges!)
         const borderDist = Math.min(vx, vz, this.width - vx, this.height - vz);
-        if (borderDist < 4.5 && this.resolvedMapType !== 'island') {
-          const edgeDrop = isInlandArchetype ? 1.2 : 4.8;
-          h -= (1 - borderDist / 4.5) * edgeDrop;
+        if (borderDist < 3.5 && !isInlandArchetype) {
+          h -= (1 - borderDist / 3.5) * 3.2;
         }
 
         // 4. Winding River (河) with strategic shallow fords (淺灘渡口)
@@ -626,18 +677,42 @@ export class TerrainMap {
           }
         }
 
-        // 6. Keep immediate Civic Center core buildable while letting natural hills rise right nearby
-        for (const s of this.spawns) {
-          const d = Math.hypot(vx - s.tileX, vz - s.tileZ);
-          if (d < 10.5) {
-            const targetH = 2.2 + (nMed - 0.5) * 0.75 + (nDetail - 0.5) * 0.32;
-            const blend = d < 5.2 ? 1.0 : 1 - (d - 5.2) / 5.3;
-            const smooth = blend * blend * (3 - 2 * blend);
-            h = h * (1 - smooth) + targetH * smooth;
-          }
-        }
-
         this.heights[vz * vw + vx] = h;
+      }
+    }
+
+    // 6. Gently level each Civic Center pad AT or slightly ABOVE its natural surrounding elevation (NEVER carving a sunken basin!)
+    for (const s of this.spawns) {
+      let ringSum = 0;
+      let ringCount = 0;
+      for (let a = 0; a < 16; a++) {
+        const ang = (a / 16) * Math.PI * 2;
+        const sx = Math.max(2, Math.min(this.width - 2, Math.round(s.tileX + Math.cos(ang) * 10.5)));
+        const sz = Math.max(2, Math.min(this.height - 2, Math.round(s.tileZ + Math.sin(ang) * 10.5)));
+        const sh = this.heights[sz * vw + sx];
+        if (sh > WATER_LEVEL + 0.4) {
+          ringSum += sh;
+          ringCount++;
+        }
+      }
+      const centerRaw = this.heights[s.tileZ * vw + s.tileX];
+      const naturalH = ringCount > 0 ? ringSum / ringCount : centerRaw;
+      // Sit naturally flush with or subtly elevated (+0.25m) above surrounding terrain, never sunken in a pit!
+      const padBaseH = Math.max(WATER_LEVEL + 1.45, Math.min(7.6, Math.max(centerRaw, naturalH + 0.25)));
+
+      const minVx = Math.max(1, Math.floor(s.tileX - 11));
+      const maxVx = Math.min(this.width - 1, Math.ceil(s.tileX + 11));
+      const minVz = Math.max(1, Math.floor(s.tileZ - 11));
+      const maxVz = Math.min(this.height - 1, Math.ceil(s.tileZ + 11));
+      for (let vz = minVz; vz <= maxVz; vz++) {
+        for (let vx = minVx; vx <= maxVx; vx++) {
+          const d = Math.hypot(vx - s.tileX, vz - s.tileZ);
+          if (d >= 10.5) continue;
+          const blend = d < 5.0 ? 1.0 : 1 - (d - 5.0) / 5.5;
+          const smooth = blend * blend * (3 - 2 * blend);
+          const idx = vz * vw + vx;
+          this.heights[idx] = this.heights[idx] * (1 - smooth) + padBaseH * smooth;
+        }
       }
     }
   }
@@ -729,7 +804,8 @@ export class TerrainMap {
         const t = i / steps;
         const cx = s1.tileX + (s2.tileX - s1.tileX) * t;
         const cz = s1.tileZ + (s2.tileZ - s1.tileZ) * t;
-        const rad = 7.5;
+        const rad = this.resolvedMapType === 'archipelago' ? 3.8 : 7.5;
+        const passTargetH = this.resolvedMapType === 'archipelago' ? 0.85 : 2.0;
         const minX = Math.max(2, Math.floor(cx - rad));
         const maxX = Math.min(this.width - 2, Math.ceil(cx + rad));
         const minZ = Math.max(2, Math.floor(cz - rad));
@@ -738,10 +814,11 @@ export class TerrainMap {
           for (let vx = minX; vx <= maxX; vx++) {
             const d = Math.hypot(vx - cx, vz - cz);
             if (d < rad) {
-              const blend = 1 - d / rad;
+              const blend = Math.min(1, (1 - d / rad) * 1.45);
               const smooth = blend * blend * (3 - 2 * blend);
               const cur = this.heights[vz * vw + vx];
-              this.heights[vz * vw + vx] = cur * (1 - smooth) + 2.0 * smooth;
+              const nextH = cur * (1 - smooth) + passTargetH * smooth;
+              this.heights[vz * vw + vx] = this.resolvedMapType === 'archipelago' ? Math.max(cur, nextH) : nextH;
             }
           }
         }
@@ -970,11 +1047,11 @@ export class TerrainMap {
         const idx = vz * vw + vx;
         const prev = this.heights[idx];
         const next = Math.max(minH, Math.min(maxH, prev + deltaHeight * weight));
-        if (Math.abs(next - prev) > 0.001) {
+        if (Math.abs(next - prev) > 1e-5) {
           this.heights[idx] = next;
           changed = true;
         }
-        this.dugMask[idx] = Math.min(1, this.dugMask[idx] + weight * 0.9);
+        this.dugMask[idx] = Math.min(1, this.dugMask[idx] + weight * Math.min(0.9, Math.abs(deltaHeight) * 2.2));
       }
     }
 
@@ -1049,8 +1126,8 @@ export class TerrainMap {
   }
 
   /**
-   * Excavates `units` (default 1 per worker dig cycle) from a tile's 100-unit soil layer.
-   * Only when all 100 units are removed does the terrain actually subside & visually drop!
+   * Excavates `units` (default 1 = 0.01m per worker dig cycle) from a tile's 100-unit (1.00m) layer.
+   * Ground height changes immediately on EVERY single scoop (-0.01m per unit)!
    */
   digSoilUnit(tileX: number, tileZ: number, units = 1): { subsided: boolean; remaining: number } {
     if (tileX < 3 || tileZ < 3 || tileX > this.width - 4 || tileZ > this.height - 4) {
@@ -1058,9 +1135,12 @@ export class TerrainMap {
     }
     const idx = tileZ * this.width + tileX;
     const prev = this.tileSoilUnits[idx];
-    const next = Math.max(0, prev - units);
-    if (next === 0) {
-      this.modifyTerrainDelta(tileX, tileZ, -1.05);
+    const actualUnits = Math.min(prev, Math.max(0, units));
+    const next = prev - actualUnits;
+    if (actualUnits > 0) {
+      this.modifyTerrainDelta(tileX, tileZ, -DIG_STEP_METERS * actualUnits);
+    }
+    if (next <= 0) {
       this.tileSoilUnits[idx] = SOIL_UNITS_PER_TILE;
       this.tileTerraformEpoch[idx]++;
       this.syncActiveSoilIndex(idx);
@@ -1073,16 +1153,19 @@ export class TerrainMap {
 
   /**
    * Deposits `units` of hauled earth onto a destination tile.
-   * Once 100 units accumulate, the destination tile rises by +1.05m!
+   * Ground height rises immediately by +0.01m per unit dumped!
    */
   depositSoilUnit(tileX: number, tileZ: number, units = 1): { raised: boolean; filled: number } {
     if (tileX < 3 || tileZ < 3 || tileX > this.width - 4 || tileZ > this.height - 4) {
       return { raised: false, filled: 0 };
     }
     const idx = tileZ * this.width + tileX;
-    const total = this.tileFillUnits[idx] + units;
+    const actualUnits = Math.max(0, units);
+    if (actualUnits > 0) {
+      this.modifyTerrainDelta(tileX, tileZ, DIG_STEP_METERS * actualUnits);
+    }
+    const total = this.tileFillUnits[idx] + actualUnits;
     if (total >= SOIL_UNITS_PER_TILE) {
-      this.modifyTerrainDelta(tileX, tileZ, 1.05);
       this.tileFillUnits[idx] = total - SOIL_UNITS_PER_TILE;
       this.tileTerraformEpoch[idx]++;
       this.syncActiveSoilIndex(idx);
@@ -1094,25 +1177,83 @@ export class TerrainMap {
   }
 
   /**
-   * Grades and flattens an uneven hillside/slope around (tileX, tileZ) into a level buildable terrace
-   * once 100 soil units of grading work are completed!
+   * Grades and flattens an uneven hillside/slope around (tileX, tileZ) continuously (0.01m per unit)
+   * until all 100 units complete into a level buildable terrace!
    */
   levelSoilUnit(tileX: number, tileZ: number, units = 1): { leveled: boolean; remaining: number } {
     if (tileX < 3 || tileZ < 3 || tileX > this.width - 4 || tileZ > this.height - 4) {
       return { leveled: false, remaining: 0 };
     }
     const idx = tileZ * this.width + tileX;
-    const next = Math.max(0, this.tileSoilUnits[idx] - units);
-    if (next === 0) {
+    const prev = this.tileSoilUnits[idx];
+    const actualUnits = Math.min(prev, Math.max(0, units));
+    const next = prev - actualUnits;
+    if (next <= 0) {
       this.flattenTerrace(tileX, tileZ);
       this.tileSoilUnits[idx] = SOIL_UNITS_PER_TILE;
       this.tileTerraformEpoch[idx]++;
       this.syncActiveSoilIndex(idx);
       return { leveled: true, remaining: SOIL_UNITS_PER_TILE };
     }
+    if (actualUnits > 0) {
+      this.flattenTerraceStep(tileX, tileZ, Math.min(1, actualUnits / Math.max(1, prev)));
+    }
     this.tileSoilUnits[idx] = next;
     this.syncActiveSoilIndex(idx);
     return { leveled: false, remaining: next };
+  }
+
+  /** Cancels in-progress excavation on a tile while PRESERVING its exact current terrain height (never reverts!) */
+  cancelSoilWork(tileX: number, tileZ: number): void {
+    if (tileX < 0 || tileZ < 0 || tileX >= this.width || tileZ >= this.height) return;
+    const idx = tileZ * this.width + tileX;
+    this.tileSoilUnits[idx] = SOIL_UNITS_PER_TILE;
+    this.tileFillUnits[idx] = 0;
+    this.tileTerraformEpoch[idx]++;
+    this.activeSoilIndices.delete(idx);
+    this.soilProgressVersion++;
+  }
+
+  /** Incrementally grades vertices a fraction toward a level terrace so ground reshapes visibly on every scoop */
+  private flattenTerraceStep(tileX: number, tileZ: number, stepFrac: number): void {
+    if (tileX < 3 || tileZ < 3 || tileX > this.width - 4 || tileZ > this.height - 4) return;
+    const vw = this.width + 1;
+    const cx = tileX + 0.5;
+    const cz = tileZ + 0.5;
+    const avgH =
+      (this.getVertexHeight(tileX, tileZ) +
+        this.getVertexHeight(tileX + 1, tileZ) +
+        this.getVertexHeight(tileX, tileZ + 1) +
+        this.getVertexHeight(tileX + 1, tileZ + 1)) *
+      0.25;
+    const targetH = Math.max(WATER_LEVEL + 0.9, Math.min(9.5, avgH));
+    const flatRad = 2.6;
+    const blendRad = 4.5;
+    const minVx = Math.max(2, Math.floor(cx - blendRad));
+    const maxVx = Math.min(this.width - 2, Math.ceil(cx + blendRad));
+    const minVz = Math.max(2, Math.floor(cz - blendRad));
+    const maxVz = Math.min(this.height - 2, Math.ceil(cz + blendRad));
+    let changed = false;
+    for (let vz = minVz; vz <= maxVz; vz++) {
+      for (let vx = minVx; vx <= maxVx; vx++) {
+        const d = Math.hypot(vx - cx, vz - cz);
+        if (d >= blendRad) continue;
+        const t = d <= flatRad ? 1 : 1 - (d - flatRad) / (blendRad - flatRad);
+        const smooth = t * t * (3 - 2 * t) * stepFrac;
+        const vIdx = vz * vw + vx;
+        const prev = this.heights[vIdx];
+        const next = prev + (targetH - prev) * smooth;
+        if (Math.abs(next - prev) > 1e-5) {
+          this.heights[vIdx] = next;
+          changed = true;
+        }
+        this.dugMask[vIdx] = Math.min(1, this.dugMask[vIdx] + smooth * 0.65);
+      }
+    }
+    if (changed) {
+      this.computeStaticPassability();
+      this.version++;
+    }
   }
 
   /** Smoothly flattens a 4x4 tile area around (tileX, tileZ) so buildings can be constructed on formerly uneven slopes */

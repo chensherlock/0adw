@@ -65,6 +65,7 @@ export const ENTITY_PORTRAITS: Record<string, string> = {
   fortress: `${ASSET_BASE}/ui/fortress.png`,
   stone_wall: `${ASSET_BASE}/ui/stone_wall.png`,
   stone_gate: `${ASSET_BASE}/ui/stone_gate.png`,
+  beacon_tower: `${ASSET_BASE}/ui/defense_tower.png`,
   stone_bridge: `${ASSET_BASE}/ui/stone_bridge.png`,
   tunnel_portal: `${ASSET_BASE}/ui/tunnel_portal.png`,
   temple: `${ASSET_BASE}/ui/temple.png`,

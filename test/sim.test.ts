@@ -854,7 +854,7 @@ describe('Web 0 A.D. Headless Simulation', () => {
     const startSrcY = world.terrain.getHeightAt(srcCenter.x, srcCenter.z);
     const startDstY = world.terrain.getHeightAt(dstCenter.x, dstCenter.z);
 
-    // Normal worker digs 1 unit at a time: after 1 dig (99 remaining), terrain must NOT drop yet!
+    // Normal worker digs 0.01m (1 unit) per scoop: height MUST change immediately on every scoop!
     const worker = world.spawnUnit('female_citizen', 1, srcCenter.x - 1.2, srcCenter.z)!;
     world.enqueueCommand({
       type: 'terraform',
@@ -872,7 +872,8 @@ describe('Web 0 A.D. Headless Simulation', () => {
     }
     expect(world.terrain.getSoilUnits(srcTx, srcTz)).toBeLessThan(SOIL_UNITS_PER_TILE);
     expect(world.terrain.getSoilUnits(srcTx, srcTz)).toBeGreaterThan(80);
-    expect(world.terrain.getHeightAt(srcCenter.x, srcCenter.z)).toBeCloseTo(startSrcY, 3);
+    // Ground elevation immediately dropped by ~0.01m per scoop (no waiting for 100 units!)
+    expect(world.terrain.getHeightAt(srcCenter.x, srcCenter.z)).toBeLessThan(startSrcY - 0.005);
 
     // After finishing all 100 units (accelerated via fastBuildCheat for quick test), source subsides AND dump rises!
     p1.fastBuildCheat = true;
@@ -969,8 +970,8 @@ describe('Web 0 A.D. Headless Simulation', () => {
     expect(portals[0].isFoundation).toBe(false);
     expect(portals[1].isFoundation).toBe(false);
 
-    // 3. All 15 terrain archetypes generate cleanly + Rainforest spawns bamboo, elephants & predators!
-    expect(ALL_MAP_TYPES.length).toBe(15);
+    // 3. All 16 terrain archetypes generate cleanly + Rainforest spawns bamboo, elephants & predators!
+    expect(ALL_MAP_TYPES.length).toBe(16);
     for (const mapType of ['island', 'mountain', 'plateau', 'hills', 'mesa', 'swamp', 'rainforest', 'forest', 'volcano'] as const) {
       const w = new World({ seed: 3030, playerCiv: 'han', aiCiv: 'persians', difficulty: 'easy', mapType });
       expect(w.terrain.resolvedMapType).toBe(mapType);
@@ -1574,7 +1575,7 @@ describe('Web 0 A.D. Headless Simulation', () => {
     expect(restored.computeStateHash()).toBe(w8.computeStateHash());
   });
 
-  it('starts newly trained Civic Center workers gathering immediately and never gathers empty air', () => {
+  it('waits 10s with countdown before newly trained Civic Center workers auto-work and never gathers empty air', () => {
     const world = new World({
       seed: 4455,
       playerCiv: 'athenians',
@@ -1595,23 +1596,60 @@ describe('Web 0 A.D. Headless Simulation', () => {
     world.enqueueCommand({ type: 'train', playerId: 1, buildingId: cc.id, templateId: 'female_citizen' });
     world.enqueueCommand({ type: 'train', playerId: 1, buildingId: cc.id, templateId: 'male_citizen' });
 
-    // Step tick-by-tick and check the exact tick each newly trained citizen spawns:
-    const newlyTrained: number[] = [];
-    for (let t = 0; t < SIM_HZ * 25 && newlyTrained.length < 2; t++) {
+    // Wait for first worker (female_citizen) to spawn from Civic Center
+    let firstWorkerId: number | null = null;
+    for (let t = 0; t < SIM_HZ * 15 && firstWorkerId === null; t++) {
       world.step();
       for (const e of world.entities.values()) {
-        if (!existingIds.has(e.id) && e.owner === 1 && (e.templateId === 'female_citizen' || e.templateId === 'male_citizen')) {
+        if (!existingIds.has(e.id) && e.owner === 1 && e.templateId === 'female_citizen') {
           existingIds.add(e.id);
-          newlyTrained.push(e.id);
-          // Immediately on the spawn tick — zero delay — the worker must already have a gather order!
-          expect(e.order.type).toBe('gather');
+          firstWorkerId = e.id;
+          // Newly trained Civic Center worker starts a 10s countdown and does NOT auto-gather yet!
+          expect(e.autoWorkDelay).toBeGreaterThan(9.5);
+          expect(Math.ceil(e.autoWorkDelay!)).toBe(10);
+          expect(e.order.type).not.toBe('gather');
         }
       }
     }
-    expect(newlyTrained.length).toBe(2);
+    expect(firstWorkerId).not.toBeNull();
+    const firstWorker = world.entities.get(firstWorkerId!)!;
+
+    // During the first 9 seconds, countdown ticks down and worker must STILL wait (never auto-gather early)
+    for (let t = 0; t < SIM_HZ * 9; t++) {
+      world.step();
+    }
+    expect(firstWorker.autoWorkDelay).toBeGreaterThan(0.5);
+    expect(firstWorker.autoWorkDelay).toBeLessThan(1.5);
+    expect(firstWorker.order.type).not.toBe('gather');
+
+    // After the remaining ~1.2 seconds (total > 10s), countdown hits 0 and worker immediately auto-gathers!
+    for (let t = 0; t < Math.ceil(SIM_HZ * 1.5); t++) {
+      world.step();
+    }
+    expect(firstWorker.autoWorkDelay ?? 0).toBe(0);
+    expect(firstWorker.order.type).toBe('gather');
+
+    // Find the second newly trained worker (male_citizen) and verify manual player command cancels countdown immediately!
+    let secondWorkerId: number | null = null;
+    for (let t = 0; t < SIM_HZ * 10 && secondWorkerId === null; t++) {
+      for (const e of world.entities.values()) {
+        if (!existingIds.has(e.id) && e.owner === 1 && e.templateId === 'male_citizen') {
+          existingIds.add(e.id);
+          secondWorkerId = e.id;
+        }
+      }
+      if (secondWorkerId === null) world.step();
+    }
+    expect(secondWorkerId).not.toBeNull();
+    const secondWorker = world.entities.get(secondWorkerId!)!;
+    if ((secondWorker.autoWorkDelay ?? 0) > 0) {
+      world.enqueueCommand({ type: 'move', playerId: 1, entityIds: [secondWorker.id], x: cc.x + 6, z: cc.z + 6 });
+      world.step();
+      expect(secondWorker.autoWorkDelay ?? 0).toBe(0);
+    }
 
     // Worker ordered to gather a far-away tree must NEVER enter animState === 'gather' while far away or if tree is depleted!
-    const worker = world.entities.get(newlyTrained[0])!;
+    const worker = firstWorker;
     const farTree = Array.from(world.entities.values()).find(
       (e) => e.alive && e.owner === 0 && TEMPLATES[e.templateId].resourceType === 'wood' && Math.hypot(e.x - worker.x, e.z - worker.z) > 12
     )!;
@@ -1645,5 +1683,407 @@ describe('Web 0 A.D. Headless Simulation', () => {
     worker.order = { type: 'gather', targetId: farTree.id, resourceType: 'wood', returning: false };
     world.step();
     expect(worker.animState).not.toBe('gather');
+  });
+
+  it('supports 0.01m incremental dig + cancel without revert, underground tunnel diggers/travelers, 3-seg wall<->gate timed upgrades + 3 gate modes, and 3-level Great Wall Beacon Towers', () => {
+    const world = new World({
+      seed: 9191,
+      playerCiv: 'han',
+      aiCiv: 'romans',
+      difficulty: 'easy',
+      mapType: 'open_plains',
+      mapSize: 'small',
+    });
+
+    const p1 = world.players.get(1)!;
+    p1.resources = { food: 5000, wood: 5000, stone: 5000, metal: 5000 };
+    const s1 = world.terrain.spawns[0];
+    const dirX = s1.tileX < 48 ? 1 : -1;
+
+    // 1. Incremental 0.01m digging + Cancel Digging stops worker & keeps terrain height (NEVER reverts!)
+    const digTx = s1.tileX + dirX * 9;
+    const digTz = s1.tileZ;
+    const dumpTx = digTx + dirX * 3;
+    const dumpTz = digTz;
+    const digCenter = world.terrain.tileToWorldCenter(digTx, digTz);
+    const initialH = world.terrain.getHeightAt(digCenter.x, digCenter.z);
+    const digger = world.spawnUnit('female_citizen', 1, digCenter.x - 1.0, digCenter.z)!;
+    world.enqueueCommand({
+      type: 'terraform',
+      playerId: 1,
+      entityIds: [digger.id],
+      tileX: digTx,
+      tileZ: digTz,
+      destTileX: dumpTx,
+      destTileZ: dumpTz,
+      mode: 'dig',
+    });
+    for (let t = 0; t < SIM_HZ * 3; t++) world.step();
+    const afterPartialDigH = world.terrain.getHeightAt(digCenter.x, digCenter.z);
+    expect(afterPartialDigH).toBeLessThan(initialH - 0.005);
+
+    world.enqueueCommand({ type: 'cancel_terraform', playerId: 1, entityIds: [digger.id] });
+    world.step();
+    expect(digger.order.type).toBe('idle');
+    // Terrain height MUST stay at exact excavated depth — NEVER revert!
+    expect(world.terrain.getHeightAt(digCenter.x, digCenter.z)).toBeCloseTo(afterPartialDigH, 4);
+
+    // 2. Tunnel length scales excavation time + underground digger enters shaft (inShaft = true)
+    const tunWorker = world.spawnUnit('male_citizen', 1, digCenter.x, digCenter.z + 8)!;
+    const tStartTx = s1.tileX + dirX * 7;
+    const tEndTxShort = tStartTx + dirX * 6;
+    const tEndTxLong = tStartTx + dirX * 14;
+    const tTz = s1.tileZ + 5;
+    world.enqueueCommand({
+      type: 'build_tunnel',
+      playerId: 1,
+      entityIds: [tunWorker.id],
+      startTileX: tStartTx,
+      startTileZ: tTz,
+      endTileX: tEndTxShort,
+      endTileZ: tTz,
+    });
+    world.step();
+    const shortPortal = Array.from(world.entities.values()).find((e) => e.alive && e.templateId === 'tunnel_portal' && e.tileX === tStartTx)!;
+    expect(shortPortal).toBeDefined();
+    expect(shortPortal.tunnelTotalUnits).toBe(600);
+
+    // Move worker near portal so they enter the underground shaft
+    tunWorker.x = shortPortal.x;
+    tunWorker.z = shortPortal.z;
+    for (let t = 0; t < SIM_HZ * 2; t++) world.step();
+    expect(tunWorker.order.type).toBe('build');
+    if (tunWorker.order.type === 'build') {
+      expect(tunWorker.order.inShaft).toBe(true);
+    }
+
+    // Build a longer tunnel on the nearest valid row and confirm tunnelTotalUnits scales proportionally with length!
+    let longTz = tTz + 4;
+    for (let dz = -10; dz <= 12; dz++) {
+      const candZ = tTz + dz;
+      if (candZ === tTz) continue;
+      if (
+        world.canPlaceBuilding(1, 'tunnel_portal', tStartTx, candZ).ok &&
+        world.canPlaceBuilding(1, 'tunnel_portal', tEndTxLong, candZ).ok
+      ) {
+        longTz = candZ;
+        break;
+      }
+    }
+    const tunWorker2 = world.spawnUnit('male_citizen', 1, digCenter.x, digCenter.z + 14)!;
+    world.enqueueCommand({
+      type: 'build_tunnel',
+      playerId: 1,
+      entityIds: [tunWorker2.id],
+      startTileX: tStartTx,
+      startTileZ: longTz,
+      endTileX: tEndTxLong,
+      endTileZ: longTz,
+    });
+    world.step();
+    const longPortal = Array.from(world.entities.values()).find((e) => e.alive && e.templateId === 'tunnel_portal' && e.tileZ === longTz)!;
+    expect(longPortal).toBeDefined();
+    expect(longPortal.tunnelTotalUnits).toBe(1400);
+    expect(longPortal.tunnelTotalUnits!).toBeGreaterThan(shortPortal.tunnelTotalUnits! * 2);
+
+    // 3. Continuous 5-segment Stone Wall -> End segment CANNOT upgrade to gate; Middle segment upgrades (Prev+Mid+Next -> Gate);
+    //    3 Gate Modes ('auto' own nation only, 'open' everyone, 'locked' nobody); Reverse Gate -> 3 Walls!
+    const wallBaseTx = s1.tileX + dirX * 5;
+    const wallTz = s1.tileZ - 7;
+    const wallSegs = [];
+    for (let i = 0; i < 5; i++) {
+      const w = world.spawnBuilding('stone_wall', 1, wallBaseTx + i * dirX, wallTz, false, 0)!;
+      wallSegs.push(w);
+    }
+    // End segment (index 0) must NOT be eligible for gate upgrade
+    expect(world.findGateUpgradeNeighbors(wallSegs[0])).toBeNull();
+    // Interior segment (index 2) MUST be eligible (flanked by index 1 and index 3)
+    const neighbors = world.findGateUpgradeNeighbors(wallSegs[2]);
+    expect(neighbors).not.toBeNull();
+
+    // Start timed upgrade to Gate -> must NOT complete instantaneously!
+    world.enqueueCommand({ type: 'upgrade_building', playerId: 1, buildingId: wallSegs[2].id, target: 'gate' });
+    world.step();
+    expect(wallSegs[2].templateId).toBe('stone_wall');
+    expect(wallSegs[2].upgradeTargetTemplateId).toBe('stone_gate');
+
+    // Step 11 seconds -> finishes upgrading Prev + Mid + Next into 1 unified Stone Gate!
+    for (let t = 0; t < SIM_HZ * 11; t++) world.step();
+    expect(wallSegs[2].templateId).toBe('stone_gate');
+    expect(world.entities.has(wallSegs[1].id)).toBe(false);
+    expect(world.entities.has(wallSegs[3].id)).toBe(false);
+    expect(wallSegs[2].gateMode).toBe('auto');
+
+    // Gate Modes:
+    // - 'auto': ONLY own nation (1) can pass; enemy (2) is BLOCKED!
+    expect(world.navGrid.isWalkableFor(wallSegs[2].tileX, wallSegs[2].tileZ, 1)).toBe(true);
+    expect(world.navGrid.isWalkableFor(wallSegs[2].tileX, wallSegs[2].tileZ, 2)).toBe(false);
+
+    // - 'open': EVERYONE (1 and 2) can pass!
+    world.enqueueCommand({ type: 'set_gate_mode', playerId: 1, buildingId: wallSegs[2].id, mode: 'open' });
+    world.step();
+    expect(world.navGrid.isWalkableFor(wallSegs[2].tileX, wallSegs[2].tileZ, 1)).toBe(true);
+    expect(world.navGrid.isWalkableFor(wallSegs[2].tileX, wallSegs[2].tileZ, 2)).toBe(true);
+
+    // - 'locked': NOBODY (not even own nation 1!) can pass!
+    world.enqueueCommand({ type: 'set_gate_mode', playerId: 1, buildingId: wallSegs[2].id, mode: 'locked' });
+    world.step();
+    expect(world.navGrid.isWalkableFor(wallSegs[2].tileX, wallSegs[2].tileZ, 1)).toBe(false);
+    expect(world.navGrid.isWalkableFor(wallSegs[2].tileX, wallSegs[2].tileZ, 2)).toBe(false);
+
+    // Reverse conversion: Gate -> 3 continuous Stone Wall segments (timed!)
+    world.enqueueCommand({ type: 'upgrade_building', playerId: 1, buildingId: wallSegs[2].id, target: 'wall' });
+    world.step();
+    expect(wallSegs[2].templateId).toBe('stone_gate');
+    expect(wallSegs[2].upgradeTargetTemplateId).toBe('stone_wall');
+    for (let t = 0; t < SIM_HZ * 9; t++) world.step();
+    expect(wallSegs[2].templateId).toBe('stone_wall');
+    const wallCountNow = Array.from(world.entities.values()).filter((e) => e.alive && e.owner === 1 && e.templateId === 'stone_wall').length;
+    expect(wallCountNow).toBe(5);
+
+    // 4. Great Wall Beacon Towers: ANY wall segment (even end segment!) -> Beacon Lv.1 -> Lv.2 -> Lv.3!
+    world.enqueueCommand({ type: 'upgrade_building', playerId: 1, buildingId: wallSegs[0].id, target: 'beacon' });
+    world.enqueueCommand({ type: 'upgrade_building', playerId: 1, buildingId: wallSegs[4].id, target: 'beacon' });
+    for (let t = 0; t < SIM_HZ * 11; t++) world.step();
+    const beaconA = wallSegs[0];
+    const beaconB = wallSegs[4];
+    expect(beaconA.templateId).toBe('beacon_tower');
+    expect(beaconA.beaconLevel).toBe(1);
+    expect(beaconB.templateId).toBe('beacon_tower');
+
+    // Upgrade Beacon A to Lv.2 & Lv.3 -> verify BOTH range AND max garrison capacity scale up (5 -> 8 -> 12)!
+    expect(world.getMaxGarrisonCapacity(beaconA)).toBe(5);
+    p1.fastBuildCheat = true;
+    world.enqueueCommand({ type: 'upgrade_building', playerId: 1, buildingId: beaconA.id, target: 'beacon' });
+    for (let t = 0; t < 10; t++) world.step();
+    expect(beaconA.beaconLevel).toBe(2);
+    expect(world.getMaxGarrisonCapacity(beaconA)).toBe(8);
+    expect(World.getBeaconStats(2).relayRange).toBeGreaterThan(World.getBeaconStats(1).relayRange);
+    world.enqueueCommand({ type: 'upgrade_building', playerId: 1, buildingId: beaconA.id, target: 'beacon' });
+    for (let t = 0; t < 10; t++) world.step();
+    expect(beaconA.beaconLevel).toBe(3);
+    expect(world.getMaxGarrisonCapacity(beaconA)).toBe(12);
+    expect(World.getBeaconStats(3).relayRange).toBeGreaterThan(World.getBeaconStats(2).relayRange);
+    p1.fastBuildCheat = false;
+
+    // Unstaffed Beacon Tower (0 garrisoned soldiers) is USELESS: cannot ignite manually or on enemy approach!
+    world.enqueueCommand({ type: 'ignite_beacon', playerId: 1, buildingId: beaconA.id });
+    world.step();
+    expect(beaconA.beaconLitTimer ?? 0).toBe(0);
+
+    // Garrison 7 ranged crossbowmen into Lv.3 Beacon A (allowed because Lv.3 holds up to 12!) & 1 spearman into Lv.1 Beacon B!
+    const garrisonUnits = [];
+    for (let i = 0; i < 7; i++) {
+      const xbow = world.spawnUnit('han_crossbow', 1, beaconA.x + 0.5, beaconA.z + 0.5)!;
+      garrisonUnits.push(xbow);
+      world.enqueueCommand({ type: 'garrison', playerId: 1, entityIds: [xbow.id], buildingId: beaconA.id });
+    }
+    const guardB = world.spawnUnit('han_spearman', 1, beaconB.x + 0.5, beaconB.z + 0.5)!;
+    world.enqueueCommand({ type: 'garrison', playerId: 1, entityIds: [guardB.id], buildingId: beaconB.id });
+    for (let t = 0; t < SIM_HZ * 2; t++) world.step();
+    expect(beaconA.garrisonedIds.length).toBe(7);
+    expect(beaconB.garrisonedIds.length).toBe(1);
+
+    // Individual ungarrison: click 1 specific soldier -> ONLY that soldier exits while the other 6 remain garrisoned!
+    const ejectedId = beaconA.garrisonedIds[0];
+    world.enqueueCommand({ type: 'ungarrison_one', playerId: 1, buildingId: beaconA.id, unitId: ejectedId });
+    world.step();
+    expect(beaconA.garrisonedIds.length).toBe(6);
+    expect(world.entities.get(ejectedId)!.garrisonedIn).toBeNull();
+
+    // Spawn an own-nation army 25m away (within Lv.3 rally range) + an approaching hostile enemy!
+    const armyUnit = world.spawnUnit('han_spearman', 1, beaconA.x, beaconA.z + 25)!;
+    const armyStartDist = Math.hypot(armyUnit.x - beaconA.x, armyUnit.z - beaconA.z);
+    const enemyRaider = world.spawnUnit('rome_hastatus', 2, beaconA.x, beaconA.z - 12)!;
+    const enemyHpBefore = enemyRaider.hp;
+
+    // Immediately on enemy detection (1 tick): auto-ignites Beacon A, chains to Beacon B, and rallies armyUnit!
+    world.step();
+    expect(beaconA.beaconLitTimer ?? 0).toBeGreaterThan(0);
+    expect(beaconB.beaconLitTimer ?? 0).toBeGreaterThan(0);
+    expect(armyUnit.order.type).toBe('move');
+
+    // Step 3 more seconds: army marches toward Beacon A AND garrisoned crossbowmen actively shoot the enemy!
+    for (let t = 0; t < SIM_HZ * 3; t++) world.step();
+    expect(Math.hypot(armyUnit.x - beaconA.x, armyUnit.z - beaconA.z)).toBeLessThan(armyStartDist - 5);
+    expect(enemyRaider.hp).toBeLessThan(enemyHpBefore);
+
+    // Manual Extinguish puts out Beacon B fire cleanly and keeps it extinguished!
+    world.enqueueCommand({ type: 'extinguish_beacon', playerId: 1, buildingId: beaconB.id });
+    world.step();
+    expect(beaconB.beaconLitTimer ?? 0).toBe(0);
+
+    // More garrisoned units = harder to destroy (6 garrisoned defenders reduce damage far more than 1 defender!)
+    const hpABefore = beaconA.hp;
+    const hpBBefore = beaconB.hp;
+    const ramA = world.spawnUnit('rome_hastatus', 2, beaconA.x + 1.5, beaconA.z)!;
+    const ramB = world.spawnUnit('rome_hastatus', 2, beaconB.x + 1.5, beaconB.z)!;
+    world.enqueueCommand({ type: 'attack', playerId: 2, entityIds: [ramA.id], targetId: beaconA.id, mode: 'attack' });
+    world.enqueueCommand({ type: 'attack', playerId: 2, entityIds: [ramB.id], targetId: beaconB.id, mode: 'attack' });
+    for (let t = 0; t < SIM_HZ * 2; t++) world.step();
+    const dmgToFullBeacon = hpABefore - beaconA.hp;
+    const dmgToSingleBeacon = hpBBefore - beaconB.hp;
+    expect(dmgToFullBeacon).toBeLessThan(dmgToSingleBeacon);
+
+    // When Beacon Tower is destroyed, ALL remaining garrisoned soldiers pop out alive!
+    const garrisonedIdsBefore = [...beaconA.garrisonedIds];
+    beaconA.hp = 0;
+    beaconA.alive = false;
+    world.step();
+    for (const uid of garrisonedIdsBefore) {
+      const survivor = world.entities.get(uid);
+      expect(survivor).toBeDefined();
+      expect(survivor!.alive).toBe(true);
+      expect(survivor!.garrisonedIn).toBeNull();
+    }
+
+    // 5. Outermost edge tile (tx = 0) allows building Stone Walls when dry & in territory!
+    const edgeTx = 0;
+    const edgeTz = Math.floor(world.terrain.height / 2);
+    const vw = world.terrain.width + 1;
+    world.terrain.heights[edgeTz * vw + edgeTx] = 2.0;
+    world.terrain.heights[edgeTz * vw + edgeTx + 1] = 2.0;
+    world.terrain.heights[(edgeTz + 1) * vw + edgeTx] = 2.0;
+    world.terrain.heights[(edgeTz + 1) * vw + edgeTx + 1] = 2.0;
+    world.spawnBuilding('civic_center', 1, 4, edgeTz, false);
+    world.step();
+    expect(world.canPlaceBuilding(1, 'stone_wall', edgeTx, edgeTz).ok).toBe(true);
+
+    // 6. Archipelago multi-island terrain generates islands + deep navigable sea + connected spawns,
+    //    AND Civic Centers on highland/plateau terrain are NOT sunken into a basin!
+    const archW = new World({
+      seed: 5511,
+      playerCiv: 'athenians',
+      aiCiv: 'carthaginians',
+      difficulty: 'easy',
+      mapType: 'archipelago',
+      mapSize: 'small',
+    });
+    expect(archW.terrain.resolvedMapType).toBe('archipelago');
+    expect(archW.terrain.areSpawnsConnected()).toBe(true);
+    let waterTiles = 0;
+    let landTiles = 0;
+    for (let z = 4; z < archW.terrain.height - 4; z += 2) {
+      for (let x = 4; x < archW.terrain.width - 4; x += 2) {
+        if (archW.terrain.isTileWaterNavigable(x, z)) waterTiles++;
+        else if (archW.terrain.isTileDryLand(x, z)) landTiles++;
+      }
+    }
+    expect(waterTiles).toBeGreaterThan(200);
+    expect(landTiles).toBeGreaterThan(200);
+
+    const platW = new World({
+      seed: 6622,
+      playerCiv: 'han',
+      aiCiv: 'romans',
+      difficulty: 'easy',
+      mapType: 'plateau',
+      mapSize: 'small',
+    });
+    const ps1 = platW.terrain.spawns[0];
+    const ccCenter = platW.terrain.tileToWorldCenter(ps1.tileX, ps1.tileZ);
+    const ccY = platW.terrain.getHeightAt(ccCenter.x, ccCenter.z);
+    let ringAvg = 0;
+    for (let a = 0; a < 8; a++) {
+      const ang = (a / 8) * Math.PI * 2;
+      ringAvg += platW.terrain.getHeightAt(ccCenter.x + Math.cos(ang) * 22, ccCenter.z + Math.sin(ang) * 22);
+    }
+    ringAvg /= 8;
+    // Civic Center sits flush/elevated — NEVER sunken into a deep basin (> 0.6m below surrounding terrain)!
+    expect(ccY).toBeGreaterThanOrEqual(ringAvg - 0.6);
+  });
+
+  it('supports shore-only rod/net fishing, bidirectional sea monster vs human combat, and predator counterattack vs docile flee at distinct speeds', () => {
+    const world = new World({
+      seed: 7788,
+      playerCiv: 'athenians',
+      aiCiv: 'romans',
+      difficulty: 'easy',
+      mapType: 'island',
+      mapSize: 'small',
+    });
+
+    // 1. Shore Fishing: shoreline fish IS catchable by land workers; deep-sea fish is REJECTED!
+    const shoreFish = Array.from(world.entities.values()).find(
+      (e) => e.alive && e.templateId === 'fish_shoal' && world.canLandWorkerFish(e)
+    );
+    expect(shoreFish).toBeDefined();
+
+    // Find a deep-sea water tile far (> 10 tiles) from all dry land and place a deep-sea fish shoal
+    let deepWaterTile: { tx: number; tz: number } | null = null;
+    for (let tz = 6; tz < world.terrain.height - 6 && !deepWaterTile; tz += 2) {
+      for (let tx = 6; tx < world.terrain.width - 6; tx += 2) {
+        if (!world.terrain.isTileWaterNavigable(tx, tz)) continue;
+        let allWater = true;
+        for (let dz = -5; dz <= 5 && allWater; dz++) {
+          for (let dx = -5; dx <= 5; dx++) {
+            if (world.navGrid.isWalkable(tx + dx, tz + dz)) {
+              allWater = false;
+              break;
+            }
+          }
+        }
+        if (allWater) {
+          deepWaterTile = { tx, tz };
+          break;
+        }
+      }
+    }
+    expect(deepWaterTile).not.toBeNull();
+    const deepPos = world.terrain.tileToWorldCenter(deepWaterTile!.tx, deepWaterTile!.tz);
+    const deepFish = world.spawnResource('fish_shoal', deepPos.x, deepPos.z)!;
+    expect(world.canLandWorkerFish(deepFish)).toBe(false);
+
+    const stand = world.getShoreFishingStandPos(shoreFish!)!;
+    const fisher = world.spawnUnit('female_citizen', 1, stand.x, stand.z)!;
+
+    // Ordering land worker to fish deep-sea shoal must be rejected!
+    world.enqueueCommand({ type: 'gather', playerId: 1, entityIds: [fisher.id], targetId: deepFish.id });
+    world.step();
+    expect(fisher.order.type).not.toBe('gather');
+
+    // Ordering land worker to fish shoreline shoal succeeds and harvests Food!
+    const fishRemainBefore = shoreFish!.resourceRemaining;
+    world.enqueueCommand({ type: 'gather', playerId: 1, entityIds: [fisher.id], targetId: shoreFish!.id });
+    for (let t = 0; t < SIM_HZ * 3; t++) world.step();
+    expect(shoreFish!.resourceRemaining).toBeLessThan(fishRemainBefore);
+
+    // 2. Sea/Lake Monster attacks people near shore AND people can attack the Sea Monster!
+    const monster = world.spawnResource('sea_monster', shoreFish!.x, shoreFish!.z)!;
+    const coastalArcher = world.spawnUnit('athen_archer', 1, stand.x, stand.z)!;
+    const archerHpBefore = coastalArcher.hp;
+    const monsterHpBefore = monster.hp;
+
+    world.enqueueCommand({ type: 'attack', playerId: 1, entityIds: [coastalArcher.id], targetId: monster.id, mode: 'attack' });
+    for (let t = 0; t < SIM_HZ * 5; t++) world.step();
+    // Human archer damaged the Sea Monster AND Sea Monster attacked the coastal human!
+    expect(monster.hp).toBeLessThan(monsterHpBefore);
+    expect(coastalArcher.hp).toBeLessThan(archerHpBefore);
+
+    // 3. Wildlife reactions + distinct species movement speeds!
+    expect(TEMPLATES.wild_gazelle.speed!).toBeGreaterThan(TEMPLATES.deer_herd.speed!);
+    expect(TEMPLATES.predator_wolf.speed!).toBeGreaterThan(TEMPLATES.predator_bear.speed!);
+    expect(TEMPLATES.sea_monster.speed!).toBeGreaterThan(TEMPLATES.sea_kraken.speed!);
+
+    // Clear an open dry patch near spawn for clean wildlife reaction test
+    const s1 = world.terrain.spawns[0];
+    const baseC = world.terrain.tileToWorldCenter(s1.tileX, s1.tileZ);
+    const soldier1 = world.spawnUnit('athen_archer', 1, baseC.x - 4, baseC.z + 4)!;
+    const gazelle = world.spawnResource('wild_gazelle', baseC.x + 2, baseC.z + 4)!;
+    const gazStartDist = Math.hypot(gazelle.x - soldier1.x, gazelle.z - soldier1.z);
+
+    // Attack docile gazelle -> must FLEE AWAY (distance increases!)
+    world.enqueueCommand({ type: 'attack', playerId: 1, entityIds: [soldier1.id], targetId: gazelle.id, mode: 'attack' });
+    for (let t = 0; t < SIM_HZ * 2; t++) world.step();
+    const gazEndDist = Math.hypot(gazelle.x - soldier1.x, gazelle.z - soldier1.z);
+    expect(gazEndDist).toBeGreaterThan(gazStartDist + 1.0);
+
+    // Attack fierce predator (wolf) -> must COUNTERATTACK and damage the attacker!
+    const soldier2 = world.spawnUnit('athen_archer', 1, baseC.x - 4, baseC.z - 5)!;
+    const wolf = world.spawnResource('predator_wolf', baseC.x + 1, baseC.z - 5)!;
+    const s2HpBefore = soldier2.hp;
+    world.enqueueCommand({ type: 'attack', playerId: 1, entityIds: [soldier2.id], targetId: wolf.id, mode: 'attack' });
+    for (let t = 0; t < SIM_HZ * 4; t++) world.step();
+    expect(soldier2.hp).toBeLessThan(s2HpBefore);
   });
 });

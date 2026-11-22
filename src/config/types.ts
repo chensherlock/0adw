@@ -50,6 +50,7 @@ export type ResolvedMapType =
   | 'open_plains'
   | 'alpine_passes'
   | 'island'
+  | 'archipelago'
   | 'mountain'
   | 'plateau'
   | 'hills'
@@ -64,6 +65,7 @@ export type UnitStance = 'aggressive' | 'defensive' | 'stand_ground' | 'passive'
 export type DamageType = 'hack' | 'pierce' | 'crush';
 export type BuildingOrderMode = 'capture' | 'attack';
 export type TerraformMode = 'dig' | 'raise' | 'level';
+export type GateMode = 'auto' | 'open' | 'locked';
 export type CityPhase = 1 | 2 | 3 | 4;
 export type UnitRank = 1 | 2 | 3; // 1 = Basic, 2 = Advanced, 3 = Elite
 
@@ -156,6 +158,7 @@ export interface EntityTemplate {
   isDock?: boolean;
   isWall?: boolean;
   isGate?: boolean;
+  isBeaconTower?: boolean;
   isBridge?: boolean;
   isTunnel?: boolean;
   isApartment?: boolean;
@@ -253,10 +256,14 @@ export type GameCommand =
   | { type: 'build'; playerId: number; entityIds: number[]; templateId: string; tileX: number; tileZ: number; facing?: number }
   | { type: 'build_tunnel'; playerId: number; entityIds: number[]; startTileX: number; startTileZ: number; endTileX: number; endTileZ: number }
   | { type: 'terraform'; playerId: number; entityIds: number[]; tileX: number; tileZ: number; destTileX?: number; destTileZ?: number; mode: TerraformMode; queued?: boolean }
+  | { type: 'cancel_terraform'; playerId: number; entityIds: number[] }
   | { type: 'demolish'; playerId: number; entityIds: number[] }
   | { type: 'use_tunnel'; playerId: number; entityIds: number[]; portalId: number }
   | { type: 'trade'; playerId: number; entityIds: number[]; targetMarketId: number; homeMarketId?: number }
-  | { type: 'upgrade_building'; playerId: number; buildingId: number }
+  | { type: 'upgrade_building'; playerId: number; buildingId: number; target?: 'apartment' | 'gate' | 'wall' | 'beacon' }
+  | { type: 'set_gate_mode'; playerId: number; buildingId: number; mode: GateMode }
+  | { type: 'ignite_beacon'; playerId: number; buildingId: number }
+  | { type: 'extinguish_beacon'; playerId: number; buildingId: number }
   | { type: 'repair'; playerId: number; entityIds: number[]; targetId: number }
   | { type: 'train'; playerId: number; buildingId: number; templateId: string }
   | { type: 'cancel_train'; playerId: number; buildingId: number; index: number }
@@ -265,6 +272,7 @@ export type GameCommand =
   | { type: 'set_stance'; playerId: number; entityIds: number[]; stance: UnitStance }
   | { type: 'garrison'; playerId: number; entityIds: number[]; buildingId: number }
   | { type: 'ungarrison'; playerId: number; buildingId: number }
+  | { type: 'ungarrison_one'; playerId: number; buildingId: number; unitId: number }
   | { type: 'set_diplomacy'; playerId: number; targetPlayerId: number; stance: DiplomaticStance }
   | { type: 'send_tribute'; playerId: number; targetPlayerId: number; resource: ResourceType; amount: number }
   | { type: 'activate_skill'; playerId: number }
@@ -277,6 +285,7 @@ export type SimEvent =
   | { type: 'gather_tick'; x: number; z: number; resourceType: ResourceType }
   | { type: 'building_complete'; playerId: number; x: number; z: number; templateId: string }
   | { type: 'building_upgraded'; playerId: number; x: number; z: number; templateId: string; floors: number }
+  | { type: 'beacon_lit'; playerId: number; x: number; z: number; level: number; autoDetected: boolean }
   | { type: 'trade_payout'; playerId: number; x: number; z: number; amount: number }
   | { type: 'building_demolished'; playerId: number; x: number; z: number; templateId: string; refund: ResourceBag }
   | { type: 'building_captured'; newOwner: number; oldOwner: number; x: number; z: number; templateId: string }
@@ -338,7 +347,7 @@ export type UnitOrder =
   | { type: 'idle' }
   | { type: 'move'; x: number; z: number; attackMove?: boolean }
   | { type: 'gather'; targetId: number; resourceType: ResourceType; returning: boolean; dropOffId?: number }
-  | { type: 'build'; targetId: number }
+  | { type: 'build'; targetId: number; inShaft?: boolean }
   | {
       type: 'terraform';
       tileX: number;
@@ -350,7 +359,7 @@ export type UnitOrder =
       progress: number;
       startEpoch: number;
     }
-  | { type: 'enter_tunnel'; portalId: number; transitRemaining?: number; exitPortalId?: number }
+  | { type: 'enter_tunnel'; portalId: number; transitRemaining?: number; transitTotal?: number; exitPortalId?: number }
   | { type: 'trade'; homeMarketId: number; targetMarketId: number; leg: 'toTarget' | 'toHome'; cargoGold: number }
   | { type: 'attack'; targetId: number; mode: BuildingOrderMode }
   | { type: 'garrison'; targetId: number };
@@ -388,6 +397,8 @@ export interface Entity {
   guardX: number;
   guardZ: number;
   tunnelCooldown?: number;
+  /** Seconds remaining before a newly spawned Civic Center worker auto-assigns to work (0 = ready) */
+  autoWorkDelay?: number;
 
   // Building fields
   tileX: number;
@@ -399,6 +410,14 @@ export interface Entity {
   upgradeTargetFloors?: number;
   upgradeProgress?: number; // 0..1 timed building upgrade
   upgradeTotalTime?: number; // seconds required to complete building upgrade
+  upgradeLinkedIds?: number[]; // Neighboring wall segments consumed during wall -> gate upgrade
+  gateMode?: GateMode; // 'auto' (own nation only) | 'open' (everyone) | 'locked' (nobody)
+  gateOpenAmount?: number; // 0 = shut, 1 = wide open
+  gateSpanTiles?: Array<{ tx: number; tz: number }>; // Exact tiles spanned by a 3-segment upgraded gate
+  beaconLevel?: 1 | 2 | 3; // Great Wall Beacon Tower upgrade tier
+  beaconLitTimer?: number; // Seconds remaining while beacon fire & smoke are burning
+  beaconSuppressTimer?: number; // Cooldown after manual extinguish before auto-reignite
+  beaconRallyCooldown?: number; // Cooldown between automatic army rally pulses
   queue: ProductionItem[];
   rallyX: number;
   rallyZ: number;

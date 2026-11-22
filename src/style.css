@@ -242,6 +242,67 @@ body {
   opacity: 0;
 }
 
+.toast-clickable {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  cursor: pointer;
+  pointer-events: auto;
+}
+
+.toast-clickable:hover {
+  filter: brightness(1.18);
+  border-color: var(--gold-bright);
+  transform: translateX(-2px);
+}
+
+.toast-jump-tag {
+  flex-shrink: 0;
+  font-size: 10.5px;
+  font-weight: 700;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: rgba(251, 191, 36, 0.22);
+  border: 1px solid rgba(251, 191, 36, 0.55);
+  color: #fde68a;
+}
+
+.garrison-roster {
+  margin-top: 4px;
+}
+
+.garrison-roster-label {
+  font-size: 10px;
+  color: #cbd5e1;
+  margin-bottom: 3px;
+}
+
+.garrison-roster-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.garrison-chip {
+  position: relative;
+  cursor: pointer;
+}
+
+.garrison-chip:hover {
+  border-color: #f87171 !important;
+  transform: translateY(-1px);
+}
+
+.garrison-wbadge {
+  position: absolute;
+  top: 1px;
+  right: 2px;
+  font-size: 9px;
+  line-height: 1;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.9);
+}
+
 /* ==================== BOTTOM DOCK (COMPACT) ==================== */
 #bottom-dock {
   position: fixed;

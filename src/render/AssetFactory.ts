@@ -16,6 +16,14 @@ export interface EntityVisualParts {
   fenceGroup?: THREE.Group;
   foundationPlinth?: THREE.Group;
   wallShearGroup?: THREE.Group;
+  wallCornerBastion?: THREE.Object3D;
+  gateDoorLeft?: THREE.Object3D;
+  gateDoorRight?: THREE.Object3D;
+  gateLockBar?: THREE.Object3D;
+  beaconTier2?: THREE.Object3D;
+  beaconTier3?: THREE.Object3D;
+  beaconFireGroup?: THREE.Group;
+  beaconSmokeGroup?: THREE.Group;
   floor2Roof?: THREE.Object3D;
   floor3Group?: THREE.Object3D;
   fishGroup?: THREE.Group;
@@ -35,6 +43,7 @@ const BESPOKE_MODELS = new Set([
   'dock',
   'stone_wall',
   'stone_gate',
+  'beacon_tower',
   'stone_bridge',
   'tunnel_portal',
   'apartment_house',
@@ -1291,74 +1300,225 @@ export function createEntityVisual(templateId: string, civId: CivId, teamColor: 
     }
 
     case 'stone_wall': {
-      // Rugged 0 A.D. Ashlar Stone City Wall wrapped in a shearable group so sloped walls stay vertical & connect seamlessly without stair-steps!
-      const wallStone = getTexMat('textures/stone_aegean_01.png', 'textures/stone_india_01_norm.png', 0xdcd5c5, 1.4, 1.2, 0.92, 0.04);
-      const wallTrim = getTexMat('textures/rome_struct_2.png', 'textures/rome_struct_2_norm.png', 0xc9c0af, 1.2, 1.0, 0.93, 0.05);
-      const pavingMat = getTexMat('textures/decal_stone_medit_01.png', 'textures/decal_stone_medit_01_norm.png', 0xcbc2b0, 1.5, 1.0, 0.94, 0.03);
+      // Authentic 0 A.D. Continuous Ashlar Stone Curtain Wall (normalized to 2.0m base span, dynamically stretched center-to-center in SceneManager for 0-gap continuous walls!)
+      const wallStone = getTexMat('textures/stone_aegean_01.png', 'textures/stone_india_01_norm.png', 0xdfd7c6, 1.35, 1.25, 0.91, 0.04);
+      const wallTrim = getTexMat('textures/rome_struct_2.png', 'textures/rome_struct_2_norm.png', 0xc9c0ae, 1.2, 1.0, 0.92, 0.05);
+      const pavingMat = getTexMat('textures/decal_stone_medit_01.png', 'textures/decal_stone_medit_01_norm.png', 0xd0c7b4, 1.4, 1.0, 0.94, 0.03);
+      const timberMat = getTexMat('textures/palisade_main.png', null, 0x6f4e32, 1.2, 1.0, 0.9, 0.03);
 
       const wallShearGroup = new THREE.Group();
-      // Deep mountain anchor skirt + extended 2.98m ashlar curtain wall body so straight, diagonal & sloped mountain walls fuse seamlessly!
-      addBox(wallShearGroup, 2.98, 4.8, 1.26, 0, -2.25, 0, darkStoneMat);
-      addBox(wallShearGroup, 2.98, 0.42, 1.22, 0, 0.21, 0, darkStoneMat);
-      addBox(wallShearGroup, 2.96, 2.02, 0.92, 0, 1.26, 0, wallStone);
-      // Moulded stone cornice & timber-and-flagstone archer walkway
-      addBox(wallShearGroup, 3.0, 0.18, 1.06, 0, 2.3, 0, wallTrim);
-      addBox(wallShearGroup, 2.94, 0.08, 0.68, 0, 2.41, -0.06, pavingMat);
-      // Crenellated stone merlons with beveled capstones along outer parapet
-      for (const mx of [-1.02, -0.34, 0.34, 1.02]) {
-        addBox(wallShearGroup, 0.44, 0.46, 0.24, mx, 2.6, 0.39, wallStone);
-        addBox(wallShearGroup, 0.48, 0.07, 0.28, mx, 2.86, 0.39, wallTrim);
+      // Deep continuous mountain skirt + smooth battered 0 A.D. stone curtain (length 2.16m -> overlaps seamlessly when scaled to neighbor distance!)
+      addBox(wallShearGroup, 2.16, 5.2, 1.46, 0, -2.45, 0, darkStoneMat);
+      addBox(wallShearGroup, 2.16, 0.48, 1.42, 0, 0.24, 0, darkStoneMat);
+      addBox(wallShearGroup, 2.16, 2.18, 1.18, 0, 1.35, 0, wallStone);
+      // Moulded 0 A.D. cornice trim + wide flagstone rampart road + timber parapet railing
+      addBox(wallShearGroup, 2.18, 0.18, 1.32, 0, 2.48, 0, wallTrim);
+      addBox(wallShearGroup, 2.16, 0.08, 0.96, 0, 2.59, -0.02, pavingMat);
+      // Inner rear guard wall (-Z)
+      addBox(wallShearGroup, 2.16, 0.36, 0.18, 0, 2.74, -0.54, wallStone);
+      addBox(wallShearGroup, 2.16, 0.08, 0.12, 0, 2.95, -0.54, timberMat);
+      // Continuous outer 0 A.D. stone parapet breastwork + evenly spaced beveled crenellations (merlons)
+      addBox(wallShearGroup, 2.16, 0.28, 0.24, 0, 2.7, 0.52, wallStone);
+      for (const mx of [-0.72, 0, 0.72]) {
+        addBox(wallShearGroup, 0.42, 0.46, 0.26, mx, 3.02, 0.52, wallStone);
+        addBox(wallShearGroup, 0.46, 0.07, 0.3, mx, 3.27, 0.52, wallTrim);
       }
-      // Heavy protruding ashlar buttress pilasters on both ends so diagonal & sloped joints fuse cleanly
-      addBox(wallShearGroup, 0.46, 2.48, 1.12, -1.36, 1.24, 0, wallTrim);
-      addBox(wallShearGroup, 0.46, 2.48, 1.12, 1.36, 1.24, 0, wallTrim);
-      // Team heraldic shield crest on outer face
-      const crest = addBox(wallShearGroup, 0.46, 0.56, 0.08, 0, 1.48, 0.49, teamMat);
-      teamMeshes.push(crest);
       bodyGroup.add(wallShearGroup);
       parts.wallShearGroup = wallShearGroup;
+
+      // Authentic 0 A.D. stone wall corner/end bastion turret (ONLY shown at wall bends & endpoints so straight walls stay 100% seamless!)
+      const cornerBastion = new THREE.Group();
+      addBox(cornerBastion, 1.62, 5.2, 1.62, 0, -2.45, 0, darkStoneMat);
+      addBox(cornerBastion, 1.56, 2.85, 1.56, 0, 1.42, 0, wallStone);
+      addBox(cornerBastion, 1.72, 0.22, 1.72, 0, 2.92, 0, wallTrim);
+      for (const bx of [-0.56, 0.56]) {
+        for (const bz of [-0.56, 0.56]) {
+          addBox(cornerBastion, 0.42, 0.46, 0.42, bx, 3.24, bz, wallStone);
+        }
+      }
+      cornerBastion.visible = false;
+      bodyGroup.add(cornerBastion);
+      parts.wallCornerBastion = cornerBastion;
       break;
     }
 
     case 'stone_gate': {
-      // Grand Fortified 0 A.D. Stone City Gate with official ashlar masonry, hele_gate doors & twin towers
-      const wallStone = getTexMat('textures/stone_aegean_01.png', 'textures/stone_india_01_norm.png', 0xdfd7c7, 1.4, 1.6, 0.91, 0.04);
+      // Grand 3-Segment Great Wall Stone City Gate with animated swinging double doors & lock bar!
+      const wallStone = getTexMat('textures/stone_aegean_01.png', 'textures/stone_india_01_norm.png', 0xdfd7c7, 1.6, 1.5, 0.91, 0.04);
       const wallTrim = getTexMat('textures/rome_struct_2.png', 'textures/rome_struct_2_norm.png', 0xc4bba9, 1.2, 1.2, 0.93, 0.05);
       const gateDoorMat = getTexMat('textures/hele_gate.png', null, 0xd8c3a5, 1.0, 1.0, 0.88, 0.06);
       const ironMat = getMat(0x374151, 0.45, 0.72);
+      const lockMat = getMat(0xdc2626, 0.35, 0.65);
 
-      // Twin flanking stone gatehouse towers (2.1m wide open central passageway along Z)
-      for (const tx of [-1.62, 1.62]) {
-        addBox(bodyGroup, 1.42, 0.42, 1.68, tx, 0.21, 0, darkStoneMat);
-        addBox(bodyGroup, 1.26, 3.15, 1.46, tx, 1.82, 0, wallStone);
-        addBox(bodyGroup, 1.4, 0.22, 1.6, tx, 3.45, 0, wallTrim);
-        for (const bx of [-0.45, 0.45]) {
-          for (const bz of [-0.55, 0.55]) {
-            addBox(bodyGroup, 0.36, 0.4, 0.36, tx + bx, 3.74, bz, wallStone);
+      // Extended flanking wall wings reaching ±4.4m so a 3-segment upgraded gate connects seamlessly into the continuous Great Wall!
+      for (const side of [-1, 1]) {
+        const wx = side * 3.1;
+        addBox(bodyGroup, 2.68, 4.6, 1.36, wx, -2.15, 0, darkStoneMat);
+        addBox(bodyGroup, 2.68, 2.34, 1.12, wx, 1.17, 0, wallStone);
+        addBox(bodyGroup, 2.7, 0.16, 1.24, wx, 2.34, 0, wallTrim);
+        addBox(bodyGroup, 2.68, 0.34, 0.18, wx, 2.58, -0.5, wallStone);
+        for (const ox of [-0.8, 0, 0.8]) {
+          addBox(bodyGroup, 0.46, 0.44, 0.24, wx + ox, 2.74, 0.48, wallStone);
+        }
+      }
+
+      // Twin tall fortified gatehouse towers framing the 2.4m-wide central archway
+      for (const tx of [-1.85, 1.85]) {
+        addBox(bodyGroup, 1.52, 4.4, 1.78, tx, -2.0, 0, darkStoneMat);
+        addBox(bodyGroup, 1.5, 0.42, 1.74, tx, 0.21, 0, darkStoneMat);
+        addBox(bodyGroup, 1.36, 3.45, 1.54, tx, 1.96, 0, wallStone);
+        addBox(bodyGroup, 1.52, 0.24, 1.68, tx, 3.74, 0, wallTrim);
+        for (const bx of [-0.48, 0.48]) {
+          for (const bz of [-0.58, 0.58]) {
+            addBox(bodyGroup, 0.38, 0.44, 0.38, tx + bx, 4.04, bz, wallStone);
           }
         }
-        const bFront = addBox(bodyGroup, 0.48, 1.22, 0.08, tx, 2.2, 0.77, teamMat);
-        const bBack = addBox(bodyGroup, 0.48, 1.22, 0.08, tx, 2.2, -0.77, teamMat);
+        const bFront = addBox(bodyGroup, 0.5, 1.32, 0.08, tx, 2.38, 0.81, teamMat);
+        const bBack = addBox(bodyGroup, 0.5, 1.32, 0.08, tx, 2.38, -0.81, teamMat);
         teamMeshes.push(bFront, bBack);
       }
 
       // Elevated arched bridge & gatehouse parapet spanning above archway
-      addBox(bodyGroup, 2.28, 0.88, 1.34, 0, 2.7, 0, wallStone);
-      addBox(bodyGroup, 2.4, 0.18, 1.48, 0, 3.18, 0, wallTrim);
-      for (const mx of [-0.7, 0, 0.7]) {
-        addBox(bodyGroup, 0.42, 0.38, 0.22, mx, 3.44, 0.56, wallStone);
-        addBox(bodyGroup, 0.42, 0.38, 0.22, mx, 3.44, -0.56, wallStone);
+      addBox(bodyGroup, 2.6, 1.05, 1.42, 0, 2.95, 0, wallStone);
+      addBox(bodyGroup, 2.74, 0.18, 1.56, 0, 3.52, 0, wallTrim);
+      for (const mx of [-0.82, 0, 0.82]) {
+        addBox(bodyGroup, 0.44, 0.42, 0.24, mx, 3.78, 0.6, wallStone);
+        addBox(bodyGroup, 0.44, 0.42, 0.24, mx, 3.78, -0.6, wallStone);
       }
 
-      // Raised iron portcullis teeth + open 0 A.D. textured gate doors
-      addBox(bodyGroup, 2.02, 0.1, 0.12, 0, 2.22, 0.46, ironMat);
-      for (let gx = -0.82; gx <= 0.84; gx += 0.28) {
-        addBox(bodyGroup, 0.06, 0.42, 0.08, gx, 2.06, 0.46, ironMat);
+      // Iron portcullis teeth above archway
+      addBox(bodyGroup, 2.3, 0.1, 0.12, 0, 2.42, 0.46, ironMat);
+      for (let gx = -0.96; gx <= 0.98; gx += 0.32) {
+        addBox(bodyGroup, 0.06, 0.42, 0.08, gx, 2.26, 0.46, ironMat);
       }
-      addBox(bodyGroup, 0.16, 2.1, 0.94, -0.96, 1.05, 0, gateDoorMat);
-      addBox(bodyGroup, 0.16, 2.1, 0.94, 0.96, 1.05, 0, gateDoorMat);
-      const keystone = addBox(bodyGroup, 0.68, 0.54, 0.12, 0, 2.7, 0.71, teamMat);
+
+      // Hinged animated double gate doors (closed = rotated 0 across opening; open = swung 90deg inward!)
+      const leftHinge = new THREE.Group();
+      leftHinge.position.set(-1.14, 0, 0.12);
+      const leftLeaf = addBox(leftHinge, 1.12, 2.32, 0.18, 0.56, 1.16, 0, gateDoorMat);
+      addBox(leftHinge, 1.12, 0.12, 0.22, 0.56, 0.65, 0, ironMat);
+      addBox(leftHinge, 1.12, 0.12, 0.22, 0.56, 1.72, 0, ironMat);
+      bodyGroup.add(leftHinge);
+      parts.gateDoorLeft = leftHinge;
+      void leftLeaf;
+
+      const rightHinge = new THREE.Group();
+      rightHinge.position.set(1.14, 0, 0.12);
+      addBox(rightHinge, 1.12, 2.32, 0.18, -0.56, 1.16, 0, gateDoorMat);
+      addBox(rightHinge, 1.12, 0.12, 0.22, -0.56, 0.65, 0, ironMat);
+      addBox(rightHinge, 1.12, 0.12, 0.22, -0.56, 1.72, 0, ironMat);
+      bodyGroup.add(rightHinge);
+      parts.gateDoorRight = rightHinge;
+
+      // Heavy iron & crimson lock bar shown across doors when gate is LOCKED!
+      const lockBar = new THREE.Group();
+      addBox(lockBar, 2.35, 0.24, 0.32, 0, 1.18, 0.28, lockMat);
+      addBox(lockBar, 0.42, 0.48, 0.36, 0, 1.18, 0.32, ironMat);
+      lockBar.visible = false;
+      bodyGroup.add(lockBar);
+      parts.gateLockBar = lockBar;
+
+      const keystone = addBox(bodyGroup, 0.72, 0.58, 0.12, 0, 2.95, 0.75, teamMat);
       teamMeshes.push(keystone);
+      break;
+    }
+
+    case 'beacon_tower': {
+      // Great Wall Beacon Tower (長城烽火台) with 3 visual tiers, blazing fire brazier & towering wolf-smoke column!
+      const wallStone = getTexMat('textures/stone_aegean_01.png', 'textures/stone_india_01_norm.png', 0xd6cfc0, 1.5, 1.6, 0.91, 0.04);
+      const wallTrim = getTexMat('textures/rome_struct_2.png', 'textures/rome_struct_2_norm.png', 0xbab19f, 1.2, 1.2, 0.92, 0.05);
+      const roofTileMat = getTexMat('textures/roof_tiles_medit.png', null, 0x8b3a2b, 1.6, 1.6, 0.78, 0.06);
+      const ironMat = getMat(0x27272a, 0.45, 0.72);
+      const timberMat = getMat(0x5c3a21, 0.88, 0.04);
+
+      // Deep mountain anchor base + Level 1 square battered Great Wall brick watchtower
+      addBox(bodyGroup, 3.4, 4.6, 3.4, 0, -2.1, 0, darkStoneMat);
+      addBox(bodyGroup, 3.3, 0.55, 3.3, 0, 0.28, 0, darkStoneMat);
+      addBox(bodyGroup, 2.95, 3.7, 2.95, 0, 2.35, 0, wallStone);
+      // Connecting shoulder stubs so it fuses seamlessly with adjacent Great Wall segments
+      addBox(bodyGroup, 3.3, 2.28, 1.12, 0, 1.18, 0, wallStone);
+      // Top cornice & battlements (Lv.1 platform at y=4.3)
+      addBox(bodyGroup, 3.25, 0.24, 3.25, 0, 4.28, 0, wallTrim);
+      for (const sx of [-1.25, -0.42, 0.42, 1.25]) {
+        addBox(bodyGroup, 0.48, 0.48, 0.26, sx, 4.62, 1.46, wallStone);
+        addBox(bodyGroup, 0.48, 0.48, 0.26, sx, 4.62, -1.46, wallStone);
+      }
+      for (const sz of [-0.9, 0, 0.9]) {
+        addBox(bodyGroup, 0.26, 0.48, 0.48, 1.46, 4.62, sz, wallStone);
+        addBox(bodyGroup, 0.26, 0.48, 0.48, -1.46, 4.62, sz, wallStone);
+      }
+      // Stone signal brazier base + wood fuel pile on Lv.1 deck
+      addCyl(bodyGroup, 0.68, 0.85, 0.58, 8, 0, 4.65, 0, ironMat);
+      addBox(bodyGroup, 0.82, 0.24, 0.22, 0, 4.98, 0, timberMat);
+      addBox(bodyGroup, 0.22, 0.24, 0.82, 0, 4.98, 0, timberMat);
+      // Heraldic team banner on front face
+      const bBanner1 = addBox(bodyGroup, 0.65, 1.65, 0.09, 0, 2.55, 1.51, teamMat);
+      const bBanner2 = addBox(bodyGroup, 0.65, 1.65, 0.09, 0, 2.55, -1.51, teamMat);
+      teamMeshes.push(bBanner1, bBanner2);
+
+      // Level 2 fortified upper tier (shown when beaconLevel >= 2)
+      const tier2 = new THREE.Group();
+      addBox(tier2, 2.55, 1.65, 2.55, 0, 5.15, 0, wallStone);
+      addBox(tier2, 2.85, 0.24, 2.85, 0, 6.02, 0, wallTrim);
+      for (const cx of [-1.05, 0, 1.05]) {
+        addBox(tier2, 0.44, 0.46, 0.24, cx, 6.32, 1.28, wallStone);
+        addBox(tier2, 0.44, 0.46, 0.24, cx, 6.32, -1.28, wallStone);
+      }
+      addCyl(tier2, 0.72, 0.9, 0.55, 8, 0, 6.35, 0, ironMat);
+      tier2.visible = false;
+      bodyGroup.add(tier2);
+      parts.beaconTier2 = tier2;
+
+      // Level 3 grand imperial beacon watch-pavilion crown (shown when beaconLevel >= 3)
+      const tier3 = new THREE.Group();
+      addBox(tier3, 2.15, 1.35, 2.15, 0, 6.72, 0, wallStone);
+      addBox(tier3, 2.95, 0.26, 2.95, 0, 7.45, 0, roofTileMat);
+      addBox(tier3, 2.45, 0.24, 2.45, 0, 7.68, 0, roofTileMat);
+      addCyl(tier3, 0.82, 0.98, 0.6, 8, 0, 7.98, 0, ironMat);
+      // Four corner bronze signal braziers + tall command flag
+      for (const [cx, cz] of [[-1.15, -1.15], [1.15, -1.15], [-1.15, 1.15], [1.15, 1.15]] as const) {
+        addCyl(tier3, 0.2, 0.26, 0.38, 6, cx, 7.72, cz, ironMat);
+      }
+      addCyl(tier3, 0.05, 0.06, 2.6, 6, 1.1, 8.8, 1.1, timberMat);
+      const topFlag = addBox(tier3, 1.15, 0.62, 0.08, 1.65, 9.65, 1.1, teamMat);
+      teamMeshes.push(topFlag);
+      tier3.visible = false;
+      bodyGroup.add(tier3);
+      parts.beaconTier3 = tier3;
+
+      // Blazing Beacon Signal Fire (visible whenever beaconLitTimer > 0!)
+      const fireGroup = new THREE.Group();
+      fireGroup.position.set(0, 5.1, 0);
+      const flameOuterMat = new THREE.MeshBasicMaterial({ color: 0xff5a00, transparent: true, opacity: 0.92 });
+      const flameMidMat = new THREE.MeshBasicMaterial({ color: 0xffa600, transparent: true, opacity: 0.95 });
+      const flameCoreMat = new THREE.MeshBasicMaterial({ color: 0xfff3b0, transparent: true, opacity: 0.98 });
+      const cone1 = new THREE.Mesh(new THREE.ConeGeometry(0.75, 2.1, 7), flameOuterMat);
+      cone1.position.y = 0.95;
+      const cone2 = new THREE.Mesh(new THREE.ConeGeometry(0.52, 1.75, 7), flameMidMat);
+      cone2.position.set(0.14, 0.85, -0.08);
+      const cone3 = new THREE.Mesh(new THREE.ConeGeometry(0.32, 1.25, 6), flameCoreMat);
+      cone3.position.set(-0.08, 0.68, 0.1);
+      fireGroup.add(cone1, cone2, cone3);
+      fireGroup.visible = false;
+      bodyGroup.add(fireGroup);
+      parts.beaconFireGroup = fireGroup;
+
+      // Towering Wolf-Smoke Column (狼煙) visible from across the map when lit!
+      const smokeGroup = new THREE.Group();
+      smokeGroup.position.set(0, 5.4, 0);
+      for (let si = 0; si < 7; si++) {
+        const sMat = new THREE.MeshBasicMaterial({
+          color: si < 2 ? 0x52525b : 0x27272a,
+          transparent: true,
+          opacity: 0.68 - si * 0.075,
+        });
+        const puff = new THREE.Mesh(new THREE.DodecahedronGeometry(0.62 + si * 0.24, 0), sMat);
+        puff.position.set(0, si * 1.95, 0);
+        smokeGroup.add(puff);
+      }
+      smokeGroup.visible = false;
+      bodyGroup.add(smokeGroup);
+      parts.beaconSmokeGroup = smokeGroup;
       break;
     }
 

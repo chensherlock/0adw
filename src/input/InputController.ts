@@ -300,7 +300,8 @@ export class InputController {
             center.z,
             y,
             check.ok,
-            facingY
+            facingY,
+            check.ok ? null : translateBuildReason(check.reason)
           );
         }
       } else if (this.terraformMode) {
@@ -686,7 +687,16 @@ export class InputController {
         }
         const check = this.world.canPlaceBuilding(this.humanPlayerId, dragTplId, s.tx, s.tz);
         const bridgeSpanOk = isBridge && !this.world.terrain.isTileDryLand(s.tx, s.tz);
-        return { x: c.x, y, z: c.z, facing: s.facing, valid: check.ok || bridgeSpanOk, slopeYX };
+        const validSeg = check.ok || bridgeSpanOk;
+        return {
+          x: c.x,
+          y,
+          z: c.z,
+          facing: s.facing,
+          valid: validSeg,
+          slopeYX,
+          reason: validSeg ? undefined : translateBuildReason(check.reason),
+        };
       }),
       isBridge
     );
@@ -763,12 +773,20 @@ export class InputController {
     const sy = this.world.terrain.getHeightAt(sc.x, sc.z);
     const ey = this.world.terrain.getHeightAt(ec.x, ec.z);
     const len = Math.hypot(endTx - s.tx, endTz - s.tz);
-    const valid =
-      len >= 4 &&
-      this.world.canPlaceBuilding(this.humanPlayerId, 'tunnel_portal', s.tx, s.tz).ok &&
-      this.world.canPlaceBuilding(this.humanPlayerId, 'tunnel_portal', endTx, endTz).ok;
+    const checkStart = this.world.canPlaceBuilding(this.humanPlayerId, 'tunnel_portal', s.tx, s.tz);
+    const checkEnd = this.world.canPlaceBuilding(this.humanPlayerId, 'tunnel_portal', endTx, endTz);
+    const valid = len >= 4 && checkStart.ok && checkEnd.ok;
     this.sceneManager.updateGhostPreview(null, this.world.config.playerCiv, 0, 0, 0, false);
     this.sceneManager.updateTunnelDragPreview({ x: sc.x, y: sy, z: sc.z }, { x: ec.x, y: ey, z: ec.z }, valid);
+    const reason =
+      len < 4
+        ? t('toastTunnelTooShort')
+        : !checkStart.ok
+          ? translateBuildReason(checkStart.reason)
+          : !checkEnd.ok
+            ? translateBuildReason(checkEnd.reason)
+            : null;
+    this.sceneManager.updatePlacementHint(ec.x, ey, ec.z, reason);
   }
 
   private commitTunnelDrag(keepPlacing: boolean): void {
@@ -777,6 +795,7 @@ export class InputController {
     this.tunnelDragStartTile = null;
     this.tunnelDragEndTile = null;
     this.sceneManager.updateTunnelDragPreview(null, null, false);
+    this.sceneManager.updatePlacementHint(0, 0, 0, null);
     if (!start || !end) return;
 
     const len = Math.round(Math.hypot(end.tx - start.tx, end.tz - start.tz));
@@ -1087,7 +1106,7 @@ export class InputController {
           this.sceneManager.spawnClickPing(picked.x, picked.z, py, 0xfacc15);
           return;
         }
-        if (e.altKey && pTpl.garrisonCapacity) {
+        if ((e.altKey || pTpl.isBeaconTower) && pTpl.garrisonCapacity) {
           this.world.enqueueCommand({
             type: 'garrison',
             playerId: this.humanPlayerId,
@@ -1132,25 +1151,71 @@ export class InputController {
         }
       }
 
-      // Live wild predator or sea monster -> Attack with combat units/warships (or gather once slain!)
-      if (picked.owner === 0 && pTpl.isPredator && picked.hp > 0) {
-        const combatIds = units.filter((u) => Boolean(TEMPLATES[u.templateId].attack)).map((u) => u.id);
-        if (combatIds.length > 0) {
-          this.world.enqueueCommand({
-            type: 'attack',
-            playerId: this.humanPlayerId,
-            entityIds: combatIds,
-            targetId: picked.id,
-            mode: 'attack',
-          });
-          this.audio.playOrder();
-          this.sceneManager.spawnClickPing(picked.x, picked.z, py, 0xef4444);
-          return;
+      // Live wild predator, sea/lake monster, OR docile wildlife clicked by non-gathering combat soldiers -> Attack!
+      if (picked.owner === 0 && picked.hp > 0 && !pTpl.isFlying) {
+        const isMonsterOrPredator = Boolean(pTpl.isPredator || pTpl.isSeaMonster);
+        const isDocileAnimal =
+          Boolean(pTpl.isPassiveFauna) ||
+          picked.templateId === 'deer_herd' ||
+          picked.templateId === 'wild_boar' ||
+          picked.templateId === 'wild_gazelle' ||
+          picked.templateId === 'wild_elephant';
+        if (isMonsterOrPredator) {
+          const combatIds = units.filter((u) => Boolean(TEMPLATES[u.templateId].attack)).map((u) => u.id);
+          if (combatIds.length > 0) {
+            this.world.enqueueCommand({
+              type: 'attack',
+              playerId: this.humanPlayerId,
+              entityIds: combatIds,
+              targetId: picked.id,
+              mode: 'attack',
+            });
+            this.audio.playOrder();
+            this.sceneManager.spawnClickPing(picked.x, picked.z, py, 0xef4444);
+            return;
+          }
+        } else if (isDocileAnimal) {
+          const pureCombatIds = units
+            .filter((u) => Boolean(TEMPLATES[u.templateId].attack) && !TEMPLATES[u.templateId].gather)
+            .map((u) => u.id);
+          if (pureCombatIds.length === units.length && pureCombatIds.length > 0) {
+            this.world.enqueueCommand({
+              type: 'attack',
+              playerId: this.humanPlayerId,
+              entityIds: pureCombatIds,
+              targetId: picked.id,
+              mode: 'attack',
+            });
+            this.audio.playOrder();
+            this.sceneManager.spawnClickPing(picked.x, picked.z, py, 0xef4444);
+            return;
+          }
         }
       }
 
-      // Natural resource -> Gather
+      // Natural resource -> Gather (including shoreline rod/cast-net fishing for land workers!)
       if (pTpl.resourceType && picked.resourceRemaining > 0) {
+        if (pTpl.isAquatic) {
+          const hasNavalGatherer = units.some((u) => Boolean(TEMPLATES[u.templateId].isNaval && TEMPLATES[u.templateId].gather));
+          const hasLandGatherer = units.some((u) => Boolean(!TEMPLATES[u.templateId].isNaval && TEMPLATES[u.templateId].gather));
+          if (hasLandGatherer && !hasNavalGatherer) {
+            if (!this.world.canLandWorkerFish(picked)) {
+              this.audio.playError();
+              this.callbacks.onStatusToast(t('toastFishTooFarFromShore'), 'warn');
+              return;
+            }
+            this.world.enqueueCommand({
+              type: 'gather',
+              playerId: this.humanPlayerId,
+              entityIds: unitIds,
+              targetId: picked.id,
+            });
+            this.audio.playOrder();
+            this.sceneManager.spawnClickPing(picked.x, picked.z, WATER_LEVEL + 0.1, 0x38bdf8);
+            this.callbacks.onStatusToast(t('toastShoreFishStart'), 'good');
+            return;
+          }
+        }
         this.world.enqueueCommand({
           type: 'gather',
           playerId: this.humanPlayerId,
