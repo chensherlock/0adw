@@ -288,6 +288,15 @@ export class AudioManager {
           }
         }
         break;
+      case 'skill_activated':
+        if (ev.playerId === humanPlayerId && this.canPlay('skill', 400)) {
+          if (!this.playClip(AUDIO_ASSETS.phaseUp, 0.44, 0)) {
+            this.tone(440, 0.2, 'triangle', 0.08, undefined, 0);
+            this.tone(554, 0.22, 'triangle', 0.085, undefined, 0.1);
+            this.tone(659, 0.38, 'triangle', 0.09, undefined, 0.2);
+          }
+        }
+        break;
       case 'under_attack':
         if (ev.playerId === humanPlayerId && this.canPlay('horn', 5000)) {
           if (!this.playClip(AUDIO_ASSETS.underAttack, 0.42, 0)) {

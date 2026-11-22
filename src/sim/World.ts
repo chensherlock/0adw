@@ -1,30 +1,47 @@
-import { CIVS } from '../config/civs';
+import { ALL_CIV_IDS, CIVS } from '../config/civs';
 import { resolveUnitTemplateId, TECHS, TEMPLATES } from '../config/entities';
 import {
   ArmorProfile,
   BuildingOrderMode,
+  CivChoice,
   CivId,
   Difficulty,
+  DiplomaticStance,
   Entity,
   GameCommand,
+  GameMode,
+  MapSize,
   MapType,
+  PlayerSlotConfig,
   PlayerState,
   Projectile,
   ResourceBag,
   ResourceType,
   SimEvent,
+  TerraformMode,
   UnitOrder,
   UnitRank,
 } from '../config/types';
 import { FogGrid } from './map/FogGrid';
 import { NavGrid } from './map/NavGrid';
 import { SpatialHash } from './map/SpatialHash';
-import { TerrainMap } from './map/TerrainMap';
+import { SOIL_UNITS_PER_TILE, TerrainMap, WATER_LEVEL } from './map/TerrainMap';
 import { TerritoryGrid } from './map/TerritoryGrid';
 import { SeededRNG } from './rng';
 
 export const SIM_HZ = 20;
 export const SIM_DT = 1 / SIM_HZ;
+
+export const PLAYER_COLOR_PALETTE: ReadonlyArray<{ hex: number; css: string }> = [
+  { hex: 0x2563eb, css: '#3b82f6' }, // 1: Royal Blue
+  { hex: 0xdc2626, css: '#ef4444' }, // 2: Crimson Red
+  { hex: 0x16a34a, css: '#22c55e' }, // 3: Emerald Green
+  { hex: 0xd97706, css: '#f59e0b' }, // 4: Imperial Gold
+  { hex: 0x9333ea, css: '#a855f7' }, // 5: Tyrian Purple
+  { hex: 0x0891b2, css: '#06b6d4' }, // 6: Aegean Cyan
+  { hex: 0xea580c, css: '#f97316' }, // 7: Terracotta Orange
+  { hex: 0xdb2777, css: '#ec4899' }, // 8: Phoenician Rose
+];
 
 export interface MatchConfig {
   seed: number;
@@ -32,7 +49,33 @@ export interface MatchConfig {
   aiCiv: CivId;
   difficulty: Difficulty;
   mapType?: MapType;
+  mapSize?: MapSize;
+  gameMode?: GameMode;
   aiVsAi?: boolean;
+  numPlayers?: number;
+  playerSlots?: PlayerSlotConfig[];
+}
+
+export interface SerializedWorldState {
+  version: number;
+  savedAt: number;
+  config: MatchConfig;
+  tickCount: number;
+  time: number;
+  nextEntityId: number;
+  nextProjectileId: number;
+  winnerId: number | null;
+  rngState: number;
+  terrain: ReturnType<TerrainMap['exportMutableState']>;
+  fog: Record<number, number[]>;
+  players: Array<Omit<PlayerState, 'researchedTechs' | 'researchingTechs'> & {
+    researchedTechs: string[];
+    researchingTechs: string[];
+  }>;
+  entities: Entity[];
+  projectiles: Projectile[];
+  savedTerraformJobs: Array<[number, { tileX: number; tileZ: number; destTileX: number; destTileZ: number; mode: TerraformMode }]>;
+  camera?: { x: number; z: number; distance: number; yaw: number };
 }
 
 export class World {
@@ -54,6 +97,7 @@ export class World {
   private nextEntityId = 1;
   private nextProjectileId = 1;
   private territoryDirty = true;
+  private lastTerrainVersion = 0;
 
   tickCount = 0;
   time = 0;
@@ -62,81 +106,182 @@ export class World {
   private idleTicks: Map<number, number> = new Map();
   private stuckTicks: Map<number, number> = new Map();
   private wildlifeState: Map<number, { hunterId: number; alertTimer: number; attackCooldown: number }> = new Map();
+  /** Remembers unfinished dig/fill/level jobs so any other worker can later resume them seamlessly! */
+  private savedTerraformJobs: Map<
+    number,
+    { tileX: number; tileZ: number; destTileX: number; destTileZ: number; mode: TerraformMode }
+  > = new Map();
   private queryBuf: Entity[] = [];
 
   constructor(config: MatchConfig) {
     this.config = config;
     this.rng = new SeededRNG(config.seed);
-    this.terrain = new TerrainMap(config.seed, config.mapType ?? 'random');
+    const numPlayers = Math.max(
+      2,
+      Math.min(8, config.playerSlots?.length ?? config.numPlayers ?? 2)
+    );
+    this.terrain = new TerrainMap(
+      config.seed,
+      config.mapType ?? 'random',
+      config.mapSize ?? 'medium',
+      numPlayers
+    );
     this.navGrid = new NavGrid(this.terrain);
     this.spatialHash = new SpatialHash(this.terrain.worldSize, 6);
     this.territory = new TerritoryGrid(this.terrain);
-    this.fog = new FogGrid(this.terrain, [1, 2]);
+    const playerIds = Array.from({ length: numPlayers }, (_, i) => i + 1);
+    this.fog = new FogGrid(this.terrain, playerIds);
 
     this.initPlayers();
     this.populateMap();
     this.recomputePopulations();
-    this.territory.recompute(this.entities.values());
-    this.territoryDirty = false;
+    this.recomputeTerritory();
     this.rebuildSpatialHash();
-    this.fog.update(this.entities.values());
+    this.fog.update(this.entities.values(), this.getSharedAllyMap());
+  }
+
+  isPeaceful(): boolean {
+    return this.config.gameMode === 'peaceful';
+  }
+
+  getDiplomacy(ownerA: number, ownerB: number): DiplomaticStance {
+    if (ownerA === ownerB) return 'ally';
+    const pA = this.players.get(ownerA);
+    if (!pA) return 'enemy';
+    return pA.diplomacy[ownerB] ?? (this.isPeaceful() ? 'neutral' : 'enemy');
+  }
+
+  /** Authentic 0 A.D. mutual alliance: both nations must declare Ally toward each other */
+  areAllies(ownerA: number, ownerB: number): boolean {
+    if (ownerA === ownerB) return true;
+    if (ownerA === 0 || ownerB === 0) return false;
+    return this.getDiplomacy(ownerA, ownerB) === 'ally' && this.getDiplomacy(ownerB, ownerA) === 'ally';
+  }
+
+  isAlliedOrOwn(ownerA: number, ownerB: number): boolean {
+    return ownerA === ownerB || this.areAllies(ownerA, ownerB);
+  }
+
+  areHostile(ownerA: number, ownerB: number): boolean {
+    if (ownerA === ownerB) return false;
+    if (ownerA === 0 || ownerB === 0) return true; // Wild predators/wildlife can always be fought or hunted
+    if (this.isPeaceful()) return false; // Peaceful mode: nations cannot attack each other!
+    const sAB = this.getDiplomacy(ownerA, ownerB);
+    const sBA = this.getDiplomacy(ownerB, ownerA);
+    return sAB === 'enemy' || sBA === 'enemy';
+  }
+
+  getSharedAllyMap(): Map<number, number[]> {
+    const map = new Map<number, number[]>();
+    const ids = Array.from(this.players.keys());
+    for (const a of ids) {
+      const allies: number[] = [];
+      for (const b of ids) {
+        if (a !== b && this.areAllies(a, b)) allies.push(b);
+      }
+      if (allies.length > 0) map.set(a, allies);
+    }
+    return map;
+  }
+
+  private resolveCivChoice(choice: CivChoice): CivId {
+    if (choice === 'random') {
+      return this.rng.pick(ALL_CIV_IDS);
+    }
+    return CIVS[choice] ? choice : 'athenians';
   }
 
   private initPlayers(): void {
-    const p1Civ = CIVS[this.config.playerCiv];
-    const p2Civ = CIVS[this.config.aiCiv];
-    const p1Color = p1Civ.id === p2Civ.id ? 0x2b6cb0 : p1Civ.primaryColor;
-    const p1Css = p1Civ.id === p2Civ.id ? '#3b82f6' : p1Civ.cssColor;
-    const p2Color = p1Civ.id === p2Civ.id ? 0xc53030 : p2Civ.primaryColor;
-    const p2Css = p1Civ.id === p2Civ.id ? '#ef4444' : p2Civ.cssColor;
+    const numPlayers = this.terrain.spawns.length;
+    const slots: PlayerSlotConfig[] =
+      this.config.playerSlots && this.config.playerSlots.length >= 2
+        ? this.config.playerSlots.slice(0, numPlayers)
+        : Array.from({ length: numPlayers }, (_, idx) => {
+            const pid = idx + 1;
+            if (pid === 1) {
+              return { playerId: 1, civ: this.config.playerCiv, team: 0, isAI: Boolean(this.config.aiVsAi) };
+            }
+            if (pid === 2) {
+              return { playerId: 2, civ: this.config.aiCiv, team: 0, isAI: true };
+            }
+            return {
+              playerId: pid,
+              civ: ALL_CIV_IDS[(idx * 3 + this.config.seed) % ALL_CIV_IDS.length],
+              team: 0,
+              isAI: true,
+            };
+          });
 
-    this.players.set(1, {
-      id: 1,
-      name: this.config.aiVsAi ? `AI 1 (${p1Civ.name})` : `You (${p1Civ.name})`,
-      civ: this.config.playerCiv,
-      isAI: Boolean(this.config.aiVsAi),
-      color: p1Color,
-      cssColor: p1Css,
-      resources: { food: 350, wood: 350, stone: 200, metal: 150 },
-      popUsed: 0,
-      popCap: 0,
-      phase: 1,
-      researchedTechs: new Set(),
-      researchingTechs: new Set(),
-      defeated: false,
-      stats: {
-        unitsTrained: 0,
-        unitsLost: 0,
-        enemiesKilled: 0,
-        buildingsConstructed: 0,
-        buildingsCaptured: 0,
-        resourcesGathered: 0,
-      },
+    // Resolve each player's civ & color
+    const resolvedSlots = slots.map((slot, idx) => {
+      const pid = idx + 1;
+      const civId = this.resolveCivChoice(slot.civ);
+      const civCfg = CIVS[civId];
+      let color = PLAYER_COLOR_PALETTE[idx % PLAYER_COLOR_PALETTE.length].hex;
+      let cssColor = PLAYER_COLOR_PALETTE[idx % PLAYER_COLOR_PALETTE.length].css;
+      if (numPlayers === 2) {
+        // Preserve authentic civ primary colors for classic 1v1
+        if (pid === 1) {
+          color = civCfg.primaryColor;
+          cssColor = civCfg.cssColor;
+        } else {
+          const p1CivId = this.resolveCivChoice(slots[0].civ);
+          const sameCiv = p1CivId === civId;
+          color = sameCiv ? (civId === 'romans' ? 0x2b6cb0 : 0xc53030) : civCfg.primaryColor;
+          cssColor = sameCiv ? (civId === 'romans' ? '#3b82f6' : '#ef4444') : civCfg.cssColor;
+        }
+      }
+      return { pid, civId, civCfg, team: slot.team ?? 0, isAI: slot.isAI, color, cssColor };
     });
 
-    this.players.set(2, {
-      id: 2,
-      name: `Petra AI (${p2Civ.name})`,
-      civ: this.config.aiCiv,
-      isAI: true,
-      color: p2Color,
-      cssColor: p2Css,
-      resources: { food: 350, wood: 350, stone: 200, metal: 150 },
-      popUsed: 0,
-      popCap: 0,
-      phase: 1,
-      researchedTechs: new Set(),
-      researchingTechs: new Set(),
-      defeated: false,
-      stats: {
-        unitsTrained: 0,
-        unitsLost: 0,
-        enemiesKilled: 0,
-        buildingsConstructed: 0,
-        buildingsCaptured: 0,
-        resourcesGathered: 0,
-      },
-    });
+    for (const s of resolvedSlots) {
+      const diplomacy: Record<number, DiplomaticStance> = {};
+      for (const other of resolvedSlots) {
+        if (other.pid === s.pid) continue;
+        if (s.team > 0 && s.team === other.team) {
+          diplomacy[other.pid] = 'ally';
+        } else if (this.isPeaceful()) {
+          diplomacy[other.pid] = 'neutral';
+        } else {
+          diplomacy[other.pid] = 'enemy';
+        }
+      }
+
+      const label =
+        s.pid === 1
+          ? s.isAI
+            ? `AI 1 (${s.civCfg.name})`
+            : `You (${s.civCfg.name})`
+          : `AI ${s.pid} (${s.civCfg.name})`;
+
+      this.players.set(s.pid, {
+        id: s.pid,
+        name: label,
+        civ: s.civId,
+        isAI: s.isAI,
+        team: s.team,
+        diplomacy,
+        color: s.color,
+        cssColor: s.cssColor,
+        resources: { food: 350, wood: 350, stone: 200, metal: 150 },
+        popUsed: 0,
+        popCap: 0,
+        phase: 1,
+        researchedTechs: new Set(),
+        researchingTechs: new Set(),
+        skillCooldown: 0,
+        skillActiveTimer: 0,
+        defeated: false,
+        stats: {
+          unitsTrained: 0,
+          unitsLost: 0,
+          enemiesKilled: 0,
+          buildingsConstructed: 0,
+          buildingsCaptured: 0,
+          resourcesGathered: 0,
+        },
+      });
+    }
   }
 
   private populateMap(): void {
@@ -144,8 +289,8 @@ export class World {
     for (const spawn of this.terrain.spawns) {
       const player = this.players.get(spawn.playerId)!;
       const civ = CIVS[player.civ];
-      const toCenterX = 64 - spawn.tileX;
-      const toCenterZ = 64 - spawn.tileZ;
+      const toCenterX = this.terrain.width * 0.5 - spawn.tileX;
+      const toCenterZ = this.terrain.height * 0.5 - spawn.tileZ;
       const toCenterLen = Math.max(1, Math.hypot(toCenterX, toCenterZ));
       const fwdX = toCenterX / toCenterLen;
       const fwdZ = toCenterZ / toCenterLen;
@@ -159,13 +304,14 @@ export class World {
         cc.rallyZ = cc.z + fwdZ * 11;
       }
 
-      // Starting units: 4 Female Citizens, 4 Melee Citizen-Soldiers, 1 Cavalry Scout
+      // Starting units: 2 Female Citizens, 2 Male Citizens, 4 Melee Citizen-Soldiers, 1 Cavalry Scout
       const ccPos = this.terrain.tileToWorldCenter(spawn.tileX, spawn.tileZ);
       for (let i = 0; i < 4; i++) {
         const angle = baseAngle - 0.75 + (i / 3) * 1.5;
         const ux = ccPos.x + Math.cos(angle) * 7.4;
         const uz = ccPos.z + Math.sin(angle) * 7.4;
-        this.spawnUnit(civ.units.woman, spawn.playerId, ux, uz);
+        const citizenId = i < 2 ? civ.units.woman : 'male_citizen';
+        this.spawnUnit(citizenId, spawn.playerId, ux, uz);
       }
       for (let i = 0; i < 4; i++) {
         const angle = baseAngle - 1.1 + (i / 3) * 2.2;
@@ -435,20 +581,304 @@ export class World {
         this.trySpawnResource('tree_palm', this.terrain.width - (shore.x + ox), this.terrain.height - (shore.z + oz));
       }
     }
+
+    // 7. Marine Fish Shoals in coastal bays, lakes & deep water (for Fishing Boats!)
+    let fishSpawned = 0;
+    for (let tries = 0; tries < 450 && fishSpawned < 16; tries++) {
+      const tx = this.rng.int(5, this.terrain.width - 6);
+      const tz = this.rng.int(5, this.terrain.height - 6);
+      if (!this.terrain.isTileWaterNavigable(tx, tz)) continue;
+      // Prefer waters with surrounding navigable space (not cramped 1-tile puddles)
+      if (
+        !this.terrain.isTileWaterNavigable(tx + 1, tz) ||
+        !this.terrain.isTileWaterNavigable(tx - 1, tz) ||
+        !this.terrain.isTileWaterNavigable(tx, tz + 1) ||
+        !this.terrain.isTileWaterNavigable(tx, tz - 1)
+      ) {
+        continue;
+      }
+      const pos = this.terrain.tileToWorldCenter(tx, tz);
+      let tooClose = false;
+      for (const e of this.entities.values()) {
+        if (e.templateId === 'fish_shoal' && Math.hypot(e.x - pos.x, e.z - pos.z) < 12) {
+          tooClose = true;
+          break;
+        }
+      }
+      if (tooClose) continue;
+      const fish = this.createBaseEntity('fish_shoal', 0, pos.x, pos.z);
+      fish.resourceRemaining = TEMPLATES.fish_shoal.resourceAmount ?? 700;
+      this.entities.set(fish.id, fish);
+      fishSpawned++;
+    }
+
+    // 8. Harvestable Ancient Ruin Stone Pillars (EVERY stone pillar on the map can be quarried for Stone!)
+    // 8a. Ceremonial stone pillars flanking each nation's starting base (replacing non-clickable decorative pillars!)
+    for (const sp of this.terrain.spawns) {
+      const toCenterAng = Math.atan2(this.terrain.height * 0.5 - sp.tileZ, this.terrain.width * 0.5 - sp.tileX);
+      for (const side of [-1, 1]) {
+        const ang = toCenterAng + side * 0.52;
+        const px = sp.tileX + Math.cos(ang) * 4.5;
+        const pz = sp.tileZ + Math.sin(ang) * 4.5;
+        this.trySpawnResource('ancient_ruin_pillar', px, pz);
+      }
+    }
+    // 8b. Ancient river-ford boundary pillars
+    for (const f of this.terrain.fords) {
+      for (let k = 0; k < 2; k++) {
+        const ang = k * Math.PI + 0.5;
+        const px = f.tileX + Math.cos(ang) * (f.radius + 1.8);
+        const pz = f.tileZ + Math.sin(ang) * (f.radius + 1.8);
+        this.trySpawnResource('ancient_ruin_pillar', px, pz);
+      }
+    }
+    // 8c. Field temple ruin pillar clusters
+    let ruinSites = 0;
+    for (let tries = 0; tries < 180 && ruinSites < 7; tries++) {
+      const rx = this.rng.range(12, this.terrain.width - 12);
+      const rz = this.rng.range(12, this.terrain.height - 12);
+      if (!isClearOfSpawns(rx, rz, 12)) continue;
+      const rtx = Math.round(rx);
+      const rtz = Math.round(rz);
+      if (!this.terrain.isTileDryLand(rtx, rtz) || this.terrain.getTileSlope(rtx, rtz) > 0.72) continue;
+
+      const cols = this.rng.int(2, 3);
+      let placedAny = false;
+      for (let c = 0; c < cols; c++) {
+        const ang = (c / cols) * Math.PI * 2 + 0.4;
+        const px = rx + Math.cos(ang) * 1.45;
+        const pz = rz + Math.sin(ang) * 1.45;
+        const pillar = this.trySpawnResource('ancient_ruin_pillar', px, pz);
+        if (pillar) placedAny = true;
+      }
+      if (placedAny) ruinSites++;
+    }
+
+    // 9. Biome-Distinct Bamboo Groves, Passive Wildlife & Predators (each terrain spawns authentic native fauna!)
+    const mt = this.terrain.resolvedMapType;
+    const bambooClusters = mt === 'rainforest' || mt === 'swamp' ? 12 : mt === 'island' || mt === 'forest' ? 7 : 3;
+    for (let b = 0; b < bambooClusters; b++) {
+      const bp = pickDryPair(16, 0.4, 4.6, 50);
+      if (!bp) continue;
+      for (let k = 0; k < 6; k++) {
+        const ang = this.rng.range(0, Math.PI * 2);
+        const d = this.rng.range(0.6, 3.0);
+        this.trySpawnResource('tree_bamboo', bp.x + Math.cos(ang) * d, bp.z + Math.sin(ang) * d);
+        this.trySpawnResource(
+          'tree_bamboo',
+          this.terrain.width - (bp.x + Math.cos(ang) * d),
+          this.terrain.height - (bp.z + Math.sin(ang) * d)
+        );
+      }
+    }
+
+    // Distinct Biome Wildlife Profiles across all 15 terrains!
+    type BiomeWildlifeProfile = {
+      passive: string[];
+      predators: string[];
+      passiveGroups: number;
+      predatorGroups: number;
+      primaryBird: 'wild_eagle' | 'wild_seagull' | 'mixed';
+    };
+    const biomeWildlife: Record<string, BiomeWildlifeProfile> = {
+      inland_oasis: { passive: ['wild_gazelle'], predators: ['predator_lion'], passiveGroups: 5, predatorGroups: 4, primaryBird: 'wild_eagle' },
+      mesa: { passive: ['wild_gazelle'], predators: ['predator_lion'], passiveGroups: 4, predatorGroups: 4, primaryBird: 'wild_eagle' },
+      alpine_passes: { passive: ['deer_herd'], predators: ['predator_bear', 'predator_wolf'], passiveGroups: 4, predatorGroups: 4, primaryBird: 'wild_eagle' },
+      mountain: { passive: ['deer_herd'], predators: ['predator_bear', 'predator_wolf'], passiveGroups: 4, predatorGroups: 5, primaryBird: 'wild_eagle' },
+      hills: { passive: ['deer_herd', 'wild_gazelle'], predators: ['predator_wolf'], passiveGroups: 4, predatorGroups: 4, primaryBird: 'wild_eagle' },
+      plateau: { passive: ['wild_gazelle', 'deer_herd'], predators: ['predator_lion', 'predator_wolf'], passiveGroups: 4, predatorGroups: 4, primaryBird: 'wild_eagle' },
+      rainforest: { passive: ['wild_elephant', 'wild_boar'], predators: ['predator_lion', 'predator_bear'], passiveGroups: 5, predatorGroups: 4, primaryBird: 'wild_eagle' },
+      swamp: { passive: ['wild_boar', 'wild_elephant'], predators: ['predator_bear'], passiveGroups: 5, predatorGroups: 4, primaryBird: 'mixed' },
+      forest: { passive: ['deer_herd', 'wild_boar'], predators: ['predator_wolf', 'predator_bear'], passiveGroups: 5, predatorGroups: 5, primaryBird: 'wild_eagle' },
+      island: { passive: ['wild_boar', 'wild_elephant'], predators: ['predator_lion'], passiveGroups: 4, predatorGroups: 3, primaryBird: 'wild_seagull' },
+      twin_peninsulas: { passive: ['deer_herd', 'wild_boar'], predators: ['predator_wolf'], passiveGroups: 4, predatorGroups: 3, primaryBird: 'wild_seagull' },
+      aegean_valley: { passive: ['deer_herd', 'wild_boar'], predators: ['predator_wolf', 'predator_lion'], passiveGroups: 4, predatorGroups: 4, primaryBird: 'mixed' },
+      volcano: { passive: ['wild_gazelle'], predators: ['predator_lion', 'predator_wolf'], passiveGroups: 3, predatorGroups: 4, primaryBird: 'wild_eagle' },
+      open_plains: { passive: ['wild_gazelle', 'deer_herd'], predators: ['predator_lion', 'predator_wolf'], passiveGroups: 5, predatorGroups: 4, primaryBird: 'wild_eagle' },
+    };
+    const bw = biomeWildlife[mt] ?? biomeWildlife.open_plains;
+
+    for (let g = 0; g < bw.passiveGroups; g++) {
+      const animalId = bw.passive[g % bw.passive.length];
+      const gp = pickDryPair(18, 0.7, 6.2, 45);
+      if (!gp) continue;
+      const count = animalId === 'wild_elephant' ? 1 : 2;
+      for (let k = 0; k < count; k++) {
+        const ox = k === 0 ? -1.0 : 1.0;
+        this.trySpawnResourceNear(animalId, gp.x + ox, gp.z, 4);
+        this.trySpawnResourceNear(animalId, this.terrain.width - (gp.x + ox), this.terrain.height - gp.z, 4);
+      }
+    }
+
+    // Aggressive Biome Predators (kept >= 22 tiles from all starting Civic Centers so bases start safe!)
+    for (let pr = 0; pr < bw.predatorGroups; pr++) {
+      const pp = pickDryPair(22, 0.8, 7.5, 55);
+      if (!pp) continue;
+      const predId = bw.predators[pr % bw.predators.length];
+      this.trySpawnResourceNear(predId, pp.x, pp.z, 4);
+      this.trySpawnResourceNear(predId, this.terrain.width - pp.x, this.terrain.height - pp.z, 4);
+    }
+
+    // 10. Soaring Wild Birds (biome-matched Eagles vs coastal Seagulls)
+    const birdCount = bw.primaryBird === 'wild_seagull' || bw.primaryBird === 'mixed' ? 14 : 12;
+    for (let bi = 0; bi < birdCount; bi++) {
+      const bx = this.rng.range(24, this.terrain.worldSize - 24);
+      const bz = this.rng.range(24, this.terrain.worldSize - 24);
+      const bTile = this.terrain.worldToTile(bx, bz);
+      const overWater = this.terrain.isTileWaterNavigable(bTile.tx, bTile.tz);
+      const birdTpl =
+        bw.primaryBird === 'wild_seagull'
+          ? 'wild_seagull'
+          : bw.primaryBird === 'wild_eagle'
+            ? overWater && bi % 3 === 0
+              ? 'wild_seagull'
+              : 'wild_eagle'
+            : overWater || bi % 2 === 0
+              ? 'wild_seagull'
+              : 'wild_eagle';
+      const bird = this.createBaseEntity(birdTpl, 0, bx, bz);
+      bird.guardX = bx;
+      bird.guardZ = bz;
+      bird.animTime = this.rng.range(0, Math.PI * 2);
+      bird.facing = this.rng.range(0, Math.PI * 2);
+      bird.animState = 'walk';
+      this.entities.set(bird.id, bird);
+    }
+
+    // 11. Deep-Sea Monsters (Winged Sea Dragons & Giant Octopuses patrolling open navigable ocean!)
+    const maxOceanMonsters = mt === 'island' || mt === 'twin_peninsulas' ? 6 : mt === 'aegean_valley' || mt === 'swamp' ? 4 : 2;
+    let monstersSpawned = 0;
+    const isNearAnySpawnWorld = (wx: number, wz: number, minD: number): boolean => {
+      for (const s of this.terrain.spawns) {
+        const sw = this.terrain.tileToWorldCenter(s.tileX, s.tileZ);
+        if (Math.hypot(wx - sw.x, wz - sw.z) < minD) return true;
+      }
+      return false;
+    };
+    const isNearInlandLake = (tx: number, tz: number): boolean => {
+      for (const lake of this.terrain.lakes) {
+        const dx = (tx - lake.x) / Math.max(1, lake.rx + 2);
+        const dz = (tz - lake.z) / Math.max(1, lake.rz + 2);
+        if (dx * dx + dz * dz <= 1.15) return true;
+      }
+      return false;
+    };
+    for (let tries = 0; tries < 560 && monstersSpawned < maxOceanMonsters; tries++) {
+      const tx = this.rng.int(7, this.terrain.width - 8);
+      const tz = this.rng.int(7, this.terrain.height - 8);
+      if (!this.terrain.isTileWaterNavigable(tx, tz)) continue;
+      if (isNearInlandLake(tx, tz)) continue;
+      if (
+        !this.terrain.isTileWaterNavigable(tx + 2, tz) ||
+        !this.terrain.isTileWaterNavigable(tx - 2, tz) ||
+        !this.terrain.isTileWaterNavigable(tx, tz + 2) ||
+        !this.terrain.isTileWaterNavigable(tx, tz - 2)
+      ) {
+        continue;
+      }
+      const pos = this.terrain.tileToWorldCenter(tx, tz);
+      if (isNearAnySpawnWorld(pos.x, pos.z, 26)) continue;
+      let tooClose = false;
+      for (const e of this.entities.values()) {
+        if (TEMPLATES[e.templateId]?.isSeaMonster && Math.hypot(e.x - pos.x, e.z - pos.z) < 26) {
+          tooClose = true;
+          break;
+        }
+      }
+      if (tooClose) continue;
+      const oceanTplId = monstersSpawned % 2 === 0 ? 'sea_kraken' : 'sea_monster';
+      const monster = this.createBaseEntity(oceanTplId, 0, pos.x, pos.z);
+      monster.guardX = pos.x;
+      monster.guardZ = pos.z;
+      monster.facing = this.rng.range(0, Math.PI * 2);
+      monster.resourceRemaining = TEMPLATES[oceanTplId].resourceAmount ?? 680;
+      this.entities.set(monster.id, monster);
+      monstersSpawned++;
+    }
+
+    // 11b. Inland Lake Monsters (Loch Ness Plesiosaurs lurking inside scenic lakes!)
+    let lakesPopulated = 0;
+    const maxLakeMonsters = 3;
+    for (const lake of this.terrain.lakes) {
+      if (lakesPopulated >= maxLakeMonsters) break;
+      const cx = Math.round(lake.x);
+      const cz = Math.round(lake.z);
+      let foundTile: { tx: number; tz: number } | null = null;
+      for (let r = 0; r <= Math.ceil(Math.max(lake.rx, lake.rz) * 0.65) && !foundTile; r++) {
+        for (let oz = -r; oz <= r && !foundTile; oz++) {
+          for (let ox = -r; ox <= r; ox++) {
+            const tx = cx + ox;
+            const tz = cz + oz;
+            if (
+              tx >= 6 &&
+              tz >= 6 &&
+              tx < this.terrain.width - 6 &&
+              tz < this.terrain.height - 6 &&
+              this.terrain.isTileWaterNavigable(tx, tz) &&
+              this.terrain.isTileWaterNavigable(tx + 1, tz) &&
+              this.terrain.isTileWaterNavigable(tx - 1, tz) &&
+              this.terrain.isTileWaterNavigable(tx, tz + 1) &&
+              this.terrain.isTileWaterNavigable(tx, tz - 1)
+            ) {
+              foundTile = { tx, tz };
+              break;
+            }
+          }
+        }
+      }
+      if (!foundTile) continue;
+      const pos = this.terrain.tileToWorldCenter(foundTile.tx, foundTile.tz);
+      if (isNearAnySpawnWorld(pos.x, pos.z, 18)) continue;
+      let tooClose = false;
+      for (const e of this.entities.values()) {
+        if (TEMPLATES[e.templateId]?.isSeaMonster && Math.hypot(e.x - pos.x, e.z - pos.z) < 24) {
+          tooClose = true;
+          break;
+        }
+      }
+      if (tooClose) continue;
+      const nessie = this.createBaseEntity('lake_nessie', 0, pos.x, pos.z);
+      nessie.guardX = pos.x;
+      nessie.guardZ = pos.z;
+      nessie.facing = this.rng.range(0, Math.PI * 2);
+      nessie.resourceRemaining = TEMPLATES.lake_nessie.resourceAmount ?? 580;
+      this.entities.set(nessie.id, nessie);
+      lakesPopulated++;
+    }
   }
 
   private pickBiomeTree(elevation: number): string {
     const r = this.rng.next();
+    const mt = this.terrain.resolvedMapType;
+    if (mt === 'rainforest') {
+      return r < 0.42 ? 'tree_bamboo' : r < 0.75 ? 'tree_palm' : 'tree_oak';
+    }
+    if (mt === 'swamp') {
+      return r < 0.48 ? 'tree_bamboo' : r < 0.76 ? 'tree_oak' : 'tree_cypress';
+    }
+    if (mt === 'forest') {
+      return r < 0.44 ? 'tree_oak' : r < 0.74 ? 'tree_pine' : r < 0.88 ? 'tree_bamboo' : 'tree_cypress';
+    }
+    if (mt === 'island') {
+      return r < 0.52 ? 'tree_palm' : r < 0.78 ? 'tree_bamboo' : 'tree_olive';
+    }
+    if (mt === 'alpine_passes' || mt === 'mountain') {
+      return r < 0.78 ? 'tree_pine' : 'tree_cypress';
+    }
+    if (mt === 'inland_oasis' || mt === 'mesa') {
+      return r < 0.68 ? 'tree_palm' : 'tree_olive';
+    }
     if (elevation < 1.55) {
-      return r < 0.62 ? 'tree_palm' : 'tree_cypress';
+      return r < 0.5 ? 'tree_palm' : r < 0.75 ? 'tree_bamboo' : 'tree_cypress';
     }
     if (elevation > 4.2) {
       return r < 0.68 ? 'tree_pine' : 'tree_cypress';
     }
-    if (r < 0.36) return 'tree_cypress';
-    if (r < 0.68) return 'tree_olive';
-    if (r < 0.9) return 'tree_oak';
-    return 'tree_pine';
+    if (r < 0.32) return 'tree_cypress';
+    if (r < 0.6) return 'tree_olive';
+    if (r < 0.84) return 'tree_oak';
+    if (r < 0.94) return 'tree_pine';
+    return 'tree_bamboo';
   }
 
   /**
@@ -544,7 +974,7 @@ export class World {
       hp: maxHp,
       maxHp,
       alive: true,
-      stance: tpl.isWoman ? 'passive' : 'aggressive',
+      stance: tpl.isWoman || tpl.isTrader ? 'passive' : 'aggressive',
       order: { type: 'idle' },
       queuedOrders: [],
       path: [],
@@ -564,6 +994,7 @@ export class World {
       tileZ: Math.floor(z / this.terrain.tileSize),
       isFoundation: false,
       buildProgress: 1,
+      floors: tpl.isApartment ? 2 : 1,
       queue: [],
       rallyX: x + 6,
       rallyZ: z + 6,
@@ -580,14 +1011,43 @@ export class World {
   computeMaxHp(templateId: string, owner: number): number {
     const tpl = TEMPLATES[templateId];
     let hp = tpl.maxHp;
-    if (tpl.kind === 'building' && owner > 0) {
-      const player = this.players.get(owner);
-      if (player) {
-        const civ = CIVS[player.civ];
-        let mult = 1 + civ.buildingHpBonusPct;
-        if (player.researchedTechs.has('tech_architecture')) mult += 0.25;
-        hp = Math.round(hp * mult);
-      }
+    const player = owner > 0 ? this.players.get(owner) : undefined;
+    if (player && tpl.kind === 'building') {
+      const civ = CIVS[player.civ];
+      let mult = 1 + civ.buildingHpBonusPct;
+      if (player.researchedTechs.has('tech_architecture')) mult += 0.25;
+      if (player.researchedTechs.has('phase_city')) mult += 0.15;
+      if (player.researchedTechs.has('phase_empire')) mult += 0.2;
+      if (player.researchedTechs.has('tech_rome_corvus')) mult += 0.3;
+      if (player.researchedTechs.has('tech_ptol_nile')) mult += 0.2;
+      if (player.researchedTechs.has('tech_kush_pyramids')) mult += 0.3;
+      if (player.researchedTechs.has('tech_mace_siege')) mult += 0.2;
+      if (player.researchedTechs.has('tech_sele_colony')) mult += 0.25;
+      hp = Math.round(hp * mult);
+    } else if (player && tpl.kind === 'unit' && tpl.isNaval) {
+      let mult = player.civ === 'carthaginians' || player.civ === 'athenians' ? 1.15 : 1.0;
+      if (player.researchedTechs.has('tech_naval_hull')) mult += 0.3;
+      if (player.researchedTechs.has('tech_carth_colonization')) mult += 0.3;
+      hp = Math.round(hp * mult);
+    } else if (player && tpl.kind === 'unit' && !tpl.isWoman && !tpl.isSiege) {
+      let mult = 1.0;
+      if (player.researchedTechs.has('tech_athen_phalanx')) mult += 0.25;
+      if (player.researchedTechs.has('tech_rome_marian')) mult += 0.2;
+      if (player.researchedTechs.has('tech_spart_agoge')) mult += 0.25;
+      if (player.researchedTechs.has('tech_ptol_pharos')) mult += 0.25;
+      if (player.researchedTechs.has('tech_han_crossbow')) mult += 0.2;
+      if (player.researchedTechs.has('tech_brit_warfare')) mult += 0.2;
+      if (player.researchedTechs.has('tech_gaul_smithing')) mult += 0.2;
+      if (player.researchedTechs.has('tech_kush_monumental')) mult += 0.25;
+      if (player.researchedTechs.has('tech_mace_sarissa')) mult += 0.2;
+      if (player.researchedTechs.has('tech_maur_elephants')) mult += 0.3;
+      if (player.researchedTechs.has('phase_empire')) mult += 0.15;
+      hp = Math.round(hp * mult);
+    } else if (player && tpl.kind === 'unit' && tpl.isSiege) {
+      let mult = 1.0;
+      if (player.researchedTechs.has('tech_kush_monumental')) mult += 0.25;
+      if (player.researchedTechs.has('tech_maur_elephants')) mult += 0.3;
+      hp = Math.round(hp * mult);
     }
     return hp;
   }
@@ -597,17 +1057,18 @@ export class World {
     let cap = tpl.capturePointsMax ?? 0;
     if (cap > 0 && owner > 0) {
       const player = this.players.get(owner);
-      if (player && player.researchedTechs.has('tech_architecture')) {
-        cap = Math.round(cap * 1.25);
-      }
+      let mult = 1.0;
+      if (player?.researchedTechs.has('tech_architecture')) mult += 0.25;
+      if (player?.researchedTechs.has('tech_rome_corvus')) mult += 0.3;
+      if (mult > 1.0) cap = Math.round(cap * mult);
     }
     return cap;
   }
 
   getUnitMaxHp(entity: Entity): number {
-    const tpl = TEMPLATES[entity.templateId];
+    const baseHp = this.computeMaxHp(entity.templateId, entity.owner);
     const rankMult = entity.rank === 1 ? 1.0 : entity.rank === 2 ? 1.15 : 1.35;
-    return Math.round(tpl.maxHp * rankMult);
+    return Math.round(baseHp * rankMult);
   }
 
   getEntityArmor(entity: Entity): ArmorProfile {
@@ -628,6 +1089,36 @@ export class World {
       if (player.researchedTechs.has('tech_heavy_armor')) {
         armor.hack += 3;
         armor.pierce += 3;
+      }
+      if (player.researchedTechs.has('tech_athen_phalanx')) {
+        armor.hack += 2;
+      }
+      if (
+        player.researchedTechs.has('tech_spart_shieldwall') ||
+        player.researchedTechs.has('tech_kush_monumental') ||
+        player.researchedTechs.has('tech_maur_elephants')
+      ) {
+        armor.hack += 3;
+        armor.pierce += 3;
+      }
+      if (player.researchedTechs.has('tech_gaul_smithing')) {
+        armor.hack += 3;
+        armor.pierce += 2;
+      }
+      if (player.researchedTechs.has('tech_iber_metallurgy') || player.researchedTechs.has('tech_sele_cataphract')) {
+        armor.hack += 2;
+        armor.pierce += 2;
+      }
+      if (player.skillActiveTimer > 0) {
+        if (player.civ === 'athenians' || player.civ === 'kushites' || player.civ === 'mauryas') {
+          armor.hack += 4;
+          armor.pierce += 4;
+        } else if (player.civ === 'romans') {
+          armor.pierce += 5;
+        } else if (player.civ === 'seleucids') {
+          armor.hack += 3;
+          armor.pierce += 3;
+        }
       }
       if (entity.rank >= 2) {
         armor.hack += entity.rank - 1;
@@ -653,7 +1144,8 @@ export class World {
     owner: number,
     tileX: number,
     tileZ: number,
-    asFoundation: boolean
+    asFoundation: boolean,
+    facing?: number
   ): Entity | null {
     const tpl = TEMPLATES[templateId];
     if (!tpl || tpl.kind !== 'building') return null;
@@ -665,15 +1157,29 @@ export class World {
     entity.isFoundation = asFoundation;
     entity.buildProgress = asFoundation ? 0.08 : 1.0;
     entity.hp = asFoundation ? Math.max(25, Math.round(entity.maxHp * 0.1)) : entity.maxHp;
-    entity.rallyX = center.x;
-    entity.rallyZ = center.z + tpl.radius + 3.5;
+    if (tpl.isDock) {
+      const coastal = this.terrain.getCoastalDockInfo(tileX, tileZ);
+      entity.facing = coastal.waterAngle;
+      entity.rallyX = Math.max(4, Math.min(this.terrain.worldSize - 4, center.x + Math.sin(coastal.waterAngle) * 7.5));
+      entity.rallyZ = Math.max(4, Math.min(this.terrain.worldSize - 4, center.z + Math.cos(coastal.waterAngle) * 7.5));
+    } else {
+      if (typeof facing === 'number') {
+        entity.facing = facing;
+      }
+      entity.rallyX = center.x;
+      entity.rallyZ = center.z + tpl.radius + 3.5;
+    }
 
-    if (!tpl.isFarmField) {
+    if (!tpl.isFarmField && !tpl.isDock && !tpl.isGate && !tpl.isBridge) {
       this.navGrid.setFootprint(tileX, tileZ, size, true);
+    }
+    if (tpl.isBridge && !asFoundation) {
+      this.terrain.setBridgeTile(tileX, tileZ, true);
     }
 
     this.entities.set(entity.id, entity);
     if (!asFoundation) {
+      if (tpl.isTunnel) this.linkTunnelPortal(entity);
       this.territoryDirty = true;
       this.recomputePopulations();
     }
@@ -684,25 +1190,102 @@ export class World {
     const player = this.players.get(playerId);
     const tpl = TEMPLATES[templateId];
     if (!player || !tpl || tpl.kind !== 'building') return { ok: false, reason: 'Invalid building' };
+    if (tpl.civ && tpl.civ !== player.civ) {
+      return { ok: false, reason: 'Unique to another civilization' };
+    }
+    if (CIVS[player.civ].blockedBuildings?.includes(templateId)) {
+      return { ok: false, reason: 'This civilization cannot construct this structure' };
+    }
     if ((tpl.phaseRequired ?? 1) > player.phase) {
-      return { ok: false, reason: `Requires Phase ${tpl.phaseRequired} (Town Phase)` };
+      return { ok: false, reason: `Requires Phase ${tpl.phaseRequired}` };
+    }
+    if (tpl.requiresTech && !player.researchedTechs.has(tpl.requiresTech)) {
+      return { ok: false, reason: `Requires ${TECHS[tpl.requiresTech]?.name ?? tpl.requiresTech}` };
     }
     if (tpl.cost && !this.canAfford(player.resources, tpl.cost)) {
       return { ok: false, reason: 'Not enough resources' };
     }
 
     const size = tpl.footprintTiles ?? 2;
-    if (!this.navGrid.canPlaceFootprint(tileX, tileZ, size)) {
+    const center = this.terrain.tileToWorldCenter(tileX, tileZ);
+    if (tpl.isDock) {
+      const coastal = this.terrain.getCoastalDockInfo(tileX, tileZ);
+      if (!coastal.ok) {
+        return { ok: false, reason: 'Dock must be placed on a coastal shoreline' };
+      }
+    } else if (tpl.isBridge) {
+      if (tileX < 4 || tileZ < 4 || tileX >= this.terrain.width - 4 || tileZ >= this.terrain.height - 4) {
+        return { ok: false, reason: 'Bridge must be placed inside map bounds' };
+      }
+      const centerH = this.terrain.getHeightAt(center.x, center.z);
+      const isWaterTile = !this.terrain.isTileDryLand(tileX, tileZ) || centerH <= WATER_LEVEL + 0.35;
+      if (!isWaterTile) {
+        return { ok: false, reason: 'Bridge must be placed on water adjacent to land or another bridge' };
+      }
+      // Must connect to nearby dry land or another bridge segment (completed or foundation)
+      let anchored = false;
+      for (let dz = -2; dz <= 2 && !anchored; dz++) {
+        for (let dx = -2; dx <= 2; dx++) {
+          if (dx === 0 && dz === 0) continue;
+          const nx = tileX + dx;
+          const nz = tileZ + dz;
+          if (Math.hypot(dx, dz) <= 2.35 && (this.terrain.isTileDryLand(nx, nz) || this.terrain.isTileBridge(nx, nz))) {
+            anchored = true;
+            break;
+          }
+        }
+      }
+      if (!anchored) {
+        for (const e of this.entities.values()) {
+          if (e.alive && TEMPLATES[e.templateId].isBridge && Math.hypot(e.tileX - tileX, e.tileZ - tileZ) <= 2.35) {
+            anchored = true;
+            break;
+          }
+        }
+      }
+      if (!anchored) {
+        return { ok: false, reason: 'Bridge must be placed on water adjacent to land or another bridge' };
+      }
+    } else if (tpl.isTunnel) {
+      // Tunnel portals can be carved into dry flat ground OR steep mountain foothills!
+      if (tileX < 4 || tileZ < 4 || tileX >= this.terrain.width - 4 || tileZ >= this.terrain.height - 4) {
+        return { ok: false, reason: 'Blocked terrain or too steep' };
+      }
+      const h = this.terrain.getHeightAt(center.x, center.z);
+      if (h <= WATER_LEVEL + 0.25 || this.terrain.getTileSlope(tileX, tileZ) > 2.3) {
+        return { ok: false, reason: 'Blocked terrain or too steep' };
+      }
+      // Ensure at least one walkable entrance tile right next to the tunnel mouth
+      const hasApproach = this.navGrid.findNearestWalkable(tileX, tileZ, 3, tileX, tileZ) !== null;
+      if (!hasApproach) {
+        return { ok: false, reason: 'Blocked terrain or too steep' };
+      }
+    } else if (tpl.isWall || tpl.isGate) {
+      // Stone Walls & Gates can be built along ANY direction AND up steep mountain ridges!
+      if (tileX < 3 || tileZ < 3 || tileX >= this.terrain.width - 3 || tileZ >= this.terrain.height - 3) {
+        return { ok: false, reason: 'Blocked terrain or too steep' };
+      }
+      const h = this.terrain.getHeightAt(center.x, center.z);
+      if (h <= WATER_LEVEL + 0.08 || this.terrain.getTileSlope(tileX, tileZ) > 2.6) {
+        return { ok: false, reason: 'Blocked terrain or too steep' };
+      }
+    } else if (!this.navGrid.canPlaceFootprint(tileX, tileZ, size)) {
       return { ok: false, reason: 'Blocked terrain or too steep' };
     }
 
-    // Check overlap with existing resources or fields
-    const center = this.terrain.tileToWorldCenter(tileX, tileZ);
+    // Check overlap with existing resources or buildings (walls/gates/bridges snap tightly side-by-side)
     for (const e of this.entities.values()) {
       if (!e.alive) continue;
       const eTpl = TEMPLATES[e.templateId];
       if (eTpl.kind === 'unit') continue;
-      const minD = tpl.radius + eTpl.radius - 0.15;
+      if ((tpl.isWall && eTpl.isWall) || (tpl.isBridge && eTpl.isBridge)) {
+        const minTileSpan = ((tpl.footprintTiles ?? 1) + (eTpl.footprintTiles ?? 1)) * 0.5;
+        if (Math.abs(e.tileX - tileX) < minTileSpan && Math.abs(e.tileZ - tileZ) < minTileSpan) {
+          return { ok: false, reason: 'Too close to another wall or bridge' };
+        }
+        continue;
+      }
+      const minD = tpl.radius + eTpl.radius - (tpl.isWall || eTpl.isWall || tpl.isBridge || eTpl.isBridge ? 0.45 : 0.15);
       const dx = e.x - center.x;
       const dz = e.z - center.z;
       if (dx * dx + dz * dz < minD * minD) {
@@ -710,12 +1293,16 @@ export class World {
       }
     }
 
-    // Territory check
+    // Territory check (refresh territory immediately if live terraforming/leveling changed passable ground!)
+    if (this.lastTerrainVersion !== this.terrain.version) {
+      this.lastTerrainVersion = this.terrain.version;
+      this.recomputeTerritory();
+    }
     const terrOwner = this.territory.getOwnerAtTile(tileX, tileZ);
     if (tpl.mustBeInTerritory && terrOwner !== playerId) {
       return { ok: false, reason: 'Must be placed inside your territory' };
     }
-    if (!tpl.mustBeInTerritory && terrOwner !== 0 && terrOwner !== playerId) {
+    if (!tpl.mustBeInTerritory && terrOwner !== 0 && !this.isAlliedOrOwn(playerId, terrOwner)) {
       return { ok: false, reason: 'Cannot build inside enemy territory' };
     }
 
@@ -772,6 +1359,12 @@ export class World {
     this.tickCount++;
     this.time = this.tickCount * SIM_DT;
 
+    // Tick down civilization active skill timers & cooldowns
+    for (const p of this.players.values()) {
+      if (p.skillCooldown > 0) p.skillCooldown = Math.max(0, p.skillCooldown - SIM_DT);
+      if (p.skillActiveTimer > 0) p.skillActiveTimer = Math.max(0, p.skillActiveTimer - SIM_DT);
+    }
+
     // Snapshot previous positions for smooth render interpolation
     for (const e of this.entities.values()) {
       e.prevX = e.x;
@@ -788,15 +1381,18 @@ export class World {
     this.updateProjectiles();
     this.cleanupDead();
 
-    if (this.territoryDirty) {
-      this.territory.recompute(this.entities.values());
-      this.territoryDirty = false;
-      this.updateBuildingTerritoryFlags();
+    if (this.lastTerrainVersion !== this.terrain.version) {
+      this.lastTerrainVersion = this.terrain.version;
+      this.territoryDirty = true;
     }
 
-    // Update Fog of War every 4 ticks (5 Hz)
+    if (this.territoryDirty) {
+      this.recomputeTerritory();
+    }
+
+    // Update Fog of War every 4 ticks (5 Hz) including 0 A.D. Shared Allied Vision!
     if (this.tickCount % 4 === 0) {
-      this.fog.update(this.entities.values());
+      this.fog.update(this.entities.values(), this.getSharedAllyMap());
     }
 
     // Check victory every 10 ticks
@@ -808,7 +1404,7 @@ export class World {
   private rebuildSpatialHash(): void {
     this.spatialHash.clear();
     for (const e of this.entities.values()) {
-      if (e.alive && e.garrisonedIn === null) {
+      if (e.alive && e.garrisonedIn === null && !TEMPLATES[e.templateId].isFlying) {
         this.spatialHash.insert(e);
       }
     }
@@ -832,6 +1428,24 @@ export class World {
           break;
         case 'build':
           this.handleBuildCommand(cmd);
+          break;
+        case 'build_tunnel':
+          this.handleBuildTunnelCommand(cmd);
+          break;
+        case 'terraform':
+          this.handleTerraformCommand(cmd);
+          break;
+        case 'demolish':
+          this.handleDemolishCommand(cmd);
+          break;
+        case 'use_tunnel':
+          this.handleUseTunnelCommand(cmd);
+          break;
+        case 'trade':
+          this.handleTradeCommand(cmd);
+          break;
+        case 'upgrade_building':
+          this.handleUpgradeBuildingCommand(cmd);
           break;
         case 'repair':
           this.handleRepairCommand(cmd);
@@ -857,6 +1471,18 @@ export class World {
         case 'ungarrison':
           this.handleUngarrisonCommand(cmd);
           break;
+        case 'set_diplomacy':
+          this.handleSetDiplomacyCommand(cmd);
+          break;
+        case 'send_tribute':
+          this.handleSendTributeCommand(cmd);
+          break;
+        case 'activate_skill':
+          this.handleActivateSkillCommand(cmd);
+          break;
+        case 'cheat':
+          this.handleCheatCommand(cmd);
+          break;
         case 'delete':
           this.handleDeleteCommand(cmd);
           break;
@@ -879,15 +1505,22 @@ export class World {
     const halfRows = (rows - 1) * 0.5;
 
     units.forEach((u, idx) => {
+      const uTpl = TEMPLATES[u.templateId];
+      const isNaval = Boolean(uTpl.isNaval);
       const col = idx % cols;
       const row = Math.floor(idx / cols);
       let tx = Math.max(4, Math.min(this.terrain.worldSize - 4, cmd.x + (col - halfCols) * spacing));
       let tz = Math.max(4, Math.min(this.terrain.worldSize - 4, cmd.z + (row - halfRows) * spacing));
-      // Snap unreachable mountain-peak / water clicks onto the nearest walkable foothill/shoreline tile
+      // Snap unreachable mountain-peak / water clicks onto the nearest valid tile for land vs naval units
       const rawTile = this.terrain.worldToTile(tx, tz);
-      if (!this.navGrid.isWalkable(rawTile.tx, rawTile.tz)) {
+      const valid = isNaval
+        ? this.navGrid.isWaterPassable(rawTile.tx, rawTile.tz)
+        : this.navGrid.isWalkable(rawTile.tx, rawTile.tz);
+      if (!valid) {
         const uTile = this.terrain.worldToTile(u.x, u.z);
-        const clamped = this.navGrid.findNearestWalkable(rawTile.tx, rawTile.tz, 16, uTile.tx, uTile.tz);
+        const clamped = isNaval
+          ? this.navGrid.findNearestWater(rawTile.tx, rawTile.tz, 24, uTile.tx, uTile.tz)
+          : this.navGrid.findNearestWalkable(rawTile.tx, rawTile.tz, 16, uTile.tx, uTile.tz);
         if (clamped) {
           const wPos = this.terrain.tileToWorldCenter(clamped.tx, clamped.tz);
           tx = wPos.x;
@@ -903,7 +1536,9 @@ export class World {
         u.queuedOrders.length = 0;
         u.guardX = tx;
         u.guardZ = tz;
-        u.path = this.navGrid.findPath(u.x, u.z, tx, tz);
+        u.path = isNaval
+          ? this.navGrid.findWaterPath(u.x, u.z, tx, tz)
+          : this.navGrid.findPath(u.x, u.z, tx, tz);
         u.pathIndex = 0;
         u.repathTimer = 1.2;
         this.stuckTicks.set(u.id, 0);
@@ -913,17 +1548,24 @@ export class World {
 
   private handleAttackCommand(cmd: Extract<GameCommand, { type: 'attack' }>): void {
     const target = this.entities.get(cmd.targetId);
-    if (!target || !target.alive || target.owner === cmd.playerId || target.owner === 0) return;
+    if (!target || !target.alive || target.owner === cmd.playerId) return;
+    // Peaceful mode: armies cannot attack another civilization's units or buildings!
+    if (!this.areHostile(cmd.playerId, target.owner)) return;
+    // Allow attacking live Gaia predators (wolves/lions/bears), but ignore non-hostile resources
+    if (target.owner === 0 && (!TEMPLATES[target.templateId].isPredator || target.hp <= 0)) return;
     const tTpl = TEMPLATES[target.templateId];
     const mode: BuildingOrderMode = cmd.mode ?? (tTpl.kind === 'building' ? 'capture' : 'attack');
 
     for (const id of cmd.entityIds) {
       const u = this.entities.get(id);
       if (!u || !u.alive || u.owner !== cmd.playerId || u.garrisonedIn !== null) continue;
-      if (TEMPLATES[u.templateId].kind !== 'unit') continue;
-      u.order = { type: 'attack', targetId: target.id, mode };
+      const uTpl = TEMPLATES[u.templateId];
+      if (uTpl.kind !== 'unit' || !uTpl.attack) continue;
+      u.order = { type: 'attack', targetId: target.id, mode: uTpl.isNaval ? 'attack' : mode };
       u.queuedOrders.length = 0;
-      u.path = this.navGrid.findPath(u.x, u.z, target.x, target.z);
+      u.path = uTpl.isNaval
+        ? this.navGrid.findWaterPath(u.x, u.z, target.x, target.z)
+        : this.navGrid.findPath(u.x, u.z, target.x, target.z);
       u.pathIndex = 0;
       u.repathTimer = 0.6;
     }
@@ -942,6 +1584,7 @@ export class World {
       if (!u || !u.alive || u.owner !== cmd.playerId || u.garrisonedIn !== null) continue;
       const uTpl = TEMPLATES[u.templateId];
       if (!uTpl.gather) continue;
+      if (Boolean(uTpl.isNaval) !== Boolean(tTpl.isAquatic)) continue;
 
       // Drop carried resource if switching types
       if (u.carryType && u.carryType !== resType) {
@@ -951,7 +1594,9 @@ export class World {
 
       u.order = { type: 'gather', targetId: target.id, resourceType: resType, returning: false };
       u.queuedOrders.length = 0;
-      u.path = this.navGrid.findPath(u.x, u.z, target.x, target.z);
+      u.path = uTpl.isNaval
+        ? this.navGrid.findWaterPath(u.x, u.z, target.x, target.z)
+        : this.navGrid.findPath(u.x, u.z, target.x, target.z);
       u.pathIndex = 0;
       u.repathTimer = 1.0;
     }
@@ -967,7 +1612,7 @@ export class World {
       this.spend(player.resources, tpl.cost);
     }
 
-    const foundation = this.spawnBuilding(cmd.templateId, cmd.playerId, cmd.tileX, cmd.tileZ, true);
+    const foundation = this.spawnBuilding(cmd.templateId, cmd.playerId, cmd.tileX, cmd.tileZ, true, cmd.facing);
     if (!foundation) return;
 
     for (const id of cmd.entityIds) {
@@ -975,12 +1620,576 @@ export class World {
       if (!u || !u.alive || u.owner !== cmd.playerId || u.garrisonedIn !== null) continue;
       const uTpl = TEMPLATES[u.templateId];
       if (!uTpl.gather || !uTpl.canBuild?.includes(cmd.templateId)) continue;
+      if ((tpl.isWall || tpl.isBridge) && u.order.type === 'build') {
+        const curTarget = this.entities.get(u.order.targetId);
+        if (
+          curTarget &&
+          curTarget.alive &&
+          curTarget.isFoundation &&
+          (TEMPLATES[curTarget.templateId].isWall || TEMPLATES[curTarget.templateId].isBridge)
+        ) {
+          u.queuedOrders.push({ type: 'build', targetId: foundation.id });
+          continue;
+        }
+      }
       u.order = { type: 'build', targetId: foundation.id };
       u.queuedOrders.length = 0;
-      u.path = this.navGrid.findPath(u.x, u.z, foundation.x, foundation.z);
+      const bPos = tpl.isBridge
+        ? this.getTerraformApproachPos(u, cmd.tileX, cmd.tileZ, { x: foundation.x, z: foundation.z })
+        : { x: foundation.x, z: foundation.z };
+      u.path = this.navGrid.findPath(u.x, u.z, bPos.x, bPos.z);
       u.pathIndex = 0;
       u.repathTimer = 1.0;
     }
+  }
+
+  /**
+   * Builds a dragged straight-line Mountain Tunnel from entrance (startTile) to exit (endTile).
+   * Every tile of tunnel length requires 100 soil units to excavate (long, realistic boring project!).
+   */
+  private handleBuildTunnelCommand(cmd: Extract<GameCommand, { type: 'build_tunnel' }>): void {
+    const lengthTiles = Math.round(Math.hypot(cmd.endTileX - cmd.startTileX, cmd.endTileZ - cmd.startTileZ));
+    if (lengthTiles < 4) return;
+    const checkStart = this.canPlaceBuilding(cmd.playerId, 'tunnel_portal', cmd.startTileX, cmd.startTileZ);
+    const checkEnd = this.canPlaceBuilding(cmd.playerId, 'tunnel_portal', cmd.endTileX, cmd.endTileZ);
+    if (!checkStart.ok || !checkEnd.ok) return;
+
+    const player = this.players.get(cmd.playerId)!;
+    const tpl = TEMPLATES.tunnel_portal;
+    if (tpl.cost) {
+      this.spend(player.resources, tpl.cost);
+    }
+
+    const yawOut = Math.atan2(cmd.startTileX - cmd.endTileX, cmd.startTileZ - cmd.endTileZ);
+    const yawBack = yawOut + Math.PI;
+    const portalA = this.spawnBuilding('tunnel_portal', cmd.playerId, cmd.startTileX, cmd.startTileZ, true, yawOut);
+    const portalB = this.spawnBuilding('tunnel_portal', cmd.playerId, cmd.endTileX, cmd.endTileZ, true, yawBack);
+    if (!portalA || !portalB) return;
+
+    const totalUnits = lengthTiles * SOIL_UNITS_PER_TILE;
+    portalA.linkedTunnelId = portalB.id;
+    portalB.linkedTunnelId = portalA.id;
+    portalA.tunnelLengthTiles = lengthTiles;
+    portalB.tunnelLengthTiles = lengthTiles;
+    portalA.tunnelDugUnits = 0;
+    portalB.tunnelDugUnits = 0;
+    portalA.tunnelTotalUnits = totalUnits;
+    portalB.tunnelTotalUnits = totalUnits;
+    portalA.buildProgress = 0;
+    portalB.buildProgress = 0;
+
+    for (const id of cmd.entityIds) {
+      const u = this.entities.get(id);
+      if (!u || !u.alive || u.owner !== cmd.playerId || u.garrisonedIn !== null) continue;
+      const uTpl = TEMPLATES[u.templateId];
+      if (!uTpl.gather || !uTpl.canBuild?.includes('tunnel_portal')) continue;
+      u.order = { type: 'build', targetId: portalA.id };
+      u.queuedOrders.length = 0;
+      const bPos = this.getTerraformApproachPos(u, cmd.startTileX, cmd.startTileZ, { x: portalA.x, z: portalA.z });
+      u.path = this.navGrid.findPath(u.x, u.z, bPos.x, bPos.z);
+      u.pathIndex = 0;
+      u.repathTimer = 1.0;
+    }
+  }
+
+  canTerraformTile(tileX: number, tileZ: number): boolean {
+    if (tileX < 3 || tileZ < 3 || tileX > this.terrain.width - 4 || tileZ > this.terrain.height - 4) {
+      return false;
+    }
+    const center = this.terrain.tileToWorldCenter(tileX, tileZ);
+    for (const e of this.entities.values()) {
+      if (!e.alive) continue;
+      const tpl = TEMPLATES[e.templateId];
+      if (tpl.kind !== 'building') continue;
+      const minClearance = tpl.radius + 2.4;
+      if (Math.hypot(e.x - center.x, e.z - center.z) < minClearance) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  /**
+   * Finds a nearby valid earthwork partner tile ~3..5 tiles away so soil is always conserved:
+   * - 'dump': nearest valid tile where excavated earth can be piled
+   * - 'scoop': nearest valid dry/higher donor tile where earth can be scooped to push onto target
+   */
+  findEarthworkPartnerTile(tileX: number, tileZ: number, role: 'dump' | 'scoop'): { tx: number; tz: number } | null {
+    let best: { tx: number; tz: number } | null = null;
+    let bestScore = -Infinity;
+    for (let r = 3; r <= 6; r++) {
+      for (let a = 0; a < 12; a++) {
+        const ang = (a / 12) * Math.PI * 2;
+        const nx = Math.round(tileX + Math.cos(ang) * r);
+        const nz = Math.round(tileZ + Math.sin(ang) * r);
+        if (!this.canTerraformTile(nx, nz)) continue;
+        const h = this.terrain.getVertexHeight(nx, nz);
+        if (role === 'scoop' && h < WATER_LEVEL + 0.1) continue;
+        // Prefer dry higher ground for scoop, and close unobstructed ground for dump
+        const score = role === 'scoop' ? h * 2.0 - r * 0.55 : -r * 0.7 - Math.abs(h - 2.0) * 0.2;
+        if (score > bestScore) {
+          bestScore = score;
+          best = { tx: nx, tz: nz };
+        }
+      }
+      if (best) break;
+    }
+    return best;
+  }
+
+  /** Finds an active OR unfinished terraforming job near (tileX, tileZ) so any other worker can join or resume digging! */
+  findActiveTerraformJobAt(
+    playerId: number,
+    tileX: number,
+    tileZ: number
+  ): { tileX: number; tileZ: number; destTileX: number; destTileZ: number; mode: TerraformMode } | null {
+    for (const e of this.entities.values()) {
+      if (!e.alive || e.owner !== playerId || e.order.type !== 'terraform') continue;
+      const ord = e.order;
+      if (
+        (Math.abs(ord.tileX - tileX) <= 1 && Math.abs(ord.tileZ - tileZ) <= 1) ||
+        (Math.abs(ord.destTileX - tileX) <= 1 && Math.abs(ord.destTileZ - tileZ) <= 1)
+      ) {
+        return {
+          tileX: ord.tileX,
+          tileZ: ord.tileZ,
+          destTileX: ord.destTileX,
+          destTileZ: ord.destTileZ,
+          mode: ord.mode,
+        };
+      }
+    }
+    // Check 3x3 neighborhood for ANY unfinished excavation (<100 soil) or fill (>0 soil) so other workers can resume!
+    for (let dz = -1; dz <= 1; dz++) {
+      for (let dx = -1; dx <= 1; dx++) {
+        const tx = tileX + dx;
+        const tz = tileZ + dz;
+        if (tx < 3 || tz < 3 || tx >= this.terrain.width - 3 || tz >= this.terrain.height - 3) continue;
+        const idx = tz * this.terrain.width + tx;
+        const dug = SOIL_UNITS_PER_TILE - this.terrain.getSoilUnits(tx, tz);
+        const fill = this.terrain.getFillUnits(tx, tz);
+        if (dug <= 0 && fill <= 0) {
+          this.savedTerraformJobs.delete(idx);
+          continue;
+        }
+        const saved = this.savedTerraformJobs.get(idx);
+        if (saved) return saved;
+        if (dug > 0) {
+          const partner = this.findEarthworkPartnerTile(tx, tz, 'dump');
+          if (partner) {
+            return { tileX: tx, tileZ: tz, destTileX: partner.tx, destTileZ: partner.tz, mode: 'dig' };
+          }
+        }
+        if (fill > 0) {
+          const donor = this.findEarthworkPartnerTile(tx, tz, 'scoop');
+          if (donor) {
+            return { tileX: donor.tx, tileZ: donor.tz, destTileX: tx, destTileZ: tz, mode: 'raise' };
+          }
+        }
+      }
+    }
+    return null;
+  }
+
+  private handleTerraformCommand(cmd: Extract<GameCommand, { type: 'terraform' }>): void {
+    if (!this.canTerraformTile(cmd.tileX, cmd.tileZ)) return;
+
+    // Conserve soil: every dig/push moves earth FROM (srcX, srcZ) TO (dstX, dstZ)!
+    let srcX = cmd.tileX;
+    let srcZ = cmd.tileZ;
+    let dstX = cmd.destTileX;
+    let dstZ = cmd.destTileZ;
+    let mode = cmd.mode;
+
+    if (mode === 'level') {
+      // Level/grade uneven hillside directly in place so buildings can be built on it!
+      dstX = srcX;
+      dstZ = srcZ;
+    } else if (mode === 'dig') {
+      // If another friendly worker is already digging this tile, inherit their exact dump partner so everyone collaborates!
+      if (dstX === undefined || dstZ === undefined) {
+        const existing = this.findActiveTerraformJobAt(cmd.playerId, srcX, srcZ);
+        if (existing && existing.tileX === srcX && existing.tileZ === srcZ && existing.mode === 'dig') {
+          dstX = existing.destTileX;
+          dstZ = existing.destTileZ;
+        }
+      }
+      if (dstX === undefined || dstZ === undefined || !this.canTerraformTile(dstX, dstZ) || (dstX === srcX && dstZ === srcZ)) {
+        const partner = this.findEarthworkPartnerTile(srcX, srcZ, 'dump');
+        if (!partner) return;
+        dstX = partner.tx;
+        dstZ = partner.tz;
+      }
+    } else {
+      // 'raise': push earth onto (cmd.tileX, cmd.tileZ) from an explicit donor or nearest higher bank
+      dstX = cmd.tileX;
+      dstZ = cmd.tileZ;
+      if (cmd.destTileX !== undefined && cmd.destTileZ !== undefined && this.canTerraformTile(cmd.destTileX, cmd.destTileZ)) {
+        srcX = cmd.destTileX;
+        srcZ = cmd.destTileZ;
+      } else {
+        const existing = this.findActiveTerraformJobAt(cmd.playerId, dstX, dstZ);
+        if (existing && existing.destTileX === dstX && existing.destTileZ === dstZ && existing.mode === 'raise') {
+          srcX = existing.tileX;
+          srcZ = existing.tileZ;
+        } else {
+          const donor = this.findEarthworkPartnerTile(dstX, dstZ, 'scoop');
+          if (!donor) return;
+          srcX = donor.tx;
+          srcZ = donor.tz;
+        }
+      }
+    }
+
+    const epochTx = mode === 'raise' ? dstX! : srcX;
+    const epochTz = mode === 'raise' ? dstZ! : srcZ;
+    const startEpoch = this.terrain.getTerraformEpoch(epochTx, epochTz);
+    const srcCenter = this.terrain.tileToWorldCenter(srcX, srcZ);
+    // Remember this job so if workers leave midway, any other worker can click/right-click to resume it!
+    const jobRecord = { tileX: srcX, tileZ: srcZ, destTileX: dstX!, destTileZ: dstZ!, mode };
+    this.savedTerraformJobs.set(srcZ * this.terrain.width + srcX, jobRecord);
+    if (mode === 'raise') {
+      this.savedTerraformJobs.set(dstZ! * this.terrain.width + dstX!, jobRecord);
+    }
+
+    for (const id of cmd.entityIds) {
+      const u = this.entities.get(id);
+      if (!u || !u.alive || u.owner !== cmd.playerId || u.garrisonedIn !== null) continue;
+      const uTpl = TEMPLATES[u.templateId];
+      if (!uTpl.gather || uTpl.isNaval) continue;
+
+      const order: UnitOrder = {
+        type: 'terraform',
+        tileX: srcX,
+        tileZ: srcZ,
+        destTileX: dstX!,
+        destTileZ: dstZ!,
+        mode,
+        stage: 'scoop',
+        progress: 0,
+        startEpoch,
+      };
+      if (cmd.queued && u.order.type !== 'idle') {
+        u.queuedOrders.push(order);
+      } else {
+        u.order = order;
+        u.queuedOrders.length = 0;
+        const approach = this.getTerraformApproachPos(u, srcX, srcZ, srcCenter);
+        u.path = this.navGrid.findPath(u.x, u.z, approach.x, approach.z);
+        u.pathIndex = 0;
+        u.repathTimer = 1.0;
+        this.stuckTicks.set(u.id, 0);
+      }
+    }
+  }
+
+  /** Dismantle owned building(s) and salvage 60% of construction resources (75% for foundations) */
+  private handleDemolishCommand(cmd: Extract<GameCommand, { type: 'demolish' }>): void {
+    const player = this.players.get(cmd.playerId);
+    if (!player) return;
+
+    for (const id of cmd.entityIds) {
+      const e = this.entities.get(id);
+      if (!e || !e.alive || e.owner !== cmd.playerId) continue;
+      const tpl = TEMPLATES[e.templateId];
+      if (tpl.kind !== 'building') continue;
+
+      const cost = tpl.cost ?? { food: 0, wood: 0, stone: 0, metal: 0 };
+      const ratio = e.isFoundation ? 0.75 : 0.6 * Math.max(0.25, e.hp / Math.max(1, e.maxHp));
+      const refund: ResourceBag = {
+        food: Math.round(cost.food * ratio),
+        wood: Math.round(cost.wood * ratio),
+        stone: Math.round(cost.stone * ratio),
+        metal: Math.round(cost.metal * ratio),
+      };
+      player.resources.food += refund.food;
+      player.resources.wood += refund.wood;
+      player.resources.stone += refund.stone;
+      player.resources.metal += refund.metal;
+
+      this.events.push({
+        type: 'building_demolished',
+        playerId: player.id,
+        x: e.x,
+        z: e.z,
+        templateId: e.templateId,
+        refund,
+      });
+
+      e.hp = 0;
+      e.alive = false;
+    }
+  }
+
+  /** Pairs two unlinked friendly Mountain Tunnel Portals into a bidirectional underground passage */
+  private linkTunnelPortal(portal: Entity): void {
+    if (!portal.alive || portal.isFoundation || portal.linkedTunnelId) return;
+    for (const other of this.entities.values()) {
+      if (
+        other.id === portal.id ||
+        !other.alive ||
+        other.isFoundation ||
+        other.owner !== portal.owner ||
+        !TEMPLATES[other.templateId].isTunnel ||
+        other.linkedTunnelId
+      ) {
+        continue;
+      }
+      portal.linkedTunnelId = other.id;
+      other.linkedTunnelId = portal.id;
+      return;
+    }
+  }
+
+  private handleUseTunnelCommand(cmd: Extract<GameCommand, { type: 'use_tunnel' }>): void {
+    const portal = this.entities.get(cmd.portalId);
+    if (!portal || !portal.alive || portal.isFoundation || !this.isAlliedOrOwn(cmd.playerId, portal.owner) || !portal.linkedTunnelId) return;
+    const exit = this.entities.get(portal.linkedTunnelId);
+    if (!exit || !exit.alive || exit.isFoundation) return;
+
+    for (const id of cmd.entityIds) {
+      const u = this.entities.get(id);
+      if (!u || !u.alive || u.owner !== cmd.playerId || u.garrisonedIn !== null) continue;
+      const uTpl = TEMPLATES[u.templateId];
+      if (uTpl.kind !== 'unit' || uTpl.isNaval) continue;
+      u.order = { type: 'enter_tunnel', portalId: portal.id };
+      u.queuedOrders.length = 0;
+      const approach = this.getTerraformApproachPos(u, portal.tileX, portal.tileZ, { x: portal.x, z: portal.z });
+      u.path = this.navGrid.findPath(u.x, u.z, approach.x, approach.z);
+      u.pathIndex = 0;
+      u.repathTimer = 1.0;
+    }
+  }
+
+  /** Finds the farthest completed friendly OR allied partner Market to maximize Caravan gold revenue */
+  findBestPartnerMarket(playerId: number, excludeMarketId: number): Entity | null {
+    const exclude = this.entities.get(excludeMarketId);
+    let best: Entity | null = null;
+    let bestDist = -1;
+    for (const e of this.entities.values()) {
+      if (
+        !e.alive ||
+        !this.isAlliedOrOwn(playerId, e.owner) ||
+        e.isFoundation ||
+        e.id === excludeMarketId ||
+        !TEMPLATES[e.templateId]?.isMarket
+      ) {
+        continue;
+      }
+      const d = (exclude ? Math.hypot(e.x - exclude.x, e.z - exclude.z) : 1) * (e.owner !== playerId ? 1.25 : 1.0);
+      if (d > bestDist) {
+        bestDist = d;
+        best = e;
+      }
+    }
+    return best;
+  }
+
+  /** Finds the two farthest completed friendly/allied Markets (at least one owned by playerId) for Caravan pairing */
+  findFarthestMarketPair(playerId: number): [Entity, Entity] | null {
+    const ownMarkets: Entity[] = [];
+    const allMarkets: Entity[] = [];
+    for (const e of this.entities.values()) {
+      if (e.alive && !e.isFoundation && TEMPLATES[e.templateId]?.isMarket && this.isAlliedOrOwn(playerId, e.owner)) {
+        allMarkets.push(e);
+        if (e.owner === playerId) ownMarkets.push(e);
+      }
+    }
+    if (ownMarkets.length === 0 || allMarkets.length < 2) return null;
+    let bestPair: [Entity, Entity] | null = null;
+    let bestD = -1;
+    for (const mA of ownMarkets) {
+      for (const mB of allMarkets) {
+        if (mA.id === mB.id) continue;
+        const d = Math.hypot(mA.x - mB.x, mA.z - mB.z) * (mB.owner !== playerId ? 1.25 : 1.0);
+        if (d > bestD) {
+          bestD = d;
+          bestPair = [mA, mB];
+        }
+      }
+    }
+    return bestPair;
+  }
+
+  private handleTradeCommand(cmd: Extract<GameCommand, { type: 'trade' }>): void {
+    const targetMarket = this.entities.get(cmd.targetMarketId);
+    if (
+      !targetMarket ||
+      !targetMarket.alive ||
+      targetMarket.isFoundation ||
+      !this.isAlliedOrOwn(cmd.playerId, targetMarket.owner) ||
+      !TEMPLATES[targetMarket.templateId]?.isMarket
+    ) {
+      return;
+    }
+    const homeMarket =
+      (cmd.homeMarketId ? this.entities.get(cmd.homeMarketId) : null) ??
+      this.findBestPartnerMarket(cmd.playerId, targetMarket.id);
+    if (
+      !homeMarket ||
+      !homeMarket.alive ||
+      homeMarket.isFoundation ||
+      !this.isAlliedOrOwn(cmd.playerId, homeMarket.owner) ||
+      homeMarket.id === targetMarket.id ||
+      !TEMPLATES[homeMarket.templateId]?.isMarket
+    ) {
+      return;
+    }
+
+    for (const id of cmd.entityIds) {
+      const u = this.entities.get(id);
+      if (!u || !u.alive || u.owner !== cmd.playerId || u.garrisonedIn !== null) continue;
+      if (!TEMPLATES[u.templateId]?.isTrader) continue;
+      const distHome = Math.hypot(homeMarket.x - u.x, homeMarket.z - u.z);
+      const distTarget = Math.hypot(targetMarket.x - u.x, targetMarket.z - u.z);
+      const firstLeg: 'toTarget' | 'toHome' = distTarget >= distHome ? 'toTarget' : 'toHome';
+      u.order = {
+        type: 'trade',
+        homeMarketId: homeMarket.id,
+        targetMarketId: targetMarket.id,
+        leg: firstLeg,
+        cargoGold: 0,
+      };
+      u.queuedOrders.length = 0;
+      u.path = [];
+      u.pathIndex = 0;
+      u.repathTimer = 0;
+    }
+  }
+
+  static readonly UPGRADE_HOUSE_COST: ResourceBag = { food: 0, wood: 60, stone: 60, metal: 0 };
+  static readonly UPGRADE_FLOOR3_COST: ResourceBag = { food: 0, wood: 90, stone: 100, metal: 0 };
+  static readonly UPGRADE_HOUSE_TIME_SEC = 12;
+  static readonly UPGRADE_FLOOR3_TIME_SEC = 16;
+
+  private handleUpgradeBuildingCommand(cmd: Extract<GameCommand, { type: 'upgrade_building' }>): void {
+    const player = this.players.get(cmd.playerId);
+    const b = this.entities.get(cmd.buildingId);
+    if (!player || !b || !b.alive || b.owner !== cmd.playerId || b.isFoundation) return;
+    if (b.upgradeTargetTemplateId) return; // Already upgrading!
+
+    // 1. House -> 2-Story Apartment (timed construction! requires City Phase II + Multi-Story Housing tech)
+    if (b.templateId === 'house') {
+      if (player.phase < 2 || !player.researchedTechs.has('tech_multistory_housing')) return;
+      const cost = World.UPGRADE_HOUSE_COST;
+      if (!this.canAfford(player.resources, cost)) return;
+      this.spend(player.resources, cost);
+      b.upgradeTargetTemplateId = 'apartment_house';
+      b.upgradeTargetFloors = 2;
+      b.upgradeProgress = 0;
+      b.upgradeTotalTime = player.fastBuildCheat ? 0.1 : World.UPGRADE_HOUSE_TIME_SEC;
+      return;
+    }
+
+    // 2. Multi-Story Apartment 2F -> 3F (timed construction! MAX 3 stories, requires City Phase III!)
+    const tpl = TEMPLATES[b.templateId];
+    if (tpl?.isApartment) {
+      const maxFloors = tpl.maxFloors ?? 3;
+      const curFloors = b.floors ?? 2;
+      if (curFloors >= maxFloors) return;
+      if (player.phase < 3) return;
+      const cost = World.UPGRADE_FLOOR3_COST;
+      if (!this.canAfford(player.resources, cost)) return;
+      this.spend(player.resources, cost);
+      b.upgradeTargetTemplateId = b.templateId;
+      b.upgradeTargetFloors = Math.min(maxFloors, curFloors + 1);
+      b.upgradeProgress = 0;
+      b.upgradeTotalTime = player.fastBuildCheat ? 0.1 : World.UPGRADE_FLOOR3_TIME_SEC;
+    }
+  }
+
+  private completeBuildingUpgrade(b: Entity): void {
+    const player = this.players.get(b.owner);
+    const targetTplId = b.upgradeTargetTemplateId;
+    const targetFloors = b.upgradeTargetFloors ?? 2;
+    b.upgradeTargetTemplateId = null;
+    b.upgradeTargetFloors = undefined;
+    b.upgradeProgress = undefined;
+    b.upgradeTotalTime = undefined;
+    if (!player || !targetTplId) return;
+
+    if (b.templateId === 'house' && targetTplId === 'apartment_house') {
+      b.templateId = 'apartment_house';
+      b.floors = 2;
+      const newMax = this.computeMaxHp('apartment_house', player.id);
+      const hpDelta = Math.max(0, newMax - b.maxHp);
+      b.maxHp = newMax;
+      b.hp = Math.min(b.maxHp, b.hp + hpDelta);
+      b.captureMax = this.computeCaptureMax('apartment_house', player.id);
+      b.capturePoints[player.id] = b.captureMax;
+    } else if (TEMPLATES[b.templateId]?.isApartment) {
+      const maxFloors = TEMPLATES[b.templateId].maxFloors ?? 3;
+      b.floors = Math.min(maxFloors, targetFloors);
+      b.maxHp += 350;
+      b.hp = Math.min(b.maxHp, b.hp + 350);
+    }
+
+    this.recomputePopulations();
+    this.events.push({
+      type: 'building_upgraded',
+      playerId: player.id,
+      x: b.x,
+      z: b.z,
+      templateId: b.templateId,
+      floors: b.floors ?? 2,
+    });
+  }
+
+  private handleSetDiplomacyCommand(cmd: Extract<GameCommand, { type: 'set_diplomacy' }>): void {
+    const pA = this.players.get(cmd.playerId);
+    const pB = this.players.get(cmd.targetPlayerId);
+    if (!pA || !pB || pA.id === pB.id) return;
+    pA.diplomacy[pB.id] = cmd.stance;
+    // In 0 A.D. skirmish diplomacy: if human offers Ally/Neutral to an AI (and not currently fighting or same team/peaceful),
+    // AI reciprocates Ally/Neutral cleanly; declaring Enemy immediately turns AI hostile!
+    if (pB.isAI) {
+      if (cmd.stance === 'enemy') {
+        pB.diplomacy[pA.id] = 'enemy';
+      } else if (cmd.stance === 'ally') {
+        // AI accepts alliance proposal unless human already attacked it recently or free-for-all enemy; allow clean 0 A.D. diplomacy!
+        pB.diplomacy[pA.id] = 'ally';
+      } else {
+        pB.diplomacy[pA.id] = 'neutral';
+      }
+    }
+    this.fog.update(this.entities.values(), this.getSharedAllyMap());
+    this.events.push({
+      type: 'diplomacy_changed',
+      playerId: pA.id,
+      targetPlayerId: pB.id,
+      stance: cmd.stance,
+    });
+  }
+
+  private handleSendTributeCommand(cmd: Extract<GameCommand, { type: 'send_tribute' }>): void {
+    const fromP = this.players.get(cmd.playerId);
+    const toP = this.players.get(cmd.targetPlayerId);
+    if (!fromP || !toP || fromP.id === toP.id || toP.defeated) return;
+    const amt = Math.max(0, Math.min(fromP.resources[cmd.resource], Math.floor(cmd.amount)));
+    if (amt <= 0) return;
+    fromP.resources[cmd.resource] -= amt;
+    toP.resources[cmd.resource] += amt;
+    this.events.push({
+      type: 'tribute_sent',
+      fromPlayerId: fromP.id,
+      toPlayerId: toP.id,
+      resource: cmd.resource,
+      amount: amt,
+    });
+  }
+
+  private getTerraformApproachPos(
+    u: Entity,
+    tileX: number,
+    tileZ: number,
+    center: { x: number; z: number }
+  ): { x: number; z: number } {
+    if (this.terrain.isTileStaticPassable(tileX, tileZ)) {
+      return center;
+    }
+    const uTile = this.terrain.worldToTile(u.x, u.z);
+    const bank = this.navGrid.findNearestWalkable(tileX, tileZ, 6, uTile.tx, uTile.tz);
+    return bank ? this.terrain.tileToWorldCenter(bank.tx, bank.tz) : center;
   }
 
   private handleRepairCommand(cmd: Extract<GameCommand, { type: 'repair' }>): void {
@@ -992,7 +2201,8 @@ export class World {
     for (const id of cmd.entityIds) {
       const u = this.entities.get(id);
       if (!u || !u.alive || u.owner !== cmd.playerId || u.garrisonedIn !== null) continue;
-      if (!TEMPLATES[u.templateId].gather) continue;
+      const uTpl = TEMPLATES[u.templateId];
+      if (!uTpl.canBuild || uTpl.canBuild.length === 0) continue;
       u.order = { type: 'build', targetId: target.id };
       u.queuedOrders.length = 0;
       u.path = this.navGrid.findPath(u.x, u.z, target.x, target.z);
@@ -1014,6 +2224,8 @@ export class World {
 
     const uTpl = TEMPLATES[resolvedId];
     if (!uTpl || !uTpl.cost) return;
+    if (uTpl.civ && uTpl.civ !== player.civ) return;
+    if (uTpl.allowedCivs && !uTpl.allowedCivs.includes(player.civ)) return;
     if ((uTpl.phaseRequired ?? 1) > player.phase) return;
     if (!this.canAfford(player.resources, uTpl.cost)) return;
 
@@ -1054,6 +2266,7 @@ export class World {
 
     const bTpl = TEMPLATES[building.templateId];
     if (!bTpl.researches?.includes(tech.id)) return;
+    if (tech.civ && tech.civ !== player.civ) return;
     if (tech.phaseRequired > player.phase) return;
     if (player.researchedTechs.has(tech.id) || player.researchingTechs.has(tech.id)) return;
     if (!this.canAfford(player.resources, tech.cost)) return;
@@ -1118,6 +2331,167 @@ export class World {
     this.ungarrisonAll(building);
   }
 
+  private handleActivateSkillCommand(cmd: Extract<GameCommand, { type: 'activate_skill' }>): void {
+    const player = this.players.get(cmd.playerId);
+    if (!player || player.defeated || player.skillCooldown > 0) return;
+    const civ = CIVS[player.civ];
+    player.skillCooldown = civ.skill.cooldownSec;
+    player.skillActiveTimer = civ.skill.durationSec;
+
+    // Immediate activation effects per civilization
+    if (player.civ === 'athenians') {
+      // Athena's Aegis: heal all friendly units +25 HP immediately
+      for (const e of this.entities.values()) {
+        if (e.alive && e.owner === player.id && TEMPLATES[e.templateId].kind === 'unit') {
+          e.hp = Math.min(e.maxHp, e.hp + 25);
+        }
+      }
+    } else if (player.civ === 'spartans') {
+      // Thermopylae Stand: +35 HP battle surge to all Spartan units
+      for (const e of this.entities.values()) {
+        if (e.alive && e.owner === player.id && TEMPLATES[e.templateId].kind === 'unit') {
+          e.hp = Math.min(e.maxHp, e.hp + 35);
+        }
+      }
+    } else if (player.civ === 'persians') {
+      // Royal Road Levy: instant +150 Food & +150 Wood from imperial satrapies
+      player.resources.food += 150;
+      player.resources.wood += 150;
+      player.stats.resourcesGathered += 300;
+    } else if (player.civ === 'carthaginians') {
+      // Punic Trade Fleet: instant +180 Wood & +120 Metal
+      player.resources.wood += 180;
+      player.resources.metal += 120;
+      player.stats.resourcesGathered += 300;
+    } else if (player.civ === 'ptolemies') {
+      // Nile Harvest Surge: instant +220 Food & heal all friendly units +30 HP
+      player.resources.food += 220;
+      player.stats.resourcesGathered += 220;
+      for (const e of this.entities.values()) {
+        if (e.alive && e.owner === player.id && TEMPLATES[e.templateId].kind === 'unit') {
+          e.hp = Math.min(e.maxHp, e.hp + 30);
+        }
+      }
+    } else if (player.civ === 'han') {
+      // Imperial Minister Edict: instant +160 Food, +160 Wood, +100 Metal
+      player.resources.food += 160;
+      player.resources.wood += 160;
+      player.resources.metal += 100;
+      player.stats.resourcesGathered += 420;
+    } else if (player.civ === 'kushites') {
+      // Blessing of Amun: heal all Kushite units +35 HP
+      for (const e of this.entities.values()) {
+        if (e.alive && e.owner === player.id && TEMPLATES[e.templateId].kind === 'unit') {
+          e.hp = Math.min(e.maxHp, e.hp + 35);
+        }
+      }
+    } else if (player.civ === 'mauryas') {
+      // War Elephant Stampede: heal all Mauryan units +40 HP
+      for (const e of this.entities.values()) {
+        if (e.alive && e.owner === player.id && TEMPLATES[e.templateId].kind === 'unit') {
+          e.hp = Math.min(e.maxHp, e.hp + 40);
+        }
+      }
+    } else if (player.civ === 'seleucids') {
+      // Diadochi Imperial Decree: instant +140 Food & +140 Metal
+      player.resources.food += 140;
+      player.resources.metal += 140;
+      player.stats.resourcesGathered += 280;
+    }
+
+    this.events.push({
+      type: 'skill_activated',
+      playerId: player.id,
+      skillId: civ.skill.id,
+    });
+  }
+
+  private handleCheatCommand(cmd: Extract<GameCommand, { type: 'cheat' }>): void {
+    const player = this.players.get(cmd.playerId);
+    if (!player) return;
+
+    switch (cmd.action) {
+      case 'resources': {
+        player.resources.food += 5000;
+        player.resources.wood += 5000;
+        player.resources.stone += 5000;
+        player.resources.metal += 5000;
+        break;
+      }
+      case 'fast_build': {
+        player.fastBuildCheat = !player.fastBuildCheat;
+        break;
+      }
+      case 'all_techs': {
+        player.phase = 4;
+        for (const tech of Object.values(TECHS)) {
+          if (tech.civ && tech.civ !== player.civ) continue;
+          if (!player.researchedTechs.has(tech.id)) {
+            this.completeTechResearch(tech.id, player);
+          }
+        }
+        this.territoryDirty = true;
+        this.recomputePopulations();
+        break;
+      }
+      case 'reset_skill': {
+        player.skillCooldown = 0;
+        break;
+      }
+      case 'heal_all': {
+        for (const e of this.entities.values()) {
+          if (e.alive && e.owner === player.id) {
+            e.hp = e.maxHp;
+            if (e.captureMax > 0) {
+              e.capturePoints = { [player.id]: e.captureMax };
+            }
+          }
+        }
+        break;
+      }
+      case 'spawn_army': {
+        const civ = CIVS[player.civ];
+        let hubX = this.terrain.worldSize * 0.25;
+        let hubZ = this.terrain.worldSize * 0.25;
+        for (const e of this.entities.values()) {
+          if (e.alive && e.owner === player.id && TEMPLATES[e.templateId].isCivicCenter) {
+            hubX = e.x;
+            hubZ = e.z;
+            break;
+          }
+        }
+        const siegeUnit = civ.blockedBuildings?.includes('workshop') ? civ.units.special : 'siege_ram';
+        const roster = [
+          civ.units.champion,
+          civ.units.champion,
+          civ.units.champion,
+          civ.units.special,
+          civ.units.special,
+          civ.units.cavalry,
+          siegeUnit,
+        ];
+        roster.forEach((tplId, idx) => {
+          const ang = (idx / roster.length) * Math.PI * 2;
+          const sx = hubX + Math.cos(ang) * 7.2;
+          const sz = hubZ + Math.sin(ang) * 7.2;
+          const t = this.terrain.worldToTile(sx, sz);
+          const safe = this.navGrid.findNearestWalkable(t.tx, t.tz, 8);
+          const pos = safe ? this.terrain.tileToWorldCenter(safe.tx, safe.tz) : { x: sx, z: sz };
+          this.spawnUnit(tplId, player.id, pos.x, pos.z);
+        });
+        break;
+      }
+      case 'instant_win': {
+        for (const p of this.players.values()) {
+          if (p.id !== player.id) p.defeated = true;
+        }
+        this.winnerId = player.id;
+        this.events.push({ type: 'match_over', winnerId: player.id });
+        break;
+      }
+    }
+  }
+
   private handleDeleteCommand(cmd: Extract<GameCommand, { type: 'delete' }>): void {
     for (const id of cmd.entityIds) {
       const e = this.entities.get(id);
@@ -1167,7 +2541,32 @@ export class World {
         }
       }
 
-      item.progress += SIM_DT;
+      let trainMult = 1.0;
+      if (item.kind === 'unit') {
+        const civCfg = CIVS[player.civ];
+        if (civCfg.trainSpeedBonusPct) {
+          trainMult += civCfg.trainSpeedBonusPct;
+        }
+        if (player.civ === 'carthaginians' && item.id === 'carth_mercenary') {
+          trainMult += 0.15;
+        }
+        if (
+          player.researchedTechs.has('tech_pers_immortals') ||
+          player.researchedTechs.has('tech_carth_mercenaries') ||
+          player.researchedTechs.has('tech_brit_warfare') ||
+          player.researchedTechs.has('tech_gaul_charge') ||
+          player.researchedTechs.has('tech_sele_colony')
+        ) {
+          trainMult *= 1.25;
+        }
+        if (player.skillActiveTimer > 0 && player.civ === 'han') {
+          trainMult *= 1.35;
+        }
+      }
+      if (player.fastBuildCheat) {
+        trainMult *= 25;
+      }
+      item.progress += SIM_DT * trainMult;
       if (item.progress >= item.totalTime) {
         e.queue.shift();
         if (item.kind === 'unit') {
@@ -1181,11 +2580,22 @@ export class World {
 
   private completeUnitTraining(building: Entity, unitTemplateId: string, player: PlayerState): void {
     const bTpl = TEMPLATES[building.templateId];
+    const uTpl = TEMPLATES[unitTemplateId];
     const dirX = building.rallyX - building.x;
     const dirZ = building.rallyZ - building.z;
     const len = Math.hypot(dirX, dirZ) || 1;
-    const sx = building.x + (dirX / len) * (bTpl.radius + 1.3);
-    const sz = building.z + (dirZ / len) * (bTpl.radius + 1.3);
+    let sx = building.x + (dirX / len) * (bTpl.radius + 1.3);
+    let sz = building.z + (dirZ / len) * (bTpl.radius + 1.3);
+
+    if (uTpl?.isNaval) {
+      const sTile = this.terrain.worldToTile(sx, sz);
+      const waterTile = this.navGrid.findNearestWater(sTile.tx, sTile.tz, 14, building.tileX, building.tileZ);
+      if (waterTile) {
+        const wp = this.terrain.tileToWorldCenter(waterTile.tx, waterTile.tz);
+        sx = wp.x;
+        sz = wp.z;
+      }
+    }
 
     const unit = this.spawnUnit(unitTemplateId, building.owner, sx, sz);
     if (!unit) return;
@@ -1207,6 +2617,28 @@ export class World {
         return;
       }
     }
+    // Newly built Trade Caravans automatically start shuttling between this Market & the farthest friendly Market!
+    if (uTpl?.isTrader) {
+      const partner = this.findBestPartnerMarket(building.owner, building.id);
+      if (partner) {
+        this.enqueueCommand({
+          type: 'trade',
+          playerId: building.owner,
+          entityIds: [unit.id],
+          targetMarketId: partner.id,
+          homeMarketId: building.id,
+        });
+        return;
+      }
+    }
+    // Newly built Fishing Boats automatically sail to the nearest Fish Shoal!
+    if (uTpl?.isNaval && uTpl.gather) {
+      const fish = this.findNearestResource(unit.x, unit.z, 'food', building.owner, 90, true);
+      if (fish) {
+        this.enqueueCommand({ type: 'gather', playerId: building.owner, entityIds: [unit.id], targetId: fish.id });
+        return;
+      }
+    }
     this.enqueueCommand({ type: 'move', playerId: building.owner, entityIds: [unit.id], x: building.rallyX, z: building.rallyZ });
   }
 
@@ -1218,6 +2650,11 @@ export class World {
 
     if (tech.grantsPhase && player.phase < tech.grantsPhase) {
       player.phase = tech.grantsPhase;
+      this.territoryDirty = true;
+      this.recomputePopulations();
+    } else if (tech.popCapBonus || tech.territoryBonusTiles) {
+      this.territoryDirty = true;
+      this.recomputePopulations();
     }
 
     if (tech.buildingHpBonusPct) {
@@ -1238,6 +2675,19 @@ export class World {
       }
     }
 
+    if (tech.unitHpBonusPct || tech.shipHpBonusPct) {
+      for (const e of this.entities.values()) {
+        if (!e.alive || e.owner !== player.id) continue;
+        const eTpl = TEMPLATES[e.templateId];
+        if (eTpl.kind !== 'unit' || eTpl.isWoman || eTpl.isSiege) continue;
+        if (tech.shipHpBonusPct && !tech.unitHpBonusPct && !eTpl.isNaval) continue;
+        const oldMax = e.maxHp;
+        const newMax = this.getUnitMaxHp(e);
+        e.maxHp = newMax;
+        e.hp += Math.max(0, newMax - oldMax);
+      }
+    }
+
     this.events.push({ type: 'tech_complete', playerId: player.id, techId });
   }
 
@@ -1250,8 +2700,30 @@ export class World {
       u.animTime += SIM_DT;
       if (u.attackCooldown > 0) u.attackCooldown = Math.max(0, u.attackCooldown - SIM_DT);
       if (u.repathTimer > 0) u.repathTimer = Math.max(0, u.repathTimer - SIM_DT);
+      if (u.tunnelCooldown && u.tunnelCooldown > 0) {
+        u.tunnelCooldown = Math.max(0, u.tunnelCooldown - SIM_DT);
+      }
       u.vx = 0;
       u.vz = 0;
+
+      // Merchant Ship passive maritime trade income every 10 seconds
+      if (tpl.isMerchantShip && this.tickCount % (SIM_HZ * 10) === (u.id % (SIM_HZ * 10))) {
+        const ownerP = this.players.get(u.owner);
+        if (ownerP) {
+          let mult = ownerP.civ === 'carthaginians' ? 1.25 : 1.0;
+          if (ownerP.researchedTechs.has('tech_coinage')) mult += 0.5;
+          if (ownerP.researchedTechs.has('tech_carth_colonization') || ownerP.researchedTechs.has('tech_han_silkroad')) {
+            mult += 0.5;
+          }
+          const food = Math.round(12 * mult);
+          const wood = Math.round(12 * mult);
+          const metal = Math.round(12 * mult);
+          ownerP.resources.food += food;
+          ownerP.resources.wood += wood;
+          ownerP.resources.metal += metal;
+          ownerP.stats.resourcesGathered += food + wood + metal;
+        }
+      }
 
       switch (u.order.type) {
         case 'idle': {
@@ -1280,9 +2752,24 @@ export class World {
             break;
           }
 
-          // 3. Auto-work for idle human workers (female citizens anywhere, citizen-soldiers near home base)
+          // 3. Auto-work for idle human workers (citizens anywhere, citizen-soldiers near home base) & idle Trade Caravans
           const player = this.players.get(u.owner);
-          if (player && !player.isAI && tpl.gather && idleCount >= (tpl.isWoman ? 35 : 55) && idleCount % 20 === 0) {
+          if (tpl.isTrader && idleCount >= 20 && idleCount % 20 === 0) {
+            const pair = this.findFarthestMarketPair(u.owner);
+            if (pair) {
+              u.order = {
+                type: 'trade',
+                homeMarketId: pair[0].id,
+                targetMarketId: pair[1].id,
+                leg: 'toTarget',
+                cargoGold: 0,
+              };
+              u.path = [];
+              this.idleTicks.set(u.id, 0);
+              break;
+            }
+          }
+          if (player && !player.isAI && tpl.gather && idleCount >= (tpl.isWoman || u.templateId === 'male_citizen' ? 26 : 42) && idleCount % 15 === 0) {
             if (this.tryAutoWorkForIdleUnit(u, false)) {
               this.idleTicks.set(u.id, 0);
             }
@@ -1303,6 +2790,21 @@ export class World {
         case 'build':
           this.idleTicks.set(u.id, 0);
           this.updateBuildOrder(u, u.order);
+          break;
+
+        case 'terraform':
+          this.idleTicks.set(u.id, 0);
+          this.updateTerraformOrder(u, u.order);
+          break;
+
+        case 'enter_tunnel':
+          this.idleTicks.set(u.id, 0);
+          this.updateEnterTunnelOrder(u, u.order);
+          break;
+
+        case 'trade':
+          this.idleTicks.set(u.id, 0);
+          this.updateTradeOrder(u, u.order);
           break;
 
         case 'attack':
@@ -1327,12 +2829,110 @@ export class World {
       if (next.type === 'move') {
         u.path = this.navGrid.findPath(u.x, u.z, next.x, next.z);
         u.pathIndex = 0;
+      } else if (next.type === 'terraform') {
+        const c = this.terrain.tileToWorldCenter(next.tileX, next.tileZ);
+        const approach = this.getTerraformApproachPos(u, next.tileX, next.tileZ, c);
+        u.path = this.navGrid.findPath(u.x, u.z, approach.x, approach.z);
+        u.pathIndex = 0;
       }
     } else {
       u.order = { type: 'idle' };
       u.path = [];
       u.pathIndex = 0;
     }
+  }
+
+  /**
+   * Flat ground & bridges grant full 1.0x speed; walking uphill slows down proportionally to climb grade,
+   * while steep downhill slows slightly for footing.
+   */
+  getTerrainSlopeSpeedMultiplier(x: number, z: number, dirX: number, dirZ: number): number {
+    const curTile = this.terrain.worldToTile(x, z);
+    if (this.terrain.isTileBridge(curTile.tx, curTile.tz)) return 1.0;
+    const sampleDist = 1.4;
+    const h0 = this.terrain.getHeightAt(x, z);
+    const h1 = this.terrain.getHeightAt(x + dirX * sampleDist, z + dirZ * sampleDist);
+    const grade = (h1 - h0) / sampleDist;
+    if (grade > 0.06) {
+      return Math.max(0.42, 1.0 - (grade - 0.06) * 0.92);
+    }
+    if (grade < -0.22) {
+      return Math.max(0.84, 1.0 - (Math.abs(grade) - 0.22) * 0.24);
+    }
+    return 1.0;
+  }
+
+  /** Estimates overland walking time from (x0,z0) to (x1,z1), factoring in climb slowdowns & impassable mountain/water detours */
+  estimateOverlandTravelTime(x0: number, z0: number, x1: number, z1: number, baseSpeed: number): number {
+    const totalDist = Math.hypot(x1 - x0, z1 - z0);
+    if (totalDist < 0.5) return 0;
+    const samples = Math.min(20, Math.max(6, Math.ceil(totalDist / 3.5)));
+    const stepLen = totalDist / samples;
+    const dirX = (x1 - x0) / totalDist;
+    const dirZ = (z1 - z0) / totalDist;
+    let time = 0;
+    for (let i = 0; i < samples; i++) {
+      const f = (i + 0.5) / samples;
+      const sx = x0 + (x1 - x0) * f;
+      const sz = z0 + (z1 - z0) * f;
+      const st = this.terrain.worldToTile(sx, sz);
+      const passable = this.terrain.isTileStaticPassable(st.tx, st.tz);
+      if (!passable) {
+        time += (stepLen * 1.95) / (baseSpeed * 0.62);
+      } else {
+        const mult = this.getTerrainSlopeSpeedMultiplier(sx, sz, dirX, dirZ);
+        time += stepLen / (baseSpeed * mult);
+      }
+    }
+    return time;
+  }
+
+  /** Checks if routing through an operational linked friendly tunnel (treated as flat road!) is faster than overland */
+  findFasterTunnelRoute(
+    u: Entity,
+    goalX: number,
+    goalZ: number,
+    baseSpeed: number
+  ): { enterPortalId: number; exitPortalId: number; savedSec: number } | null {
+    const distGoal = Math.hypot(goalX - u.x, goalZ - u.z);
+    if (distGoal < 10) return null;
+
+    const overlandTime = this.estimateOverlandTravelTime(u.x, u.z, goalX, goalZ, baseSpeed);
+    let best: { enterPortalId: number; exitPortalId: number; savedSec: number } | null = null;
+    let bestTime = overlandTime * 0.9;
+
+    for (const portalA of this.entities.values()) {
+      if (
+        !portalA.alive ||
+        !this.isAlliedOrOwn(u.owner, portalA.owner) ||
+        portalA.isFoundation ||
+        !portalA.linkedTunnelId ||
+        !TEMPLATES[portalA.templateId]?.isTunnel
+      ) {
+        continue;
+      }
+      const portalB = this.entities.get(portalA.linkedTunnelId);
+      if (!portalB || !portalB.alive || portalB.isFoundation) continue;
+
+      const distAfter = Math.hypot(goalX - portalB.x, goalZ - portalB.z);
+      if (distAfter >= distGoal - 2.0) continue;
+
+      const toEntranceTime = this.estimateOverlandTravelTime(u.x, u.z, portalA.x, portalA.z, baseSpeed);
+      const tunnelFlatDist = Math.hypot(portalB.x - portalA.x, portalB.z - portalA.z);
+      const tunnelFlatTime = tunnelFlatDist / (baseSpeed * 1.05);
+      const fromExitTime = this.estimateOverlandTravelTime(portalB.x, portalB.z, goalX, goalZ, baseSpeed);
+      const totalTunnelTime = toEntranceTime + tunnelFlatTime + fromExitTime;
+
+      if (totalTunnelTime < bestTime) {
+        bestTime = totalTunnelTime;
+        best = {
+          enterPortalId: portalA.id,
+          exitPortalId: portalB.id,
+          savedSec: overlandTime - totalTunnelTime,
+        };
+      }
+    }
+    return best;
   }
 
   private followPath(u: Entity, goalX: number, goalZ: number, stopDist: number): boolean {
@@ -1347,15 +2947,68 @@ export class World {
     }
 
     const uTpl = TEMPLATES[u.templateId];
+    const isNaval = Boolean(uTpl.isNaval);
+    const tilePassable = (tx: number, tz: number) =>
+      isNaval ? this.terrain.isTileWaterNavigable(tx, tz) : this.terrain.isTileStaticPassable(tx, tz);
+    const findUnitPath = (sx: number, sz: number, gx: number, gz: number) =>
+      isNaval ? this.navGrid.findWaterPath(sx, sz, gx, gz) : this.navGrid.findPath(sx, sz, gx, gz);
+
     let speed = uTpl.speed ?? 5.5;
-    if (uTpl.isCavalry && this.players.get(u.owner)?.researchedTechs.has('tech_cavalry_speed')) {
-      speed *= 1.18;
+    const ownerPlayer = this.players.get(u.owner);
+    if (uTpl.isCavalry) {
+      if (ownerPlayer?.civ === 'britons') speed *= 1.1;
+      if (ownerPlayer?.researchedTechs.has('tech_cavalry_speed')) speed *= 1.18;
+      if (ownerPlayer?.researchedTechs.has('tech_brit_chariots') || ownerPlayer?.researchedTechs.has('tech_sele_cataphract')) {
+        speed *= 1.2;
+      }
+      if (ownerPlayer?.researchedTechs.has('tech_iber_guerrilla')) speed *= 1.22;
+    }
+    if (isNaval) {
+      if (ownerPlayer?.civ === 'athenians') speed *= 1.12;
+      if (ownerPlayer?.researchedTechs.has('tech_naval_ram')) speed *= 1.18;
+      if (ownerPlayer?.researchedTechs.has('tech_ptol_pharos')) speed *= 1.25;
+    }
+    if (ownerPlayer && ownerPlayer.skillActiveTimer > 0) {
+      if ((ownerPlayer.civ === 'spartans' || ownerPlayer.civ === 'gauls') && !isNaval) {
+        speed *= 1.25;
+      } else if (ownerPlayer.civ === 'britons' && !isNaval) {
+        speed *= 1.35;
+      } else if (ownerPlayer.civ === 'iberians' && !isNaval) {
+        speed *= 1.28;
+      } else if (ownerPlayer.civ === 'macedonians' && uTpl.isCavalry) {
+        speed *= 1.25;
+      } else if (ownerPlayer.civ === 'persians' && (uTpl.isCavalry || uTpl.attack?.isRanged)) {
+        speed *= 1.3;
+      } else if (ownerPlayer.civ === 'carthaginians' && (isNaval || uTpl.isCavalry)) {
+        speed *= 1.3;
+      }
     }
 
-    // 1. Escape recovery: if a unit ever lands on an impassable cliff/water tile, smoothly step back onto walkable ground
+    // Automatic smart Tunnel routing: if traversing a flat friendly tunnel is faster than climbing/detouring overland, take the tunnel!
+    if (
+      !isNaval &&
+      u.order.type !== 'enter_tunnel' &&
+      (u.tunnelCooldown ?? 0) <= 0 &&
+      distGoal > 12 &&
+      (u.path.length === 0 || this.tickCount % 20 === (u.id % 20))
+    ) {
+      const shortcut = this.findFasterTunnelRoute(u, goalX, goalZ, speed);
+      if (shortcut) {
+        u.queuedOrders.unshift(u.order);
+        u.order = { type: 'enter_tunnel', portalId: shortcut.enterPortalId };
+        u.path = [];
+        u.pathIndex = 0;
+        u.repathTimer = 0;
+        return false;
+      }
+    }
+
+    // 1. Escape recovery: if a unit ever lands on an impassable tile, smoothly step back onto valid ground/water
     const curTile = this.terrain.worldToTile(u.x, u.z);
-    if (!this.terrain.isTileStaticPassable(curTile.tx, curTile.tz)) {
-      const safe = this.navGrid.findNearestWalkable(curTile.tx, curTile.tz, 8);
+    if (!tilePassable(curTile.tx, curTile.tz)) {
+      const safe = isNaval
+        ? this.navGrid.findNearestWater(curTile.tx, curTile.tz, 12)
+        : this.navGrid.findNearestWalkable(curTile.tx, curTile.tz, 8);
       if (safe) {
         const safeWorld = this.terrain.tileToWorldCenter(safe.tx, safe.tz);
         const edx = safeWorld.x - u.x;
@@ -1373,7 +3026,7 @@ export class World {
     }
 
     if (u.path.length === 0 && u.repathTimer <= 0) {
-      u.path = this.navGrid.findPath(u.x, u.z, goalX, goalZ);
+      u.path = findUnitPath(u.x, u.z, goalX, goalZ);
       u.pathIndex = 0;
       u.repathTimer = 1.0;
     }
@@ -1391,19 +3044,20 @@ export class World {
     const adx = activeWp.x - u.x;
     const adz = activeWp.z - u.z;
     const adist = Math.hypot(adx, adz) || 1;
-    const step = Math.min(speed * SIM_DT, adist);
 
     const dirX = adx / adist;
     const dirZ = adz / adist;
+    const effectiveSpeed = isNaval ? speed : speed * this.getTerrainSlopeSpeedMultiplier(u.x, u.z, dirX, dirZ);
+    const step = Math.min(effectiveSpeed * SIM_DT, adist);
     const oldX = u.x;
     const oldZ = u.z;
     const nx = Math.max(4, Math.min(this.terrain.worldSize - 4, u.x + dirX * step));
     const nz = Math.max(4, Math.min(this.terrain.worldSize - 4, u.z + dirZ * step));
 
-    // 2. Step along desired vector, or smoothly slide along X / Z hillside contours if clipping a slope edge
+    // 2. Step along desired vector, or smoothly slide along X / Z contours
     const nTile = this.terrain.worldToTile(nx, nz);
     let moved = false;
-    if (this.terrain.isTileStaticPassable(nTile.tx, nTile.tz)) {
+    if (tilePassable(nTile.tx, nTile.tz)) {
       u.x = nx;
       u.z = nz;
       moved = true;
@@ -1412,8 +3066,8 @@ export class World {
       const slideZ = Math.max(4, Math.min(this.terrain.worldSize - 4, u.z + dirZ * step));
       const txOnly = this.terrain.worldToTile(slideX, u.z);
       const tzOnly = this.terrain.worldToTile(u.x, slideZ);
-      const canX = Math.abs(dirX) > 0.12 && this.terrain.isTileStaticPassable(txOnly.tx, txOnly.tz);
-      const canZ = Math.abs(dirZ) > 0.12 && this.terrain.isTileStaticPassable(tzOnly.tx, tzOnly.tz);
+      const canX = Math.abs(dirX) > 0.12 && tilePassable(txOnly.tx, txOnly.tz);
+      const canZ = Math.abs(dirZ) > 0.12 && tilePassable(tzOnly.tx, tzOnly.tz);
       if (canX && (!canZ || Math.abs(dirX) >= Math.abs(dirZ))) {
         u.x = slideX;
         moved = true;
@@ -1428,7 +3082,7 @@ export class World {
       const st = (this.stuckTicks.get(u.id) ?? 0) + 1;
       this.stuckTicks.set(u.id, st);
       if (st === 6 || st === 18) {
-        u.path = this.navGrid.findPath(u.x, u.z, goalX, goalZ);
+        u.path = findUnitPath(u.x, u.z, goalX, goalZ);
         u.pathIndex = 0;
         u.repathTimer = 0.6;
       } else if (st >= 30) {
@@ -1439,7 +3093,7 @@ export class World {
           u.pathIndex = 0;
           return true;
         }
-        u.path = this.navGrid.findPath(u.x, u.z, goalX, goalZ);
+        u.path = findUnitPath(u.x, u.z, goalX, goalZ);
         u.pathIndex = 0;
         u.repathTimer = 0.8;
       }
@@ -1455,7 +3109,9 @@ export class World {
   }
 
   private applyLocalAvoidance(u: Entity): void {
-    const uRad = TEMPLATES[u.templateId].radius;
+    const uTpl = TEMPLATES[u.templateId];
+    const uRad = uTpl.radius;
+    const isNaval = Boolean(uTpl.isNaval);
     const activeTargetId =
       u.order.type === 'gather' || u.order.type === 'build' ? u.order.targetId : null;
     const isWorkingAtTarget = u.animState === 'gather' || u.animState === 'build';
@@ -1468,6 +3124,10 @@ export class World {
       if (other.id === u.id || !other.alive || other.garrisonedIn !== null) continue;
       const oTpl = TEMPLATES[other.templateId];
       if (oTpl.isFarmField) continue;
+      // Land units march smoothly across completed Stone Bridges!
+      if (oTpl.isBridge && !other.isFoundation) continue;
+      // Friendly & Allied units pass freely through City Gates!
+      if (oTpl.isGate && this.isAlliedOrOwn(u.owner, other.owner) && !other.isFoundation) continue;
 
       const isOwnTarget = activeTargetId !== null && other.id === activeTargetId;
       // Don't shove a worker back away from the very tree/mine/building they are actively swinging at
@@ -1504,7 +3164,10 @@ export class World {
       const nx = Math.max(4, Math.min(this.terrain.worldSize - 4, u.x + pushX));
       const nz = Math.max(4, Math.min(this.terrain.worldSize - 4, u.z + pushZ));
       const t = this.terrain.worldToTile(nx, nz);
-      if (this.terrain.isTileStaticPassable(t.tx, t.tz)) {
+      const ok = isNaval
+        ? this.terrain.isTileWaterNavigable(t.tx, t.tz)
+        : this.terrain.isTileStaticPassable(t.tx, t.tz);
+      if (ok) {
         u.x = nx;
         u.z = nz;
       }
@@ -1530,15 +3193,16 @@ export class World {
       u.order = { type: 'idle' };
       return;
     }
+    const isNaval = Boolean(uTpl.isNaval);
 
     const player = this.players.get(u.owner);
     if (!player) return;
 
-    // Returning to drop-off building
+    // Returning to drop-off building (Dock for Fishing Boats)
     if (order.returning) {
       let dropOff = order.dropOffId ? this.entities.get(order.dropOffId) : undefined;
       if (!dropOff || !dropOff.alive || dropOff.owner !== u.owner || dropOff.isFoundation) {
-        dropOff = this.findNearestDropOff(u.owner, u.x, u.z, order.resourceType) ?? undefined;
+        dropOff = this.findNearestDropOff(u.owner, u.x, u.z, order.resourceType, isNaval) ?? undefined;
         order.dropOffId = dropOff?.id;
       }
       if (!dropOff) {
@@ -1547,7 +3211,8 @@ export class World {
       }
 
       const dTpl = TEMPLATES[dropOff.templateId];
-      const arrived = this.followPath(u, dropOff.x, dropOff.z, dTpl.radius + uTpl.radius + 0.55);
+      const dropStop = isNaval ? dTpl.radius + uTpl.radius + 2.4 : dTpl.radius + uTpl.radius + 0.55;
+      const arrived = this.followPath(u, dropOff.x, dropOff.z, dropStop);
       if (arrived) {
         if (u.carryType && u.carryAmount > 0) {
           const amount = Math.round(u.carryAmount);
@@ -1558,7 +3223,9 @@ export class World {
         order.returning = false;
         const target = this.entities.get(order.targetId);
         if (target && target.alive && target.resourceRemaining > 0) {
-          u.path = this.navGrid.findPath(u.x, u.z, target.x, target.z);
+          u.path = isNaval
+            ? this.navGrid.findWaterPath(u.x, u.z, target.x, target.z)
+            : this.navGrid.findPath(u.x, u.z, target.x, target.z);
           u.pathIndex = 0;
         }
       }
@@ -1568,16 +3235,20 @@ export class World {
     // Moving to & harvesting resource
     let target = this.entities.get(order.targetId);
     if (!target || !target.alive || target.resourceRemaining <= 0) {
-      const replacement = this.findNearestResource(u.x, u.z, order.resourceType, u.owner, 48);
+      const replacement = this.findNearestResource(u.x, u.z, order.resourceType, u.owner, isNaval ? 95 : 48, isNaval);
       if (replacement) {
         order.targetId = replacement.id;
         target = replacement;
-        u.path = this.navGrid.findPath(u.x, u.z, target.x, target.z);
+        u.path = isNaval
+          ? this.navGrid.findWaterPath(u.x, u.z, target.x, target.z)
+          : this.navGrid.findPath(u.x, u.z, target.x, target.z);
         u.pathIndex = 0;
       } else {
         if (u.carryAmount > 0) {
           order.returning = true;
-        } else if (!this.tryAutoWorkForIdleUnit(u, true)) {
+        } else if (!isNaval && !this.tryAutoWorkForIdleUnit(u, true)) {
+          u.order = { type: 'idle' };
+        } else if (isNaval) {
           u.order = { type: 'idle' };
         }
         return;
@@ -1585,11 +3256,17 @@ export class World {
     }
 
     let tTpl = TEMPLATES[target.templateId];
-    const isPrey = target.templateId === 'deer_herd' || target.templateId === 'wild_boar';
+    const isPrey =
+      target.templateId === 'deer_herd' ||
+      target.templateId === 'wild_boar' ||
+      Boolean(tTpl.isPassiveFauna) ||
+      Boolean(tTpl.isPredator);
     const isHuntingLivePrey = isPrey && target.hp > 0;
     let stopDist: number;
     if (tTpl.isFarmField) {
       stopDist = tTpl.radius * 0.72;
+    } else if (tTpl.isAquatic) {
+      stopDist = tTpl.radius + uTpl.radius + 0.9;
     } else if (isHuntingLivePrey && uTpl.attack?.isRanged) {
       // Ranged hunters can loose arrows/javelins at hunting range, then walk right up to butcher the carcass
       stopDist = Math.min(8.5, Math.max(tTpl.radius + uTpl.radius + 0.35, uTpl.attack.range * 0.65));
@@ -1650,6 +3327,23 @@ export class World {
     rate *= civ.gatherMultiplier[order.resourceType] ?? 1.0;
     if (player.researchedTechs.has('tech_gather_tools')) rate *= 1.25;
     if (player.researchedTechs.has('tech_coinage')) rate *= 1.1;
+    if (
+      player.researchedTechs.has('tech_pers_satrapy') ||
+      player.researchedTechs.has('tech_han_silkroad') ||
+      player.researchedTechs.has('tech_iber_metallurgy') ||
+      player.researchedTechs.has('tech_kush_pyramids') ||
+      player.researchedTechs.has('tech_maur_edicts')
+    ) {
+      rate *= 1.25;
+    }
+    if (player.researchedTechs.has('tech_ptol_nile')) rate *= isNaval ? 1.3 : 1.25;
+    if (isNaval) {
+      if (player.researchedTechs.has('tech_naval_hull')) rate *= 1.25;
+      if (player.researchedTechs.has('tech_carth_colonization')) rate *= 1.2;
+      if (player.skillActiveTimer > 0 && player.civ === 'carthaginians') rate *= 1.25;
+    }
+    if (player.skillActiveTimer > 0 && player.civ === 'athenians') rate *= 1.25;
+    if (player.skillActiveTimer > 0 && player.civ === 'ptolemies') rate *= 1.35;
     if (uTpl.isCitizenSoldier) {
       rate *= u.rank === 1 ? 1.0 : u.rank === 2 ? 0.9 : 0.8;
     }
@@ -1675,10 +3369,12 @@ export class World {
 
     if (u.carryAmount >= gather.capacity - 0.01) {
       order.returning = true;
-      const drop = this.findNearestDropOff(u.owner, u.x, u.z, order.resourceType);
+      const drop = this.findNearestDropOff(u.owner, u.x, u.z, order.resourceType, isNaval);
       if (drop) {
         order.dropOffId = drop.id;
-        u.path = this.navGrid.findPath(u.x, u.z, drop.x, drop.z);
+        u.path = isNaval
+          ? this.navGrid.findWaterPath(u.x, u.z, drop.x, drop.z)
+          : this.navGrid.findPath(u.x, u.z, drop.x, drop.z);
         u.pathIndex = 0;
       }
     }
@@ -1687,29 +3383,72 @@ export class World {
   private updateBuildOrder(u: Entity, order: Extract<UnitOrder, { type: 'build' }>): void {
     const target = this.entities.get(order.targetId);
     const uTpl = TEMPLATES[u.templateId];
-    if (!target || !target.alive || target.owner !== u.owner || !uTpl.gather) {
+    if (!target || !target.alive || target.owner !== u.owner || !uTpl.gather || !uTpl.canBuild || uTpl.canBuild.length === 0) {
       u.order = { type: 'idle' };
       return;
     }
 
     const tTpl = TEMPLATES[target.templateId];
-    const arrived = this.followPath(u, target.x, target.z, tTpl.radius + uTpl.radius + 0.38);
-    if (!arrived) return;
+    const buildReach = tTpl.isBridge ? 3.8 : tTpl.radius + uTpl.radius + 0.38;
+    const distToTarget = Math.hypot(target.x - u.x, target.z - u.z);
+    if (distToTarget > buildReach) {
+      const goal = tTpl.isBridge
+        ? this.getTerraformApproachPos(u, target.tileX, target.tileZ, { x: target.x, z: target.z })
+        : { x: target.x, z: target.z };
+      const arrived = this.followPath(u, goal.x, goal.z, tTpl.isBridge ? 1.4 : buildReach);
+      if (!arrived) return;
+    }
 
     u.facing = Math.atan2(target.x - u.x, target.z - u.z);
     u.animState = 'build';
 
     if (target.isFoundation) {
       const buildTime = tTpl.buildTime ?? 18;
-      const speedRatio = uTpl.gather.buildRate / 20;
-      const progressDelta = (SIM_DT / buildTime) * speedRatio;
-      target.buildProgress = Math.min(1, target.buildProgress + progressDelta);
-      target.hp = Math.min(target.maxHp, target.hp + target.maxHp * progressDelta);
+      const builderOwner = this.players.get(u.owner);
+      const buildBonus =
+        (builderOwner?.researchedTechs.has('tech_rome_corvus') ? 1.4 : 1.0) * (builderOwner?.fastBuildCheat ? 25 : 1.0);
+      const speedRatio = (uTpl.gather.buildRate / 20) * buildBonus;
+
+      if (tTpl.isTunnel && target.tunnelTotalUnits && target.tunnelTotalUnits > 0) {
+        // Tunnel excavation: 100 soil units per tile; normal worker digs ~1 unit per 0.35s (~35s/tile solo)
+        const unitsDug = SIM_DT * (1 / 0.35) * speedRatio;
+        target.tunnelDugUnits = Math.min(target.tunnelTotalUnits, (target.tunnelDugUnits ?? 0) + unitsDug);
+        target.buildProgress = target.tunnelDugUnits / target.tunnelTotalUnits;
+        target.hp = Math.min(target.maxHp, Math.max(25, Math.round(target.maxHp * Math.max(0.1, target.buildProgress))));
+        if (target.linkedTunnelId) {
+          const partner = this.entities.get(target.linkedTunnelId);
+          if (partner && partner.alive) {
+            partner.tunnelDugUnits = target.tunnelDugUnits;
+            partner.buildProgress = target.buildProgress;
+            partner.hp = target.hp;
+          }
+        }
+      } else {
+        const progressDelta = (SIM_DT / buildTime) * speedRatio;
+        target.buildProgress = Math.min(1, target.buildProgress + progressDelta);
+        target.hp = Math.min(target.maxHp, target.hp + target.maxHp * progressDelta);
+      }
 
       if (target.buildProgress >= 1) {
         target.isFoundation = false;
         target.hp = target.maxHp;
         target.capturePoints = { [target.owner]: target.captureMax };
+        if (tTpl.isBridge) {
+          this.terrain.setBridgeTile(target.tileX, target.tileZ, true);
+        }
+        if (tTpl.isTunnel) {
+          if (target.linkedTunnelId) {
+            const partner = this.entities.get(target.linkedTunnelId);
+            if (partner && partner.alive && partner.isFoundation) {
+              partner.isFoundation = false;
+              partner.buildProgress = 1;
+              partner.hp = partner.maxHp;
+              partner.capturePoints = { [partner.owner]: partner.captureMax };
+            }
+          } else {
+            this.linkTunnelPortal(target);
+          }
+        }
         this.territoryDirty = true;
         this.recomputePopulations();
         const player = this.players.get(target.owner);
@@ -1726,6 +3465,11 @@ export class World {
         // Auto-farm if they just built a Wheat Field!
         if (tTpl.isFarmField) {
           u.order = { type: 'gather', targetId: target.id, resourceType: 'food', returning: false };
+          return;
+        }
+        // Advance queued build orders (e.g. continuous dragged wall segments)
+        if (u.queuedOrders.length > 0) {
+          this.advanceQueuedOrder(u);
           return;
         }
         // Or help another nearby foundation
@@ -1772,6 +3516,263 @@ export class World {
     }
   }
 
+  private updateTerraformOrder(u: Entity, order: Extract<UnitOrder, { type: 'terraform' }>): void {
+    const epochTx = order.mode === 'raise' ? order.destTileX : order.tileX;
+    const epochTz = order.mode === 'raise' ? order.destTileZ : order.tileZ;
+    const jobAlreadyCompleted = this.terrain.getTerraformEpoch(epochTx, epochTz) > order.startEpoch;
+
+    // Multi-worker cooperation: once this tile's 100-unit layer finishes, ALL collaborating workers stop instead of digging deeper!
+    if (jobAlreadyCompleted && (order.stage === 'scoop' || u.carryAmount <= 0)) {
+      u.carryType = null;
+      u.carryAmount = 0;
+      this.advanceQueuedOrder(u);
+      return;
+    }
+
+    const activeTx = order.stage === 'scoop' ? order.tileX : order.destTileX;
+    const activeTz = order.stage === 'scoop' ? order.tileZ : order.destTileZ;
+    if (!this.canTerraformTile(activeTx, activeTz)) {
+      this.advanceQueuedOrder(u);
+      return;
+    }
+
+    const center = this.terrain.tileToWorldCenter(activeTx, activeTz);
+    const targetPassable = this.terrain.isTileStaticPassable(activeTx, activeTz);
+    const distToCenter = Math.hypot(center.x - u.x, center.z - u.z);
+    const workReach = targetPassable ? 3.8 : 5.6;
+
+    if (distToCenter > workReach) {
+      const approach = this.getTerraformApproachPos(u, activeTx, activeTz, center);
+      const arrived = this.followPath(u, approach.x, approach.z, targetPassable ? 3.6 : 1.4);
+      if (!arrived) return;
+    }
+
+    u.facing = Math.atan2(center.x - u.x, center.z - u.z);
+    u.animState = 'gather';
+
+    const player = this.players.get(u.owner);
+    const fast = Boolean(player?.fastBuildCheat);
+    const speedMult = fast ? 25 : 1;
+    // 100 units of soil per tile; each normal worker digs 1 unit per ~0.45s swing and hauls it to the dump tile!
+    const duration = order.mode === 'level' ? 0.42 : order.stage === 'scoop' ? 0.45 : 0.3;
+    order.progress += (SIM_DT * speedMult) / duration;
+
+    if (order.progress >= 1.0) {
+      order.progress = 0;
+      const unitsPerTrip = fast ? 10 : 1;
+
+      if (order.mode === 'level') {
+        if (this.terrain.getTerraformEpoch(order.tileX, order.tileZ) > order.startEpoch) {
+          this.advanceQueuedOrder(u);
+          return;
+        }
+        const res = this.terrain.levelSoilUnit(order.tileX, order.tileZ, unitsPerTrip);
+        if (res.leveled) {
+          this.events.push({ type: 'gather_tick', x: center.x, z: center.z, resourceType: 'stone' });
+          this.advanceQueuedOrder(u);
+        }
+        return;
+      }
+
+      if (order.stage === 'scoop') {
+        if (this.terrain.getTerraformEpoch(epochTx, epochTz) > order.startEpoch) {
+          this.advanceQueuedOrder(u);
+          return;
+        }
+        const res = this.terrain.digSoilUnit(order.tileX, order.tileZ, unitsPerTrip);
+        if (res.subsided) {
+          this.events.push({ type: 'gather_tick', x: center.x, z: center.z, resourceType: 'stone' });
+          this.nudgeUnitsOutOfWater(center.x, center.z);
+        }
+        u.carryType = 'stone';
+        u.carryAmount = unitsPerTrip;
+        order.stage = 'dump';
+
+        const dumpCenter = this.terrain.tileToWorldCenter(order.destTileX, order.destTileZ);
+        const dumpApproach = this.getTerraformApproachPos(u, order.destTileX, order.destTileZ, dumpCenter);
+        u.path = this.navGrid.findPath(u.x, u.z, dumpApproach.x, dumpApproach.z);
+        u.pathIndex = 0;
+        u.repathTimer = 1.0;
+      } else {
+        const hauled = Math.max(1, Math.round(u.carryAmount || unitsPerTrip));
+        const res = this.terrain.depositSoilUnit(order.destTileX, order.destTileZ, hauled);
+        u.carryType = null;
+        u.carryAmount = 0;
+
+        if (res.raised) {
+          this.events.push({ type: 'gather_tick', x: center.x, z: center.z, resourceType: 'stone' });
+          this.nudgeUnitsOutOfWater(center.x, center.z);
+        }
+
+        // Stop cleanly once this 1-layer (100-unit) terraform epoch completes — assisting workers NEVER dig a second layer!
+        const finishedLayer = this.terrain.getTerraformEpoch(epochTx, epochTz) > order.startEpoch;
+
+        if (finishedLayer) {
+          this.advanceQueuedOrder(u);
+        } else {
+          order.stage = 'scoop';
+          const srcCenter = this.terrain.tileToWorldCenter(order.tileX, order.tileZ);
+          const srcApproach = this.getTerraformApproachPos(u, order.tileX, order.tileZ, srcCenter);
+          u.path = this.navGrid.findPath(u.x, u.z, srcApproach.x, srcApproach.z);
+          u.pathIndex = 0;
+          u.repathTimer = 1.0;
+        }
+      }
+    }
+  }
+
+  private nudgeUnitsOutOfWater(cx: number, cz: number): void {
+    for (const e of this.entities.values()) {
+      if (!e.alive || e.garrisonedIn !== null) continue;
+      const eTpl = TEMPLATES[e.templateId];
+      if (eTpl.kind !== 'unit' || eTpl.isNaval) continue;
+      if (Math.hypot(e.x - cx, e.z - cz) > 6.5) continue;
+      const et = this.terrain.worldToTile(e.x, e.z);
+      if (!this.terrain.isTileStaticPassable(et.tx, et.tz)) {
+        const safe = this.navGrid.findNearestWalkable(et.tx, et.tz, 6, et.tx, et.tz);
+        if (safe) {
+          const safePos = this.terrain.tileToWorldCenter(safe.tx, safe.tz);
+          e.x = safePos.x;
+          e.z = safePos.z;
+        }
+      }
+    }
+  }
+
+  private updateEnterTunnelOrder(u: Entity, order: Extract<UnitOrder, { type: 'enter_tunnel' }>): void {
+    const portal = this.entities.get(order.portalId);
+    const exitId = order.exitPortalId ?? portal?.linkedTunnelId ?? null;
+    const exit = exitId ? this.entities.get(exitId) : null;
+    if (!exit || !exit.alive || exit.isFoundation) {
+      this.advanceQueuedOrder(u);
+      return;
+    }
+
+    const uTpl = TEMPLATES[u.templateId];
+    const flatSpeed = (uTpl.speed ?? 5.5) * 1.05;
+
+    // Phase 2: Unit is travelling inside the flat underground tunnel at full flat-road speed!
+    if (order.transitRemaining !== undefined && order.transitRemaining > 0) {
+      order.transitRemaining = Math.max(0, order.transitRemaining - SIM_DT);
+      const dx = exit.x - u.x;
+      const dz = exit.z - u.z;
+      const remDist = Math.hypot(dx, dz);
+      if (remDist > 0.1) {
+        const moveStep = Math.min(remDist, flatSpeed * SIM_DT);
+        u.x += (dx / remDist) * moveStep;
+        u.z += (dz / remDist) * moveStep;
+        u.facing = Math.atan2(dx, dz);
+      }
+      u.animState = 'walk';
+      if (order.transitRemaining > 0) return;
+
+      // Emerge cleanly on the clearest walkable tile right outside the linked exit tunnel portal!
+      const pTpl = TEMPLATES[exit.templateId];
+      const exitTile = this.navGrid.findNearestWalkable(exit.tileX, exit.tileZ, 4, exit.tileX, exit.tileZ);
+      const outPos = exitTile
+        ? this.terrain.tileToWorldCenter(exitTile.tx, exitTile.tz)
+        : { x: exit.x, z: exit.z + pTpl.radius + 1.5 };
+      u.x = outPos.x;
+      u.z = outPos.z;
+      u.prevX = outPos.x;
+      u.prevZ = outPos.z;
+      u.guardX = outPos.x;
+      u.guardZ = outPos.z;
+      u.path = [];
+      u.pathIndex = 0;
+      u.tunnelCooldown = 2.5;
+      this.advanceQueuedOrder(u);
+      return;
+    }
+
+    // Phase 1: Walk to the entrance portal mouth
+    if (!portal || !portal.alive || portal.isFoundation || !portal.linkedTunnelId) {
+      this.advanceQueuedOrder(u);
+      return;
+    }
+    const pTpl = TEMPLATES[portal.templateId];
+    const dist = Math.hypot(portal.x - u.x, portal.z - u.z);
+    if (dist > pTpl.radius + 2.4) {
+      const approach = this.getTerraformApproachPos(u, portal.tileX, portal.tileZ, { x: portal.x, z: portal.z });
+      const arrived = this.followPath(u, approach.x, approach.z, 1.8);
+      if (!arrived) return;
+    }
+
+    // Enter underground flat passage!
+    const tunnelDist = Math.hypot(exit.x - portal.x, exit.z - portal.z);
+    order.exitPortalId = exit.id;
+    order.transitRemaining = Math.max(0.25, tunnelDist / flatSpeed);
+    u.x = portal.x;
+    u.z = portal.z;
+    u.path = [];
+    u.pathIndex = 0;
+  }
+
+  private updateTradeOrder(u: Entity, order: Extract<UnitOrder, { type: 'trade' }>): void {
+    const home = this.entities.get(order.homeMarketId);
+    const target = this.entities.get(order.targetMarketId);
+    if (
+      !home ||
+      !home.alive ||
+      home.isFoundation ||
+      !this.isAlliedOrOwn(u.owner, home.owner) ||
+      !target ||
+      !target.alive ||
+      target.isFoundation ||
+      !this.isAlliedOrOwn(u.owner, target.owner) ||
+      home.id === target.id
+    ) {
+      // Attempt automatic re-pairing if another pair of friendly/allied Markets exists
+      const pair = this.findFarthestMarketPair(u.owner);
+      if (pair) {
+        order.homeMarketId = pair[0].id;
+        order.targetMarketId = pair[1].id;
+        order.leg = 'toTarget';
+        u.path = [];
+        return;
+      }
+      u.order = { type: 'idle' };
+      return;
+    }
+
+    const dest = order.leg === 'toTarget' ? target : home;
+    const destTpl = TEMPLATES[dest.templateId];
+    const uTpl = TEMPLATES[u.templateId];
+    const arrived = this.followPath(u, dest.x, dest.z, destTpl.radius + uTpl.radius + 1.15);
+    if (!arrived) return;
+
+    // Delivered cargo between two Markets -> earn Gold Coins (Metal) proportional to route distance, trade techs & 0 A.D. allied bonus!
+    const player = this.players.get(u.owner);
+    if (player) {
+      const routeDist = Math.hypot(target.x - home.x, target.z - home.z);
+      let tradeMult = home.owner !== target.owner ? 1.25 : 1.0; // Authentic 0 A.D. +25% foreign allied market trade bonus!
+      if (player.researchedTechs.has('tech_coinage')) tradeMult += 0.5;
+      if (player.researchedTechs.has('tech_pers_satrapy')) tradeMult += 0.4;
+      if (player.researchedTechs.has('tech_carth_colonization') || player.researchedTechs.has('tech_han_silkroad')) {
+        tradeMult += 0.5;
+      }
+      const goldEarned = Math.max(12, Math.round(routeDist * 0.48 * tradeMult));
+      player.resources.metal += goldEarned;
+      player.stats.resourcesGathered += goldEarned;
+      u.carryType = 'metal';
+      u.carryAmount = goldEarned;
+      order.cargoGold = goldEarned;
+      this.events.push({
+        type: 'trade_payout',
+        playerId: u.owner,
+        x: dest.x,
+        z: dest.z,
+        amount: goldEarned,
+      });
+    }
+
+    // Reverse leg and shuttle continuously back to the other Market!
+    order.leg = order.leg === 'toTarget' ? 'toHome' : 'toTarget';
+    u.path = [];
+    u.pathIndex = 0;
+    u.repathTimer = 0;
+  }
+
   private updateGarrisonOrder(u: Entity, order: Extract<UnitOrder, { type: 'garrison' }>): void {
     const building = this.entities.get(order.targetId);
     if (!building || !building.alive || building.owner !== u.owner || building.isFoundation) {
@@ -1799,7 +3800,15 @@ export class World {
     const uTpl = TEMPLATES[u.templateId];
     const atk = uTpl.attack;
 
-    if (!target || !target.alive || target.owner === u.owner || target.garrisonedIn !== null || !atk) {
+    if (
+      !target ||
+      !target.alive ||
+      target.hp <= 0 ||
+      target.owner === u.owner ||
+      !this.areHostile(u.owner, target.owner) ||
+      target.garrisonedIn !== null ||
+      !atk
+    ) {
       this.advanceQueuedOrder(u);
       return;
     }
@@ -1860,10 +3869,40 @@ export class World {
     let dmgMult = 1.0;
     if (player && aTpl.kind === 'unit') {
       const civ = CIVS[player.civ];
-      if (!aTpl.isWoman && !aTpl.isCavalry && !aTpl.isSiege) dmgMult += civ.infantryAttackBonusPct;
+      if (!aTpl.isWoman && !aTpl.isCavalry && !aTpl.isSiege && !aTpl.isNaval) dmgMult += civ.infantryAttackBonusPct;
       if (player.researchedTechs.has('tech_iron_weapons')) dmgMult += 0.2;
       if (player.researchedTechs.has('tech_steel_weapons')) dmgMult += 0.25;
-      if (aTpl.isSiege && player.researchedTechs.has('tech_siege_engineering')) dmgMult += 0.35;
+      if (player.researchedTechs.has('phase_empire')) dmgMult += 0.15;
+      if (player.researchedTechs.has('tech_rome_marian')) dmgMult += 0.15;
+      if (player.researchedTechs.has('tech_spart_agoge')) dmgMult += 0.18;
+      if (player.researchedTechs.has('tech_pers_immortals')) dmgMult += 0.2;
+      if (player.researchedTechs.has('tech_carth_mercenaries')) dmgMult += 0.2;
+      if (player.researchedTechs.has('tech_han_crossbow')) dmgMult += 0.25;
+      if (player.researchedTechs.has('tech_brit_chariots')) dmgMult += 0.25;
+      if (player.researchedTechs.has('tech_gaul_charge')) dmgMult += 0.28;
+      if (player.researchedTechs.has('tech_iber_guerrilla')) dmgMult += 0.25;
+      if (player.researchedTechs.has('tech_mace_sarissa')) dmgMult += 0.25;
+      if (player.researchedTechs.has('tech_sele_cataphract')) dmgMult += 0.25;
+      if (aTpl.isSiege) {
+        if (player.civ === 'macedonians' || player.civ === 'persians') dmgMult += 0.12;
+        if (player.researchedTechs.has('tech_siege_engineering')) dmgMult += 0.35;
+        if (player.researchedTechs.has('tech_mace_siege')) dmgMult += 0.4;
+        if (player.researchedTechs.has('tech_maur_elephants')) dmgMult += 0.3;
+      }
+      if (aTpl.isNaval) {
+        if (player.civ === 'athenians') dmgMult += 0.15;
+        if (player.researchedTechs.has('tech_naval_ram')) dmgMult += 0.3;
+        if (player.researchedTechs.has('tech_ptol_pharos')) dmgMult += 0.25;
+      }
+      if (player.skillActiveTimer > 0) {
+        if (player.civ === 'romans' || player.civ === 'britons' || player.civ === 'seleucids') dmgMult += 0.3;
+        else if (player.civ === 'macedonians') dmgMult += 0.35;
+        else if (player.civ === 'mauryas') dmgMult += 0.4;
+        else if (player.civ === 'kushites') dmgMult += 0.25;
+        else if ((player.civ === 'spartans' || player.civ === 'gauls') && !atk.isRanged) dmgMult += 0.4;
+        else if (player.civ === 'han' && atk.isRanged) dmgMult += 0.3;
+        else if (player.civ === 'iberians' && atk.isRanged) dmgMult += 0.35;
+      }
       if (this.playerHasCompletedWonder(player.id)) dmgMult += 0.15;
       if (attacker.rank === 2) dmgMult *= 1.15;
       if (attacker.rank === 3) dmgMult *= 1.35;
@@ -1891,6 +3930,8 @@ export class World {
       const elevDiff = aY - tY;
       const elevationBonus = Math.max(0.85, Math.min(1.25, 1 + elevDiff * 0.04));
 
+      const projKind = atk.projectileKind ?? (attacker.templateId === 'rome_velite' ? 'javelin' : 'arrow');
+      const arcMult = projKind === 'flaming_boulder' || projKind === 'boulder' ? 0.28 : 0.14;
       this.projectiles.push({
         id: this.nextProjectileId++,
         owner: attacker.owner,
@@ -1907,10 +3948,11 @@ export class World {
         targetZ: target.z,
         progress: 0,
         duration,
-        arcHeight: Math.min(6.5, 1.2 + dist * 0.14),
+        arcHeight: Math.min(11.5, 1.4 + dist * arcMult),
         damage,
         elevationBonus,
-        kind: attacker.templateId === 'rome_velite' ? 'javelin' : 'arrow',
+        splashRadius: atk.splashRadius,
+        kind: projKind,
       });
     } else {
       // Bonus vs cavalry for spear hoplites
@@ -1928,6 +3970,7 @@ export class World {
     multiplier: number
   ): void {
     if (!target.alive) return;
+    if (attacker && !this.areHostile(attacker.owner, target.owner)) return;
     const armor = this.getEntityArmor(target);
     // Authentic 0 A.D. exponential armor mitigation: 0.9^armor
     const hackDmg = raw.hack * Math.pow(0.9, armor.hack);
@@ -1936,7 +3979,16 @@ export class World {
     const total = Math.max(1, (hackDmg + pierceDmg + crushDmg) * multiplier);
 
     target.hp -= total;
-    this.notifyUnderAttack(target.owner, target.x, target.z);
+    if (target.owner > 0) {
+      this.notifyUnderAttack(
+        target.owner,
+        target.x,
+        target.z,
+        attacker?.templateId,
+        target.templateId,
+        attacker?.owner === 0
+      );
+    }
 
     // Retaliation & squad mutual defense when attacked
     if (attacker && attacker.alive && attacker.owner !== target.owner && attacker.owner !== 0) {
@@ -1953,7 +4005,13 @@ export class World {
 
     if (target.hp <= 0) {
       target.hp = 0;
-      target.alive = false;
+      const targetTpl = TEMPLATES[target.templateId];
+      // Slain Gaia fauna/predators remain as harvestable meat carcasses instead of vanishing!
+      if (target.owner === 0 && (targetTpl.isPredator || targetTpl.isPassiveFauna)) {
+        target.alive = true;
+      } else {
+        target.alive = false;
+      }
       if (attacker && attacker.alive && TEMPLATES[attacker.templateId].kind === 'unit') {
         this.awardXp(attacker, TEMPLATES[target.templateId].kind === 'building' ? 45 : 35);
       }
@@ -1995,7 +4053,9 @@ export class World {
     if (!atk?.capturePower || building.captureMax <= 0) return;
 
     const rankMult = attacker.rank === 1 ? 1.0 : attacker.rank === 2 ? 1.15 : 1.3;
-    const power = atk.capturePower * rankMult * SIM_DT;
+    const atkPlayer = this.players.get(attacker.owner);
+    const skillCapMult = atkPlayer && atkPlayer.skillActiveTimer > 0 && atkPlayer.civ === 'romans' ? 1.4 : 1.0;
+    const power = atk.capturePower * rankMult * skillCapMult * SIM_DT;
     const defOwner = building.owner;
     const curDef = building.capturePoints[defOwner] ?? building.captureMax;
     const curAtk = building.capturePoints[attacker.owner] ?? 0;
@@ -2009,7 +4069,7 @@ export class World {
     building.capturePoints[defOwner] = newDef;
     building.capturePoints[attacker.owner] = Math.min(building.captureMax, curAtk + transferred);
 
-    this.notifyUnderAttack(defOwner, building.x, building.z);
+    this.notifyUnderAttack(defOwner, building.x, building.z, attacker.templateId, building.templateId, false);
 
     if (building.capturePoints[attacker.owner] >= building.captureMax - 0.5 || newDef <= 0.5) {
       const oldOwner = building.owner;
@@ -2042,6 +4102,16 @@ export class World {
 
       if (b.attackCooldown > 0) b.attackCooldown = Math.max(0, b.attackCooldown - SIM_DT);
 
+      // Advance timed building upgrades (e.g., House -> 2F Apartment, Apartment 2F -> 3F)
+      if (b.upgradeTargetTemplateId && b.upgradeTotalTime && b.upgradeTotalTime > 0) {
+        const ownerP = this.players.get(b.owner);
+        const speedMult = ownerP?.fastBuildCheat ? 30 : 1;
+        b.upgradeProgress = Math.min(1, (b.upgradeProgress ?? 0) + (SIM_DT * speedMult) / b.upgradeTotalTime);
+        if (b.upgradeProgress >= 1) {
+          this.completeBuildingUpgrade(b);
+        }
+      }
+
       // Heal garrisoned units slowly (boosted by Sacred Medicine)
       if (b.garrisonedIds.length > 0) {
         const healMult = this.players.get(b.owner)?.researchedTechs.has('tech_temple_healing') ? 1.5 : 1.0;
@@ -2057,11 +4127,36 @@ export class World {
       if (tpl.isMarket && this.tickCount % (SIM_HZ * 6) === (b.id % (SIM_HZ * 6))) {
         const ownerP = this.players.get(b.owner);
         if (ownerP) {
-          const mult = ownerP.researchedTechs.has('tech_coinage') ? 1.5 : 1.0;
+          let mult = ownerP.researchedTechs.has('tech_coinage') ? 1.5 : 1.0;
+          if (ownerP.researchedTechs.has('tech_pers_satrapy')) mult += 0.4;
+          if (ownerP.researchedTechs.has('tech_carth_colonization') || ownerP.researchedTechs.has('tech_han_silkroad')) {
+            mult += 0.5;
+          }
+          if (ownerP.civ === 'carthaginians') mult += 0.2;
           ownerP.resources.food += Math.round(4 * mult);
           ownerP.resources.wood += Math.round(4 * mult);
           ownerP.resources.stone += Math.round(3 * mult);
           ownerP.resources.metal += Math.round(4 * mult);
+        }
+      }
+
+      // Passive imperial/league tribute every 10 seconds (Persian Apadana & Athenian Delian League)
+      if (this.tickCount % (SIM_HZ * 10) === (b.id % (SIM_HZ * 10))) {
+        const ownerP = this.players.get(b.owner);
+        if (ownerP) {
+          if (tpl.passiveTributePer10Sec) {
+            ownerP.resources.food += tpl.passiveTributePer10Sec.food ?? 0;
+            ownerP.resources.wood += tpl.passiveTributePer10Sec.wood ?? 0;
+            ownerP.resources.stone += tpl.passiveTributePer10Sec.stone ?? 0;
+            ownerP.resources.metal += tpl.passiveTributePer10Sec.metal ?? 0;
+          }
+          if (
+            ownerP.researchedTechs.has('tech_athen_delian') &&
+            (b.templateId === 'civic_center' || b.templateId === 'gymnasium')
+          ) {
+            ownerP.resources.food += 15;
+            ownerP.resources.metal += 15;
+          }
         }
       }
 
@@ -2126,27 +4221,74 @@ export class World {
       p.y = baseY + Math.sin(t * Math.PI) * p.arcHeight;
 
       if (p.progress >= 1) {
+        const attacker = this.entities.get(p.sourceId) ?? null;
         if (target && target.alive) {
-          const attacker = this.entities.get(p.sourceId) ?? null;
           this.applyDamage(attacker, target, p.damage, p.elevationBonus);
           this.events.push({ type: 'projectile_hit', x: p.targetX, z: p.targetZ });
+        }
+        // Area splash damage for Lithobolos Stone Throwers & Onager Catapults!
+        if (p.splashRadius && p.splashRadius > 0) {
+          const nearby = this.spatialHash.queryRadius(p.targetX, p.targetZ, p.splashRadius, this.queryBuf);
+          const splashDmg = { hack: p.damage.hack * 0.55, pierce: p.damage.pierce * 0.55, crush: p.damage.crush * 0.55 };
+          for (let j = 0; j < nearby.length; j++) {
+            const c = nearby[j];
+            if (!c.alive || c.id === p.targetId || c.owner === p.owner || c.garrisonedIn !== null) continue;
+            if (!this.areHostile(p.owner, c.owner)) continue;
+            if (c.owner === 0 && !TEMPLATES[c.templateId].isPredator) continue;
+            if (Math.hypot(c.x - p.targetX, c.z - p.targetZ) <= p.splashRadius) {
+              this.applyDamage(attacker, c, splashDmg, p.elevationBonus);
+            }
+          }
         }
         this.projectiles.splice(i, 1);
       }
     }
   }
 
-  /** Lifelike wildlife AI: Deer bolt & flee when hunted; Wild Boars turn & fight back before collapsing */
+  /** Lifelike wildlife AI: Birds soar across the sky; Sea Monsters patrol deep water; Deer/Gazelles bolt; Predators stalk & attack! */
   private updateWildlife(): void {
     const steerOffsets = [0, 0.55, -0.55, 1.15, -1.15, 1.75, -1.75];
 
     for (const e of this.entities.values()) {
       if (!e.alive || e.owner !== 0) continue;
-      const isDeer = e.templateId === 'deer_herd';
-      const isBoar = e.templateId === 'wild_boar';
-      if (!isDeer && !isBoar) continue;
+      const tpl = TEMPLATES[e.templateId];
 
-      // Slain carcass remains motionless on the ground while workers butcher it
+      // Soaring ambient wild birds (Eagles & Seagulls) gliding smoothly in wide figure-8 / circular sky arcs
+      if (tpl.isFlying) {
+        const angularSpeed = e.templateId === 'wild_seagull' ? 0.24 : 0.17;
+        const rx = 20 + (e.id % 5) * 4.5;
+        const rz = 16 + ((e.id * 3) % 5) * 4.0;
+        const tPrev = e.animTime;
+        const tNext = tPrev + angularSpeed * SIM_DT;
+        e.animTime = tNext;
+        const nx = Math.max(
+          10,
+          Math.min(this.terrain.worldSize - 10, e.guardX + Math.cos(tNext) * rx)
+        );
+        const nz = Math.max(
+          10,
+          Math.min(this.terrain.worldSize - 10, e.guardZ + Math.sin(tNext * (e.id % 2 === 0 ? 1 : 2)) * rz)
+        );
+        const dvx = (nx - e.x) / SIM_DT;
+        const dvz = (nz - e.z) / SIM_DT;
+        e.vx = dvx;
+        e.vz = dvz;
+        e.x = nx;
+        e.z = nz;
+        if (Math.hypot(dvx, dvz) > 0.05) {
+          e.facing = Math.atan2(dvx, dvz);
+        }
+        e.animState = 'walk';
+        continue;
+      }
+
+      const isFleeingPrey = e.templateId === 'deer_herd' || e.templateId === 'wild_gazelle';
+      const isRetaliator = e.templateId === 'wild_boar' || e.templateId === 'wild_elephant';
+      const isPredator = Boolean(tpl.isPredator);
+      const isSeaMonster = Boolean(tpl.isSeaMonster);
+      if (!isFleeingPrey && !isRetaliator && !isPredator) continue;
+
+      // Slain carcass remains motionless on the ground/water while workers or fishing boats harvest it
       if (e.hp <= 0) {
         e.vx = 0;
         e.vz = 0;
@@ -2155,11 +4297,68 @@ export class World {
         continue;
       }
 
-      const st = this.wildlifeState.get(e.id);
+      let st = this.wildlifeState.get(e.id);
+
+      // Aggressive predators proactively spot & stalk nearby targets (Sea Monsters stalk Ships; land predators stalk land units)
+      if (isPredator && (!st || st.alertTimer <= 0)) {
+        if (this.tickCount % 5 === (e.id % 5)) {
+          const aggroRad = isSeaMonster ? 13.5 : 9.5;
+          const leashRad = isSeaMonster ? 26 : 18;
+          const nearby = this.spatialHash.queryRadius(e.x, e.z, aggroRad, this.queryBuf);
+          let prey: Entity | null = null;
+          let bestD = aggroRad;
+          for (let i = 0; i < nearby.length; i++) {
+            const c = nearby[i];
+            if (!c.alive || c.owner === 0 || c.garrisonedIn !== null) continue;
+            const cTpl = TEMPLATES[c.templateId];
+            if (cTpl.kind !== 'unit') continue;
+            if (isSeaMonster ? !cTpl.isNaval : cTpl.isNaval) continue;
+            const d = Math.hypot(c.x - e.x, c.z - e.z);
+            if (d < bestD && Math.hypot(c.x - e.guardX, c.z - e.guardZ) < leashRad) {
+              bestD = d;
+              prey = c;
+            }
+          }
+          if (prey) {
+            st = { hunterId: prey.id, alertTimer: 6.5, attackCooldown: 0 };
+            this.wildlifeState.set(e.id, st);
+          }
+        }
+      }
+
       if (!st || st.alertTimer <= 0) {
-        e.vx = 0;
-        e.vz = 0;
-        e.animState = 'idle';
+        if (isSeaMonster) {
+          // Calm Sea Dragons, Giant Octopuses & Loch Ness Monsters patrol smoothly within their aquatic territory!
+          const patrolAng = this.time * (e.templateId === 'lake_nessie' ? 0.24 : 0.28) + e.id * 1.7;
+          const patrolRad = e.templateId === 'lake_nessie' ? 4.2 : 7.5;
+          const targetPx = e.guardX + Math.cos(patrolAng) * patrolRad;
+          const targetPz = e.guardZ + Math.sin(patrolAng) * patrolRad;
+          const pdx = targetPx - e.x;
+          const pdz = targetPz - e.z;
+          const pDist = Math.hypot(pdx, pdz);
+          if (pDist > 0.35) {
+            const step = Math.min(1.65 * SIM_DT, pDist);
+            const nx = e.x + (pdx / pDist) * step;
+            const nz = e.z + (pdz / pDist) * step;
+            const nt = this.terrain.worldToTile(nx, nz);
+            if (this.terrain.isTileWaterNavigable(nt.tx, nt.tz)) {
+              e.vx = (nx - e.x) / SIM_DT;
+              e.vz = (nz - e.z) / SIM_DT;
+              e.x = nx;
+              e.z = nz;
+              e.facing = Math.atan2(pdx, pdz);
+              e.animState = 'walk';
+            } else {
+              e.vx = 0;
+              e.vz = 0;
+              e.animState = 'idle';
+            }
+          }
+        } else {
+          e.vx = 0;
+          e.vz = 0;
+          e.animState = 'idle';
+        }
         if (st) this.wildlifeState.delete(e.id);
         continue;
       }
@@ -2168,7 +4367,13 @@ export class World {
       st.attackCooldown = Math.max(0, st.attackCooldown - SIM_DT);
 
       const hunter = this.entities.get(st.hunterId);
-      if (!hunter || !hunter.alive || hunter.garrisonedIn !== null) {
+      const maxLeash = isSeaMonster ? 28 : 20;
+      if (
+        !hunter ||
+        !hunter.alive ||
+        hunter.garrisonedIn !== null ||
+        (isPredator && Math.hypot(e.x - e.guardX, e.z - e.guardZ) > maxLeash)
+      ) {
         e.vx = 0;
         e.vz = 0;
         e.animState = 'idle';
@@ -2180,10 +4385,10 @@ export class World {
       const dz = hunter.z - e.z;
       const dist = Math.hypot(dx, dz) || 0.001;
 
-      if (isDeer) {
-        // Skittish deer bolts AWAY from hunter at 3.9 u/s (catchable by citizens at ~5.5 u/s)
+      if (isFleeingPrey) {
+        // Skittish deer & gazelles bolt AWAY from hunter
         const baseAngle = Math.atan2(-dx, -dz);
-        const fleeSpeed = 3.9;
+        const fleeSpeed = e.templateId === 'wild_gazelle' ? 4.3 : 3.9;
         const step = fleeSpeed * SIM_DT;
         let moved = false;
         for (const off of steerOffsets) {
@@ -2208,31 +4413,61 @@ export class World {
           e.animState = 'idle';
         }
       } else {
-        // Wild Boar stands its ground and fights back with tusk strikes!
+        // Boars, Wild Elephants, Land Predators & Deep-Sea Monsters charge & strike!
         e.facing = Math.atan2(dx, dz);
         const hTpl = TEMPLATES[hunter.templateId];
-        const bTpl = TEMPLATES[e.templateId];
-        const strikeRange = bTpl.radius + hTpl.radius + 0.55;
+        const strikeRange = tpl.radius + hTpl.radius + (isSeaMonster ? 1.15 : 0.58);
+        const biteDamage = isSeaMonster
+          ? 24
+          : e.templateId === 'wild_elephant'
+            ? 14
+            : e.templateId === 'predator_bear'
+              ? 12
+              : e.templateId === 'predator_lion'
+                ? 11
+                : e.templateId === 'predator_wolf'
+                  ? 7
+                  : 5;
+        const chaseSpeed = isSeaMonster
+          ? 4.4
+          : e.templateId === 'predator_wolf'
+            ? 4.7
+            : e.templateId === 'predator_lion'
+              ? 4.5
+              : e.templateId === 'predator_bear'
+                ? 3.7
+                : e.templateId === 'wild_elephant'
+                  ? 3.3
+                  : 3.6;
+
         if (dist <= strikeRange) {
           e.vx = 0;
           e.vz = 0;
           e.animState = 'attack';
           if (st.attackCooldown <= 0) {
-            this.applyDamage(null, hunter, { hack: 5, pierce: 0, crush: 0 }, 1.0);
+            this.applyDamage(
+              e,
+              hunter,
+              { hack: biteDamage, pierce: 0, crush: isSeaMonster ? 14 : 0 },
+              1.0
+            );
             this.events.push({ type: 'attack_swing', x: hunter.x, z: hunter.z, isRanged: false });
-            st.attackCooldown = 1.25;
+            st.attackCooldown = isSeaMonster ? 1.55 : 1.25;
+            st.alertTimer = Math.max(st.alertTimer, 4.0);
           }
-        } else if (dist < 14) {
+        } else if (dist < (isSeaMonster ? 20 : 15)) {
           const baseAngle = Math.atan2(dx, dz);
-          const chargeSpeed = 3.6;
-          const step = Math.min(chargeSpeed * SIM_DT, dist - strikeRange * 0.85);
+          const step = Math.min(chaseSpeed * SIM_DT, dist - strikeRange * 0.85);
           let moved = false;
           for (const off of steerOffsets) {
             const ang = baseAngle + off;
             const nx = Math.max(6, Math.min(this.terrain.worldSize - 6, e.x + Math.sin(ang) * step));
             const nz = Math.max(6, Math.min(this.terrain.worldSize - 6, e.z + Math.cos(ang) * step));
             const nt = this.terrain.worldToTile(nx, nz);
-            if (this.navGrid.isWalkable(nt.tx, nt.tz)) {
+            const passable = isSeaMonster
+              ? this.terrain.isTileWaterNavigable(nt.tx, nt.tz)
+              : this.navGrid.isWalkable(nt.tx, nt.tz);
+            if (passable) {
               e.vx = (nx - e.x) / SIM_DT;
               e.vz = (nz - e.z) / SIM_DT;
               e.x = nx;
@@ -2267,8 +4502,17 @@ export class World {
       if (tpl.kind === 'building') {
         anyBuildingDied = true;
         this.ungarrisonAll(e);
-        if (!tpl.isFarmField) {
+        if (!tpl.isFarmField && !tpl.isDock && !tpl.isGate && !tpl.isBridge) {
           this.navGrid.setFootprint(e.tileX, e.tileZ, tpl.footprintTiles ?? 2, false);
+        }
+        if (tpl.isBridge) {
+          this.terrain.setBridgeTile(e.tileX, e.tileZ, false);
+        }
+        if (tpl.isTunnel && e.linkedTunnelId) {
+          const partner = this.entities.get(e.linkedTunnelId);
+          if (partner && partner.linkedTunnelId === e.id) {
+            partner.linkedTunnelId = null;
+          }
         }
         // Refund any queued tech flags
         const p = this.players.get(e.owner);
@@ -2296,6 +4540,16 @@ export class World {
     }
   }
 
+  private recomputeTerritory(): void {
+    const phaseMap = new Map<number, number>();
+    for (const p of this.players.values()) {
+      phaseMap.set(p.id, p.phase);
+    }
+    this.territory.recompute(this.entities.values(), phaseMap);
+    this.territoryDirty = false;
+    this.updateBuildingTerritoryFlags();
+  }
+
   private updateBuildingTerritoryFlags(): void {
     for (const e of this.entities.values()) {
       if (!e.alive || TEMPLATES[e.templateId].kind !== 'building') continue;
@@ -2316,7 +4570,22 @@ export class World {
       if (tpl.kind === 'unit') {
         p.popUsed += tpl.popCost ?? 1;
       } else if (tpl.kind === 'building' && !e.isFoundation && tpl.popBonus) {
-        p.popCap += tpl.popBonus;
+        if (tpl.isApartment) {
+          const fl = Math.min(tpl.maxFloors ?? 3, Math.max(1, e.floors ?? 2));
+          p.popCap += fl >= 3 ? 20 : fl === 2 ? 12 : 6;
+        } else {
+          p.popCap += tpl.popBonus;
+        }
+      }
+    }
+    for (const p of this.players.values()) {
+      // City tier population bonuses (Town +5, City +15, Empire Metropolis +35)
+      if (p.phase >= 2) p.popCap += 5;
+      if (p.phase >= 3) p.popCap += 10;
+      if (p.phase >= 4) p.popCap += 20;
+      const bonus = CIVS[p.civ].popCapBonusPct ?? 0;
+      if (bonus > 0) {
+        p.popCap = Math.round(p.popCap * (1 + bonus));
       }
     }
   }
@@ -2353,7 +4622,8 @@ export class World {
         ? Math.max(tpl.visionRange + 4, tpl.attack.range + 10, 28)
         : Math.max(tpl.attack.range + 6, 18));
 
-    const enemy = this.findNearestEnemy(u.owner, u.x, u.z, scanRadius);
+    const canHitSea = Boolean(tpl.isNaval || tpl.attack?.isRanged);
+    const enemy = this.findNearestEnemy(u.owner, u.x, u.z, scanRadius, canHitSea);
     if (!enemy) return false;
 
     // Defensive units only engage enemies within defensive range of their guard anchor
@@ -2406,6 +4676,18 @@ export class World {
     const player = this.players.get(u.owner);
     if (!player) return false;
 
+    // Fishing Boats auto-sail to the nearest Fish Shoal
+    if (tpl.isNaval) {
+      const fish = this.findNearestResource(u.x, u.z, 'food', u.owner, 95, true);
+      if (fish) {
+        u.order = { type: 'gather', targetId: fish.id, resourceType: 'food', returning: false };
+        u.path = this.navGrid.findWaterPath(u.x, u.z, fish.x, fish.z);
+        u.pathIndex = 0;
+        return true;
+      }
+      return false;
+    }
+
     // Respect guarding military units when triggered from passive idle (not post-build chaining)
     if (!fromCompletedTask && !tpl.isWoman) {
       if (u.stance === 'defensive' || u.stance === 'stand_ground') return false;
@@ -2426,7 +4708,7 @@ export class World {
       return true;
     }
 
-    // 2. Balance gathering priority by current active worker counts & resource stockpiles
+    // 2. Automatically seek whichever resource the player is currently most short on!
     const counts: Record<ResourceType, number> = { food: 0, wood: 0, stone: 0, metal: 0 };
     for (const e of this.entities.values()) {
       if (e.alive && e.owner === u.owner && e.order.type === 'gather') {
@@ -2438,17 +4720,15 @@ export class World {
       ? ['food', 'wood', 'stone', 'metal']
       : ['wood', 'stone', 'metal', 'food'];
 
-    // Sort resource types by scarcity score (fewer active gatherers + lower stockpile = higher priority)
+    // Prioritize the lowest current stockpile first, accounting for workers already assigned so they spread smartly
     orderPriority.sort((a, b) => {
-      const wantA = a === 'food' ? 4 : a === 'wood' ? 4 : 2;
-      const wantB = b === 'food' ? 4 : b === 'wood' ? 4 : 2;
-      const scoreA = counts[a] / wantA + player.resources[a] / 1200;
-      const scoreB = counts[b] / wantB + player.resources[b] / 1200;
+      const scoreA = player.resources[a] + counts[a] * 135;
+      const scoreB = player.resources[b] + counts[b] * 135;
       return scoreA - scoreB;
     });
 
     for (const resType of orderPriority) {
-      const target = this.findNearestResource(u.x, u.z, resType, u.owner, 52);
+      const target = this.findNearestResource(u.x, u.z, resType, u.owner, 96);
       if (target) {
         u.order = { type: 'gather', targetId: target.id, resourceType: resType, returning: false };
         u.path = this.navGrid.findPath(u.x, u.z, target.x, target.z);
@@ -2459,17 +4739,32 @@ export class World {
     return false;
   }
 
-  findNearestEnemy(ownerId: number, x: number, z: number, radius: number): Entity | null {
+  findNearestEnemy(ownerId: number, x: number, z: number, radius: number, canHitSea = true): Entity | null {
     const candidates = this.spatialHash.queryRadius(x, z, radius, this.queryBuf);
     let best: Entity | null = null;
     let bestScore = Infinity;
 
     for (let i = 0; i < candidates.length; i++) {
       const c = candidates[i];
-      if (!c.alive || c.owner === 0 || c.owner === ownerId || c.garrisonedIn !== null) continue;
+      if (!c.alive || c.owner === ownerId || c.garrisonedIn !== null) continue;
+      const cTpl = TEMPLATES[c.templateId];
+      if (cTpl.isFlying) continue;
+      if (!canHitSea && cTpl.isSeaMonster) continue;
+      if (c.owner === 0) {
+        // Soldiers & warships automatically defend against close-range live wild predators & sea monsters!
+        if (!cTpl.isPredator || c.hp <= 0) continue;
+        const dPred = Math.hypot(c.x - x, c.z - z);
+        if (dPred > Math.min(radius, cTpl.isSeaMonster ? 14 : 9.5)) continue;
+        if (dPred < bestScore) {
+          bestScore = dPred;
+          best = c;
+        }
+        continue;
+      }
+      if (!this.areHostile(ownerId, c.owner)) continue;
       const d = Math.hypot(c.x - x, c.z - z);
       // Prioritize units slightly over buildings
-      const score = d + (TEMPLATES[c.templateId].kind === 'building' ? 6 : 0);
+      const score = d + (cTpl.kind === 'building' ? 6 : 0);
       if (score < bestScore) {
         bestScore = score;
         best = c;
@@ -2478,12 +4773,19 @@ export class World {
     return best;
   }
 
-  findNearestDropOff(ownerId: number, x: number, z: number, resourceType: ResourceType): Entity | null {
+  findNearestDropOff(
+    ownerId: number,
+    x: number,
+    z: number,
+    resourceType: ResourceType,
+    dockOnly = false
+  ): Entity | null {
     let best: Entity | null = null;
     let bestD2 = Infinity;
     for (const e of this.entities.values()) {
       if (!e.alive || e.owner !== ownerId || e.isFoundation) continue;
       const tpl = TEMPLATES[e.templateId];
+      if (dockOnly && !tpl.isDock) continue;
       if (!tpl.dropOffTypes?.includes(resourceType)) continue;
       const d2 = (e.x - x) * (e.x - x) + (e.z - z) * (e.z - z);
       if (d2 < bestD2) {
@@ -2494,13 +4796,21 @@ export class World {
     return best;
   }
 
-  findNearestResource(x: number, z: number, resourceType: ResourceType, ownerId: number, maxRadius = 60): Entity | null {
+  findNearestResource(
+    x: number,
+    z: number,
+    resourceType: ResourceType,
+    ownerId: number,
+    maxRadius = 60,
+    aquatic = false
+  ): Entity | null {
     let best: Entity | null = null;
     let bestD2 = maxRadius * maxRadius;
     for (const e of this.entities.values()) {
       if (!e.alive || e.resourceRemaining <= 0) continue;
       const tpl = TEMPLATES[e.templateId];
       if (tpl.resourceType !== resourceType) continue;
+      if (Boolean(tpl.isAquatic) !== aquatic) continue;
       if (tpl.isFarmField && (e.owner !== ownerId || e.isFoundation)) continue;
       const d2 = (e.x - x) * (e.x - x) + (e.z - z) * (e.z - z);
       if (d2 < bestD2) {
@@ -2525,7 +4835,10 @@ export class World {
     const healRange = hTpl.healRange ?? 11;
     const baseRate = hTpl.healRate ?? 9;
     const player = this.players.get(healer.owner);
-    const healMult = player?.researchedTechs.has('tech_temple_healing') ? 1.5 : 1.0;
+    const healMult =
+      player && (player.researchedTechs.has('tech_temple_healing') || player.researchedTechs.has('tech_maur_edicts'))
+        ? 1.5
+        : 1.0;
 
     let wounded: Entity | null = null;
     let bestScore = Infinity;
@@ -2569,11 +4882,28 @@ export class World {
     return best;
   }
 
-  private notifyUnderAttack(playerId: number, x: number, z: number): void {
-    const last = this.lastAttackAlertTime.get(playerId) ?? -999;
-    if (this.time - last >= 10) {
-      this.lastAttackAlertTime.set(playerId, this.time);
-      this.events.push({ type: 'under_attack', playerId, x, z });
+  private notifyUnderAttack(
+    playerId: number,
+    x: number,
+    z: number,
+    attackerTemplateId?: string,
+    victimTemplateId?: string,
+    isWildlife = false
+  ): void {
+    if (playerId <= 0) return;
+    const bucketKey = playerId * 2 + (isWildlife ? 1 : 0);
+    const last = this.lastAttackAlertTime.get(bucketKey) ?? -999;
+    if (this.time - last >= 5) {
+      this.lastAttackAlertTime.set(bucketKey, this.time);
+      this.events.push({
+        type: 'under_attack',
+        playerId,
+        x,
+        z,
+        attackerTemplateId,
+        victimTemplateId,
+        isWildlife,
+      });
     }
   }
 
@@ -2607,7 +4937,120 @@ export class World {
     if (alivePlayers.length === 1) {
       this.winnerId = alivePlayers[0].id;
       this.events.push({ type: 'match_over', winnerId: this.winnerId });
+    } else if (alivePlayers.length > 1 && !this.isPeaceful()) {
+      // 0 A.D. Allied Team Victory: match is won when every surviving player is mutually allied with all other survivors!
+      let anyHostileRemaining = false;
+      for (let i = 0; i < alivePlayers.length && !anyHostileRemaining; i++) {
+        for (let j = i + 1; j < alivePlayers.length; j++) {
+          if (!this.areAllies(alivePlayers[i].id, alivePlayers[j].id)) {
+            anyHostileRemaining = true;
+            break;
+          }
+        }
+      }
+      if (!anyHostileRemaining) {
+        const humanAlive = alivePlayers.find((p) => !p.isAI);
+        this.winnerId = humanAlive ? humanAlive.id : alivePlayers[0].id;
+        this.events.push({ type: 'match_over', winnerId: this.winnerId });
+      }
     }
+  }
+
+  /** Serializes the full World simulation state into a clean JSON-safe snapshot for Save/Load */
+  serializeState(camera?: { x: number; z: number; distance: number; yaw: number }): SerializedWorldState {
+    const players = Array.from(this.players.values()).map((p) => ({
+      ...p,
+      resources: { ...p.resources },
+      diplomacy: { ...p.diplomacy },
+      stats: { ...p.stats },
+      researchedTechs: Array.from(p.researchedTechs),
+      researchingTechs: Array.from(p.researchingTechs),
+    }));
+    const entities = Array.from(this.entities.values()).map((e) => ({
+      ...e,
+      order: { ...e.order },
+      queuedOrders: e.queuedOrders.map((o) => ({ ...o })),
+      path: e.path.map((pt) => ({ ...pt })),
+      queue: e.queue.map((q) => ({ ...q })),
+      garrisonedIds: [...e.garrisonedIds],
+      capturePoints: { ...e.capturePoints },
+    }));
+    return {
+      version: 1,
+      savedAt: Date.now(),
+      config: {
+        ...this.config,
+        playerSlots: this.config.playerSlots?.map((s) => ({ ...s })),
+      },
+      tickCount: this.tickCount,
+      time: this.time,
+      nextEntityId: this.nextEntityId,
+      nextProjectileId: this.nextProjectileId,
+      winnerId: this.winnerId,
+      rngState: this.rng.getState(),
+      terrain: this.terrain.exportMutableState(),
+      fog: this.fog.exportState(),
+      players,
+      entities,
+      projectiles: this.projectiles.map((p) => ({ ...p, damage: { ...p.damage } })),
+      savedTerraformJobs: Array.from(this.savedTerraformJobs.entries()),
+      camera,
+    };
+  }
+
+  /** Restores a full live World simulation from a SerializedWorldState snapshot */
+  static deserializeState(data: SerializedWorldState): World {
+    const world = new World(data.config);
+    world.rng.setState(data.rngState);
+    world.tickCount = data.tickCount;
+    world.time = data.time;
+    world.nextEntityId = data.nextEntityId;
+    world.nextProjectileId = data.nextProjectileId;
+    world.winnerId = data.winnerId;
+
+    world.terrain.importMutableState(data.terrain);
+
+    world.players.clear();
+    for (const p of data.players) {
+      world.players.set(p.id, {
+        ...p,
+        resources: { ...p.resources },
+        diplomacy: { ...p.diplomacy },
+        stats: { ...p.stats },
+        researchedTechs: new Set(p.researchedTechs),
+        researchingTechs: new Set(p.researchingTechs),
+      });
+    }
+
+    world.entities.clear();
+    for (const e of data.entities) {
+      world.entities.set(e.id, {
+        ...e,
+        order: { ...e.order },
+        queuedOrders: e.queuedOrders.map((o) => ({ ...o })),
+        path: e.path.map((pt) => ({ ...pt })),
+        queue: e.queue.map((q) => ({ ...q })),
+        garrisonedIds: [...e.garrisonedIds],
+        capturePoints: { ...e.capturePoints },
+      });
+    }
+
+    world.projectiles.length = 0;
+    for (const pr of data.projectiles) {
+      world.projectiles.push({ ...pr, damage: { ...pr.damage } });
+    }
+
+    world.savedTerraformJobs.clear();
+    for (const [k, v] of data.savedTerraformJobs ?? []) {
+      world.savedTerraformJobs.set(k, { ...v });
+    }
+
+    world.fog.importState(data.fog);
+    world.recomputePopulations();
+    world.recomputeTerritory();
+    world.rebuildSpatialHash();
+    world.events.length = 0;
+    return world;
   }
 
   /** Deterministic hash for testing simulation reproducibility */

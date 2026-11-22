@@ -104,6 +104,43 @@ export class NavGrid {
     return this.terrain.staticPassable[idx] === 1 && this.blockedCount[idx] === 0;
   }
 
+  isWaterPassable(tx: number, tz: number): boolean {
+    if (tx < 0 || tz < 0 || tx >= this.width || tz >= this.height) return false;
+    const idx = tz * this.width + tx;
+    return this.terrain.waterPassable[idx] === 1 && this.blockedCount[idx] === 0;
+  }
+
+  findNearestWater(
+    tx: number,
+    tz: number,
+    maxRadius = 14,
+    preferTx?: number,
+    preferTz?: number
+  ): { tx: number; tz: number } | null {
+    if (this.isWaterPassable(tx, tz)) return { tx, tz };
+    const px = preferTx ?? tx;
+    const pz = preferTz ?? tz;
+    for (let r = 1; r <= maxRadius; r++) {
+      let best: { tx: number; tz: number } | null = null;
+      let bestD2 = Infinity;
+      for (let dz = -r; dz <= r; dz++) {
+        for (let dx = -r; dx <= r; dx++) {
+          if (Math.abs(dx) !== r && Math.abs(dz) !== r) continue;
+          const nx = tx + dx;
+          const nz = tz + dz;
+          if (!this.isWaterPassable(nx, nz)) continue;
+          const d2 = (nx - px) * (nx - px) + (nz - pz) * (nz - pz);
+          if (d2 < bestD2) {
+            bestD2 = d2;
+            best = { tx: nx, tz: nz };
+          }
+        }
+      }
+      if (best) return best;
+    }
+    return null;
+  }
+
   setFootprint(centerTx: number, centerTz: number, size: number, blocked: boolean): void {
     const startX = centerTx - Math.floor(size / 2);
     const startZ = centerTz - Math.floor(size / 2);
@@ -168,16 +205,31 @@ export class NavGrid {
     return null;
   }
 
-  findPath(startX: number, startZ: number, goalX: number, goalZ: number, maxExpansions = 4500): Array<{ x: number; z: number }> {
+  findWaterPath(startX: number, startZ: number, goalX: number, goalZ: number, maxExpansions = 4500): Array<{ x: number; z: number }> {
+    return this.findPath(startX, startZ, goalX, goalZ, maxExpansions, true);
+  }
+
+  findPath(
+    startX: number,
+    startZ: number,
+    goalX: number,
+    goalZ: number,
+    maxExpansions = 4500,
+    naval = false
+  ): Array<{ x: number; z: number }> {
+    const canPass = (tx: number, tz: number) => (naval ? this.isWaterPassable(tx, tz) : this.isWalkable(tx, tz));
+    const findNearest = (tx: number, tz: number, r: number, ptx: number, ptz: number) =>
+      naval ? this.findNearestWater(tx, tz, r, ptx, ptz) : this.findNearestWalkable(tx, tz, r, ptx, ptz);
+
     const sTile = this.terrain.worldToTile(startX, startZ);
     const gTileRaw = this.terrain.worldToTile(goalX, goalZ);
 
-    const start = this.isWalkable(sTile.tx, sTile.tz)
+    const start = canPass(sTile.tx, sTile.tz)
       ? sTile
-      : this.findNearestWalkable(sTile.tx, sTile.tz, 8, gTileRaw.tx, gTileRaw.tz);
-    const goal = this.isWalkable(gTileRaw.tx, gTileRaw.tz)
+      : findNearest(sTile.tx, sTile.tz, 10, gTileRaw.tx, gTileRaw.tz);
+    const goal = canPass(gTileRaw.tx, gTileRaw.tz)
       ? gTileRaw
-      : this.findNearestWalkable(gTileRaw.tx, gTileRaw.tz, 16, sTile.tx, sTile.tz);
+      : findNearest(gTileRaw.tx, gTileRaw.tz, 18, sTile.tx, sTile.tz);
 
     if (!start || !goal) {
       return goal ? [this.terrain.tileToWorldCenter(goal.tx, goal.tz)] : [];
@@ -189,7 +241,7 @@ export class NavGrid {
     }
 
     // Fast direct line-of-sight shortcut
-    if (this.hasLineOfSight(start.tx, start.tz, goal.tx, goal.tz)) {
+    if (this.hasLineOfSight(start.tx, start.tz, goal.tx, goal.tz, naval)) {
       const targetWorld = goalWasWalkable
         ? { x: goalX, z: goalZ }
         : this.terrain.tileToWorldCenter(goal.tx, goal.tz);
@@ -236,17 +288,30 @@ export class NavGrid {
         const [dx, dz, stepCost] = DIRS[i];
         const nx = cx + dx;
         const nz = cz + dz;
-        if (!this.isWalkable(nx, nz)) continue;
+        if (!canPass(nx, nz)) continue;
 
-        // Prevent diagonal corner cutting across blocked corners
+        // Prevent diagonal corner cutting across blocked corners (except diagonal stone bridges spanning water!)
         if (dx !== 0 && dz !== 0) {
-          if (!this.isWalkable(cx + dx, cz) || !this.isWalkable(cx, cz + dz)) continue;
+          const bridgeDiag = !naval && (this.terrain.isTileBridge(cx, cz) || this.terrain.isTileBridge(nx, nz));
+          if (!bridgeDiag && (!canPass(cx + dx, cz) || !canPass(cx, cz + dz))) continue;
         }
 
         const nIdx = nz * this.width + nx;
         if (this.closedStamp[nIdx] === st) continue;
 
-        const tentativeG = curG + stepCost;
+        // Flat ground & bridges are fastest; uphill climbs cost extra time so A* naturally prefers flat paths!
+        let slopeMult = 1.0;
+        if (!naval && !this.terrain.isTileBridge(cx, cz) && !this.terrain.isTileBridge(nx, nz)) {
+          const hCur = this.terrain.getVertexHeight(cx, cz);
+          const hNext = this.terrain.getVertexHeight(nx, nz);
+          const dh = hNext - hCur;
+          if (dh > 0.08) {
+            slopeMult = 1.0 + dh * 1.15;
+          } else if (dh < -0.35) {
+            slopeMult = 1.0 + (Math.abs(dh) - 0.35) * 0.22;
+          }
+        }
+        const tentativeG = curG + stepCost * slopeMult;
         if (this.visitedStamp[nIdx] !== st || tentativeG < this.gScore[nIdx]) {
           this.visitedStamp[nIdx] = st;
           this.gScore[nIdx] = tentativeG;
@@ -284,7 +349,7 @@ export class NavGrid {
     while (i < tilePath.length) {
       let furthest = i;
       for (let j = Math.min(tilePath.length - 1, i + 12); j > i; j--) {
-        if (this.hasLineOfSight(anchorTx, anchorTz, tilePath[j].tx, tilePath[j].tz)) {
+        if (this.hasLineOfSight(anchorTx, anchorTz, tilePath[j].tx, tilePath[j].tz, naval)) {
           furthest = j;
           break;
         }
@@ -309,7 +374,8 @@ export class NavGrid {
     return Math.max(dx, dz) + 0.4142 * Math.min(dx, dz);
   }
 
-  private hasLineOfSight(x0: number, z0: number, x1: number, z1: number): boolean {
+  private hasLineOfSight(x0: number, z0: number, x1: number, z1: number, naval = false): boolean {
+    const canPass = (tx: number, tz: number) => (naval ? this.isWaterPassable(tx, tz) : this.isWalkable(tx, tz));
     let cx = x0;
     let cz = z0;
     const dx = Math.abs(x1 - x0);
@@ -319,14 +385,15 @@ export class NavGrid {
     let err = dx - dz;
 
     while (true) {
-      if (!this.isWalkable(cx, cz)) return false;
+      if (!canPass(cx, cz)) return false;
       if (cx === x1 && cz === z1) return true;
       const e2 = err * 2;
       const stepX = e2 > -dz;
       const stepZ = e2 < dx;
-      // Prevent diagonal LOS pruning from clipping impassable cliff/mountain corners!
+      // Prevent diagonal LOS pruning from clipping impassable cliff/mountain corners (allow diagonal bridge spans!)
       if (stepX && stepZ) {
-        if (!this.isWalkable(cx + sx, cz) || !this.isWalkable(cx, cz + sz)) {
+        const bridgeDiag = !naval && (this.terrain.isTileBridge(cx, cz) || this.terrain.isTileBridge(cx + sx, cz + sz));
+        if (!bridgeDiag && (!canPass(cx + sx, cz) || !canPass(cx, cz + sz))) {
           return false;
         }
       }

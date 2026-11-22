@@ -1,10 +1,17 @@
-import { MapType, ResolvedMapType } from '../../config/types';
+import { MapSize, MapType, ResolvedMapType } from '../../config/types';
 import { fbm2D, SeededRNG } from '../rng';
 
 export const MAP_TILES = 128;
 export const TILE_SIZE = 2.0;
-export const WORLD_SIZE = MAP_TILES * TILE_SIZE; // 256 world units
+export const WORLD_SIZE = MAP_TILES * TILE_SIZE; // 256 world units (default medium)
 export const WATER_LEVEL = 0.0;
+
+export const MAP_SIZE_TILES: Record<MapSize, number> = {
+  small: 96,
+  medium: 128,
+  large: 160,
+  huge: 192,
+};
 
 export const ALL_MAP_TYPES: readonly ResolvedMapType[] = [
   'aegean_valley',
@@ -12,15 +19,37 @@ export const ALL_MAP_TYPES: readonly ResolvedMapType[] = [
   'twin_peninsulas',
   'inland_oasis',
   'open_plains',
+  'alpine_passes',
+  'island',
+  'mountain',
+  'plateau',
+  'hills',
+  'mesa',
+  'swamp',
+  'rainforest',
+  'forest',
+  'volcano',
 ];
 
 export const MAP_TYPE_LABELS: Record<ResolvedMapType, string> = {
   aegean_valley: 'Aegean River Valley',
   medit_highlands: 'Mediterranean Highlands',
   twin_peninsulas: 'Twin Peninsulas',
-  inland_oasis: 'Inland Oasis',
+  inland_oasis: 'Desert Oasis',
   open_plains: 'Peloponnesian Plains',
+  alpine_passes: 'Alpine Snow Passes',
+  island: 'Sea Island',
+  mountain: 'Mountain Range',
+  plateau: 'Highland Plateau',
+  hills: 'Rolling Hills',
+  mesa: 'Stepped Mesa',
+  swamp: 'Misty Swamp',
+  rainforest: 'Tropical Rainforest',
+  forest: 'Ancient Forest',
+  volcano: 'Volcanic Caldera',
 };
+
+export const SOIL_UNITS_PER_TILE = 100;
 
 export interface BaseSpawn {
   playerId: number;
@@ -50,10 +79,11 @@ interface LakeSpec {
 }
 
 export class TerrainMap {
-  readonly width = MAP_TILES;
-  readonly height = MAP_TILES;
+  readonly width: number;
+  readonly height: number;
   readonly tileSize = TILE_SIZE;
-  readonly worldSize = WORLD_SIZE;
+  readonly worldSize: number;
+  readonly mapSize: MapSize;
   readonly seed: number;
   readonly requestedMapType: MapType;
   readonly resolvedMapType: ResolvedMapType;
@@ -61,10 +91,27 @@ export class TerrainMap {
 
   /** Vertex heights: (width + 1) * (height + 1) */
   readonly heights: Float32Array;
+  /** Per-vertex freshly dug/shaped soil intensity (0..1) for live terraforming visuals */
+  readonly dugMask: Float32Array;
+  /** Incremented whenever live terraforming modifies heights/passability */
+  version = 0;
   /** Static tile passability: 1 = walkable, 0 = blocked (deep water or steep mountain) */
   readonly staticPassable: Uint8Array;
+  /** Navigable water tile mask: 1 = deep sea/lake/river navigable by ships */
+  readonly waterPassable: Uint8Array;
   /** Shallow river ford mask (1 = walkable shallow crossing) */
   readonly fordMask: Uint8Array;
+  /** Completed stone/suspension bridge mask (1 = land-walkable bridge spanning over water or ravine) */
+  readonly bridgeMask: Uint8Array;
+  /** Remaining soil units per tile (starts at 100; tile only subsides when all 100 units are excavated!) */
+  readonly tileSoilUnits: Uint8Array;
+  /** Accumulated dumped soil units per tile (0..99; tile rises when 100 units are deposited!) */
+  readonly tileFillUnits: Uint8Array;
+  /** Per-tile completed terraform generation counter (so multiple workers assisting a tile accelerate 1 layer instead of digging deeper!) */
+  readonly tileTerraformEpoch: Uint16Array;
+  /** Incremented whenever any tile's partial excavation/fill unit progress changes (for live 3D progress bars) */
+  soilProgressVersion = 0;
+  private readonly activeSoilIndices = new Set<number>();
   /** Base spawn tile centers */
   readonly spawns: BaseSpawn[];
   /** River crossings */
@@ -80,8 +127,12 @@ export class TerrainMap {
   private readonly riverAmp2: number;
   private readonly hasRiver: boolean;
 
-  constructor(seed: number, mapType: MapType = 'random') {
+  constructor(seed: number, mapType: MapType = 'random', mapSize: MapSize = 'medium', numPlayers = 2) {
     this.seed = seed;
+    this.mapSize = mapSize;
+    this.width = MAP_SIZE_TILES[mapSize] ?? MAP_TILES;
+    this.height = this.width;
+    this.worldSize = this.width * this.tileSize;
     this.requestedMapType = mapType;
     const rng = new SeededRNG((seed * 2654435761) >>> 0);
 
@@ -94,27 +145,52 @@ export class TerrainMap {
     const vw = this.width + 1;
     const vh = this.height + 1;
     this.heights = new Float32Array(vw * vh);
+    this.dugMask = new Float32Array(vw * vh);
     this.staticPassable = new Uint8Array(this.width * this.height);
+    this.waterPassable = new Uint8Array(this.width * this.height);
     this.fordMask = new Uint8Array(this.width * this.height);
+    this.bridgeMask = new Uint8Array(this.width * this.height);
+    this.tileSoilUnits = new Uint8Array(this.width * this.height);
+    this.tileSoilUnits.fill(SOIL_UNITS_PER_TILE);
+    this.tileFillUnits = new Uint8Array(this.width * this.height);
+    this.tileTerraformEpoch = new Uint16Array(this.width * this.height);
 
-    // Randomize opposing symmetrical spawn positions around map center (64, 64)
+    // Randomize opposing symmetrical spawn positions around map center for 2..8 nations!
+    const playerCount = Math.max(2, Math.min(8, Math.round(numPlayers)));
+    const midX = this.width * 0.5;
+    const midZ = this.height * 0.5;
+    const sizeScale = this.width / 128;
     const spawnAngle = rng.range(0, Math.PI * 2);
     const spawnDist =
-      this.resolvedMapType === 'inland_oasis'
-        ? rng.range(43, 47)
-        : this.resolvedMapType === 'twin_peninsulas'
-          ? rng.range(40, 45)
-          : rng.range(40, 48);
+      (this.resolvedMapType === 'island'
+        ? rng.range(30, 35)
+        : this.resolvedMapType === 'inland_oasis' || this.resolvedMapType === 'volcano'
+          ? rng.range(43, 47)
+          : this.resolvedMapType === 'twin_peninsulas'
+            ? rng.range(40, 45)
+            : rng.range(39, 46)) * sizeScale;
 
-    const sx1 = Math.max(22, Math.min(this.width - 22, Math.round(64 + Math.cos(spawnAngle) * spawnDist)));
-    const sz1 = Math.max(22, Math.min(this.height - 22, Math.round(64 + Math.sin(spawnAngle) * spawnDist)));
+    const margin = Math.max(14, Math.round(20 * sizeScale));
+    const sx1 = Math.max(margin, Math.min(this.width - margin, Math.round(midX + Math.cos(spawnAngle) * spawnDist)));
+    const sz1 = Math.max(margin, Math.min(this.height - margin, Math.round(midZ + Math.sin(spawnAngle) * spawnDist)));
     const sx2 = this.width - sx1;
     const sz2 = this.height - sz1;
 
-    this.spawns = [
-      { playerId: 1, tileX: sx1, tileZ: sz1 },
-      { playerId: 2, tileX: sx2, tileZ: sz2 },
-    ];
+    if (playerCount === 2) {
+      this.spawns = [
+        { playerId: 1, tileX: sx1, tileZ: sz1 },
+        { playerId: 2, tileX: sx2, tileZ: sz2 },
+      ];
+    } else {
+      const ringDist = Math.min(this.width * 0.5 - margin, Math.max(spawnDist, 42 * sizeScale));
+      this.spawns = [];
+      for (let i = 0; i < playerCount; i++) {
+        const ang = spawnAngle + (i / playerCount) * Math.PI * 2;
+        const px = Math.max(margin, Math.min(this.width - margin, Math.round(midX + Math.cos(ang) * ringDist)));
+        const pz = Math.max(margin, Math.min(this.height - margin, Math.round(midZ + Math.sin(ang) * ringDist)));
+        this.spawns.push({ playerId: i + 1, tileX: px, tileZ: pz });
+      }
+    }
 
     // River flows perpendicular to the spawn-to-spawn axis
     const axisX = sx2 - sx1;
@@ -131,7 +207,9 @@ export class TerrainMap {
 
     this.hasRiver =
       this.resolvedMapType === 'aegean_valley' ||
-      this.resolvedMapType === 'open_plains';
+      this.resolvedMapType === 'open_plains' ||
+      this.resolvedMapType === 'rainforest' ||
+      this.resolvedMapType === 'swamp';
 
     if (this.hasRiver) {
       const fordCount = this.resolvedMapType === 'open_plains' ? 3 : rng.int(2, 3);
@@ -162,15 +240,17 @@ export class TerrainMap {
     // Perpendicular unit vector to river direction is (-riverAxisSin, riverAxisCos)
     const perpX = -this.riverAxisSin;
     const perpZ = this.riverAxisCos;
-    const tileX = Math.max(12, Math.min(this.width - 12, Math.round(64 + s * this.riverAxisCos + m * perpX)));
-    const tileZ = Math.max(12, Math.min(this.height - 12, Math.round(64 + s * this.riverAxisSin + m * perpZ)));
+    const midX = this.width * 0.5;
+    const midZ = this.height * 0.5;
+    const tileX = Math.max(12, Math.min(this.width - 12, Math.round(midX + s * this.riverAxisCos + m * perpX)));
+    const tileZ = Math.max(12, Math.min(this.height - 12, Math.round(midZ + s * this.riverAxisSin + m * perpZ)));
     return { tileX, tileZ, radius };
   }
 
   /** Signed perpendicular distance from meandering river centerline */
   private getRiverCenterOffset(vx: number, vz: number): number {
-    const dx = vx - 64;
-    const dz = vz - 64;
+    const dx = vx - this.width * 0.5;
+    const dz = vz - this.height * 0.5;
     const s = dx * this.riverAxisCos + dz * this.riverAxisSin;
     const perp = dx * -this.riverAxisSin + dz * this.riverAxisCos;
     return perp - this.getRiverMeander(s);
@@ -193,41 +273,48 @@ export class TerrainMap {
   private generateHeights(rng: SeededRNG): void {
     const vw = this.width + 1;
     const vh = this.height + 1;
+    const midX = this.width * 0.5;
+    const midZ = this.height * 0.5;
+    const sizeScale = this.width / 128;
 
     // 1. Procedurally generate symmetrical inland lakes (湖)
     const lakes: LakeSpec[] = [];
     if (this.resolvedMapType === 'inland_oasis') {
       // Iconic central Aegean freshwater sea / oasis lake
       lakes.push({
-        x: 64,
-        z: 64,
-        rx: rng.range(16, 21),
-        rz: rng.range(14, 19),
+        x: midX,
+        z: midZ,
+        rx: rng.range(16, 21) * sizeScale,
+        rz: rng.range(14, 19) * sizeScale,
         depth: 3.4,
       });
     }
 
     const lakePairs =
-      this.resolvedMapType === 'aegean_valley'
-        ? rng.int(1, 2)
-        : this.resolvedMapType === 'medit_highlands'
+      this.resolvedMapType === 'swamp'
+        ? 4
+        : this.resolvedMapType === 'aegean_valley' ||
+            this.resolvedMapType === 'medit_highlands' ||
+            this.resolvedMapType === 'alpine_passes' ||
+            this.resolvedMapType === 'forest' ||
+            this.resolvedMapType === 'rainforest'
           ? rng.int(1, 2)
-          : this.resolvedMapType === 'open_plains'
+          : this.resolvedMapType === 'open_plains' ||
+              this.resolvedMapType === 'hills' ||
+              this.resolvedMapType === 'inland_oasis'
             ? 1
-            : this.resolvedMapType === 'inland_oasis'
-              ? 1
-              : 0;
+            : 0;
 
     for (let i = 0; i < lakePairs; i++) {
       for (let tries = 0; tries < 25; tries++) {
-        const lx = rng.range(18, 110);
-        const lz = rng.range(18, 110);
+        const lx = rng.range(16, this.width - 16);
+        const lz = rng.range(16, this.height - 16);
         const rx = rng.range(7.0, 11.0);
         const rz = rng.range(6.0, 9.5);
         const mx = this.width - lx;
         const mz = this.height - lz;
         if (
-          Math.hypot(lx - 64, lz - 64) > (this.resolvedMapType === 'inland_oasis' ? 28 : 16) &&
+          Math.hypot(lx - midX, lz - midZ) > (this.resolvedMapType === 'inland_oasis' ? 28 : 16) * sizeScale &&
           this.isFarFromSpawns(lx, lz, 18) &&
           this.isFarFromSpawns(mx, mz, 18) &&
           this.isFarFromFords(lx, lz, 14) &&
@@ -245,30 +332,36 @@ export class TerrainMap {
     // 2. Procedurally generate symmetrical dramatic mountain peaks, ridges & strategic hills (山/高地)
     const mountains: MountainPeak[] = [];
     const mountainPairs =
-      this.resolvedMapType === 'medit_highlands'
-        ? rng.int(7, 9)
-        : this.resolvedMapType === 'open_plains'
-          ? rng.int(3, 5)
-          : rng.int(5, 7);
+      this.resolvedMapType === 'mountain'
+        ? rng.int(9, 11)
+        : this.resolvedMapType === 'medit_highlands' || this.resolvedMapType === 'alpine_passes'
+          ? rng.int(7, 9)
+          : this.resolvedMapType === 'swamp' || this.resolvedMapType === 'island' || this.resolvedMapType === 'plateau'
+            ? rng.int(1, 3)
+            : this.resolvedMapType === 'open_plains' || this.resolvedMapType === 'hills' || this.resolvedMapType === 'forest'
+              ? rng.int(3, 5)
+              : rng.int(5, 7);
 
     for (let i = 0; i < mountainPairs; i++) {
       for (let tries = 0; tries < 30; tries++) {
-        const mx = rng.range(10, 118);
-        const mz = rng.range(10, 118);
+        const mx = rng.range(10, this.width - 10);
+        const mz = rng.range(10, this.height - 10);
         const oppX = this.width - mx;
         const oppZ = this.height - mz;
         const r =
-          this.resolvedMapType === 'medit_highlands'
+          this.resolvedMapType === 'medit_highlands' || this.resolvedMapType === 'alpine_passes'
             ? rng.range(11, 18)
             : rng.range(9.5, 16.0);
         const peak =
-          this.resolvedMapType === 'medit_highlands'
-            ? rng.range(13.0, 18.5)
-            : rng.range(10.5, 16.5);
+          this.resolvedMapType === 'alpine_passes'
+            ? rng.range(14.5, 20.0)
+            : this.resolvedMapType === 'medit_highlands'
+              ? rng.range(13.0, 18.5)
+              : rng.range(10.5, 16.5);
 
-        const clearFromCenter = this.resolvedMapType === 'inland_oasis' ? 25 : 10;
+        const clearFromCenter = (this.resolvedMapType === 'inland_oasis' ? 25 : 10) * sizeScale;
         if (
-          Math.hypot(mx - 64, mz - 64) > clearFromCenter &&
+          Math.hypot(mx - midX, mz - midZ) > clearFromCenter &&
           this.isFarFromSpawns(mx, mz, 19) &&
           this.isFarFromSpawns(oppX, oppZ, 19) &&
           this.isFarFromFords(mx, mz, 12) &&
@@ -297,8 +390,8 @@ export class TerrainMap {
     const hillPairs = rng.int(5, 8);
     for (let i = 0; i < hillPairs; i++) {
       for (let tries = 0; tries < 25; tries++) {
-        const hx = rng.range(14, 114);
-        const hz = rng.range(14, 114);
+        const hx = rng.range(14, this.width - 14);
+        const hz = rng.range(14, this.height - 14);
         const oppX = this.width - hx;
         const oppZ = this.height - hz;
         if (
@@ -317,32 +410,47 @@ export class TerrainMap {
     }
 
     // Coastal sea bay centers aligned with river mouths (or flanking twin peninsulas)
-    const bay1X = 64 + this.riverAxisCos * 60;
-    const bay1Z = 64 + this.riverAxisSin * 60;
-    const bay2X = 64 - this.riverAxisCos * 60;
-    const bay2Z = 64 - this.riverAxisSin * 60;
+    const bayOffset = 60 * sizeScale;
+    const bay1X = midX + this.riverAxisCos * bayOffset;
+    const bay1Z = midZ + this.riverAxisSin * bayOffset;
+    const bay2X = midX - this.riverAxisCos * bayOffset;
+    const bay2Z = midZ - this.riverAxisSin * bayOffset;
     const bayRadius =
-      this.resolvedMapType === 'twin_peninsulas'
+      (this.resolvedMapType === 'twin_peninsulas'
         ? rng.range(41, 46)
         : this.resolvedMapType === 'aegean_valley'
           ? rng.range(28, 35)
           : this.resolvedMapType === 'open_plains'
             ? rng.range(18, 24)
-            : rng.range(16, 22);
+            : rng.range(16, 22)) * sizeScale;
 
     const hillScale =
-      this.resolvedMapType === 'open_plains'
-        ? 0.85
-        : this.resolvedMapType === 'medit_highlands'
-          ? 1.5
-          : 1.25;
+      this.resolvedMapType === 'open_plains' || this.resolvedMapType === 'swamp'
+        ? 0.72
+        : this.resolvedMapType === 'hills'
+          ? 1.65
+          : this.resolvedMapType === 'mountain' ||
+              this.resolvedMapType === 'medit_highlands' ||
+              this.resolvedMapType === 'alpine_passes'
+            ? 1.55
+            : this.resolvedMapType === 'plateau'
+              ? 0.65
+              : 1.2;
 
     const baseElevation =
-      this.resolvedMapType === 'medit_highlands'
-        ? 3.2
-        : this.resolvedMapType === 'twin_peninsulas'
-          ? 2.1
-          : 2.4;
+      this.resolvedMapType === 'swamp'
+        ? 0.85
+        : this.resolvedMapType === 'plateau'
+          ? 5.6
+          : this.resolvedMapType === 'mesa'
+            ? 3.6
+            : this.resolvedMapType === 'alpine_passes' || this.resolvedMapType === 'mountain'
+              ? 3.5
+              : this.resolvedMapType === 'medit_highlands'
+                ? 3.2
+                : this.resolvedMapType === 'twin_peninsulas' || this.resolvedMapType === 'island'
+                  ? 2.2
+                  : 2.4;
 
     const riverHalfWidthBase =
       this.resolvedMapType === 'open_plains'
@@ -397,20 +505,81 @@ export class TerrainMap {
           }
         }
 
-        // 3. Aegean Sea Bays & Coastlines (海)
-        const dBay1 = Math.hypot(vx - bay1X, vz - bay1Z);
-        const dBay2 = Math.hypot(vx - bay2X, vz - bay2Z);
-        const coastNoise = (nBroad - 0.5) * 8.5 + (nDetail - 0.5) * 3.0;
-        const seaDist = Math.min(dBay1, dBay2) + coastNoise;
-        if (seaDist < bayRadius) {
-          const t = 1 - seaDist / bayRadius;
-          h -= Math.pow(t, 1.45) * (this.resolvedMapType === 'twin_peninsulas' ? 12.5 : 10.5);
+        // Archetype-specific macro landform sculpting for the 9 new terrains!
+        const distCenter = Math.hypot(vx - midX, vz - midZ);
+        if (this.resolvedMapType === 'island') {
+          // Lush central Sea Island ringed by deep navigable ocean + sandy beaches
+          const islandRad = 49 * sizeScale + (nBroad - 0.5) * 14 + (nMed - 0.5) * 6;
+          if (distCenter > islandRad - 10 * sizeScale) {
+            const drop = Math.max(0, (distCenter - (islandRad - 10 * sizeScale)) / (18 * sizeScale));
+            h -= drop * drop * 11.5;
+          }
+        } else if (this.resolvedMapType === 'plateau') {
+          // High flat-topped central Highland Plateau with sheer cliff rim dropping to outer ring
+          const platRad = 48 * sizeScale + (nBroad - 0.5) * 10;
+          if (distCenter < platRad - 4) {
+            h = 5.4 + (nMed - 0.5) * 1.1 + (nDetail - 0.5) * 0.4;
+          } else {
+            const edgeT = Math.min(1, (distCenter - (platRad - 4)) / 10);
+            const smooth = edgeT * edgeT * (3 - 2 * edgeT);
+            h = 5.4 * (1 - smooth) + 1.5 * smooth + (nDetail - 0.5) * 0.5;
+          }
+        } else if (this.resolvedMapType === 'mesa') {
+          // Stepped flat-topped red-rock Mesa tablelands & eroded canyons
+          const stepH = 2.35;
+          const level = Math.floor(h / stepH);
+          const frac = (h / stepH) - level;
+          const terraced = level + Math.pow(frac, 4.0);
+          h = Math.max(0.9, terraced * stepH);
+        } else if (this.resolvedMapType === 'swamp') {
+          // Low boggy wetland marshes with shallow murky water pools & winding channels
+          const marshPool = Math.sin(vx * 0.14 + nBroad * 4.0) * Math.cos(vz * 0.14 - nMed * 3.5);
+          if (marshPool > 0.32) {
+            h -= (marshPool - 0.32) * 3.4;
+          }
+        } else if (this.resolvedMapType === 'volcano') {
+          // Iconic towering central Volcanic Caldera with sunken glowing lava crater!
+          const coneRad = 32 * sizeScale;
+          const craterRad = 11.5 * sizeScale;
+          if (distCenter < coneRad) {
+            const coneT = 1 - distCenter / coneRad;
+            const rimH = Math.pow(Math.sin(coneT * Math.PI * 0.82), 1.2) * 12.5;
+            h = Math.max(h, 2.5 + rimH + (nDetail - 0.5) * 0.9);
+          }
+          if (distCenter < craterRad) {
+            const crT = 1 - distCenter / craterRad;
+            const smooth = crT * crT * (3 - 2 * crT);
+            h = h * (1 - smooth) + -2.8 * smooth;
+          }
+        }
+
+        // 3. Aegean Sea Bays & Coastlines (海) — only on coastal archetypes
+        const isInlandArchetype =
+          this.resolvedMapType === 'inland_oasis' ||
+          this.resolvedMapType === 'alpine_passes' ||
+          this.resolvedMapType === 'mountain' ||
+          this.resolvedMapType === 'plateau' ||
+          this.resolvedMapType === 'hills' ||
+          this.resolvedMapType === 'mesa' ||
+          this.resolvedMapType === 'forest' ||
+          this.resolvedMapType === 'volcano' ||
+          this.resolvedMapType === 'island';
+        if (!isInlandArchetype) {
+          const dBay1 = Math.hypot(vx - bay1X, vz - bay1Z);
+          const dBay2 = Math.hypot(vx - bay2X, vz - bay2Z);
+          const coastNoise = (nBroad - 0.5) * 8.5 + (nDetail - 0.5) * 3.0;
+          const seaDist = Math.min(dBay1, dBay2) + coastNoise;
+          if (seaDist < bayRadius) {
+            const t = 1 - seaDist / bayRadius;
+            h -= Math.pow(t, 1.45) * (this.resolvedMapType === 'twin_peninsulas' ? 12.5 : 10.5);
+          }
         }
 
         // Outer map coastal drop
         const borderDist = Math.min(vx, vz, this.width - vx, this.height - vz);
-        if (borderDist < 4.5) {
-          h -= (1 - borderDist / 4.5) * (this.resolvedMapType === 'inland_oasis' ? 2.0 : 4.8);
+        if (borderDist < 4.5 && this.resolvedMapType !== 'island') {
+          const edgeDrop = isInlandArchetype ? 1.2 : 4.8;
+          h -= (1 - borderDist / 4.5) * edgeDrop;
         }
 
         // 4. Winding River (河) with strategic shallow fords (淺灘渡口)
@@ -477,6 +646,7 @@ export class TerrainMap {
     const maxSlope = 2.15;
     const maxWalkableHeight = 11.5;
     this.fordMask.fill(0);
+    this.waterPassable.fill(0);
 
     for (let tz = 0; tz < this.height; tz++) {
       for (let tx = 0; tx < this.width; tx++) {
@@ -502,12 +672,21 @@ export class TerrainMap {
           }
         }
 
+        if (this.bridgeMask[idx] === 1) {
+          this.staticPassable[idx] = 1;
+          this.waterPassable[idx] = 0;
+          continue;
+        }
+
         if (inFord && minH > WATER_LEVEL - 0.55 && slope <= maxSlope) {
           this.staticPassable[idx] = 1;
           this.fordMask[idx] = avgH < WATER_LEVEL + 0.35 ? 1 : 0;
         } else {
           const passable = minH > WATER_LEVEL + 0.08 && avgH < maxWalkableHeight && slope <= maxSlope;
           this.staticPassable[idx] = passable ? 1 : 0;
+          if (avgH <= WATER_LEVEL - 0.28) {
+            this.waterPassable[idx] = 1;
+          }
         }
       }
     }
@@ -534,33 +713,36 @@ export class TerrainMap {
     }
   }
 
-  /** Guarantees a walkable land/ford connection exists between Player 1 and Player 2 spawns */
+  /** Guarantees a walkable land/ford connection exists between Player 1 and EVERY other spawn (2..8 nations) */
   private ensureSpawnConnectivity(): void {
     if (this.areSpawnsConnected()) return;
 
     const s1 = this.spawns[0];
-    const s2 = this.spawns[1];
     const vw = this.width + 1;
     const steps = 80;
 
-    // Carve a smooth, continuous land pass / causeway connecting both bases
-    for (let i = 0; i <= steps; i++) {
-      const t = i / steps;
-      const cx = s1.tileX + (s2.tileX - s1.tileX) * t;
-      const cz = s1.tileZ + (s2.tileZ - s1.tileZ) * t;
-      const rad = 8.0;
-      const minX = Math.max(2, Math.floor(cx - rad));
-      const maxX = Math.min(this.width - 2, Math.ceil(cx + rad));
-      const minZ = Math.max(2, Math.floor(cz - rad));
-      const maxZ = Math.min(this.height - 2, Math.ceil(cz + rad));
-      for (let vz = minZ; vz <= maxZ; vz++) {
-        for (let vx = minX; vx <= maxX; vx++) {
-          const d = Math.hypot(vx - cx, vz - cz);
-          if (d < rad) {
-            const blend = 1 - d / rad;
-            const smooth = blend * blend * (3 - 2 * blend);
-            const cur = this.heights[vz * vw + vx];
-            this.heights[vz * vw + vx] = cur * (1 - smooth) + 2.0 * smooth;
+    for (let si = 1; si < this.spawns.length; si++) {
+      if (this.isPairConnected(s1, this.spawns[si])) continue;
+      const s2 = this.spawns[si];
+      // Carve a smooth, continuous land pass / causeway connecting both bases
+      for (let i = 0; i <= steps; i++) {
+        const t = i / steps;
+        const cx = s1.tileX + (s2.tileX - s1.tileX) * t;
+        const cz = s1.tileZ + (s2.tileZ - s1.tileZ) * t;
+        const rad = 7.5;
+        const minX = Math.max(2, Math.floor(cx - rad));
+        const maxX = Math.min(this.width - 2, Math.ceil(cx + rad));
+        const minZ = Math.max(2, Math.floor(cz - rad));
+        const maxZ = Math.min(this.height - 2, Math.ceil(cz + rad));
+        for (let vz = minZ; vz <= maxZ; vz++) {
+          for (let vx = minX; vx <= maxX; vx++) {
+            const d = Math.hypot(vx - cx, vz - cz);
+            if (d < rad) {
+              const blend = 1 - d / rad;
+              const smooth = blend * blend * (3 - 2 * blend);
+              const cur = this.heights[vz * vw + vx];
+              this.heights[vz * vw + vx] = cur * (1 - smooth) + 2.0 * smooth;
+            }
           }
         }
       }
@@ -569,9 +751,7 @@ export class TerrainMap {
     this.computeStaticPassability();
   }
 
-  areSpawnsConnected(): boolean {
-    const s1 = this.spawns[0];
-    const s2 = this.spawns[1];
+  private isPairConnected(s1: BaseSpawn, s2: BaseSpawn): boolean {
     const visited = new Uint8Array(this.width * this.height);
     const queue = new Int32Array(this.width * this.height);
     let head = 0;
@@ -596,6 +776,53 @@ export class TerrainMap {
       }
     }
     return false;
+  }
+
+  areSpawnsConnected(): boolean {
+    const s1 = this.spawns[0];
+    for (let i = 1; i < this.spawns.length; i++) {
+      if (!this.isPairConnected(s1, this.spawns[i])) return false;
+    }
+    return true;
+  }
+
+  /** Exports mutable terraforming & bridge state for Save/Load */
+  exportMutableState(): {
+    heights: number[];
+    dugMask: number[];
+    bridgeMask: number[];
+    tileSoilUnits: number[];
+    tileFillUnits: number[];
+    tileTerraformEpoch: number[];
+  } {
+    return {
+      heights: Array.from(this.heights, (v) => Math.round(v * 1000) / 1000),
+      dugMask: Array.from(this.dugMask, (v) => Math.round(v * 100) / 100),
+      bridgeMask: Array.from(this.bridgeMask),
+      tileSoilUnits: Array.from(this.tileSoilUnits),
+      tileFillUnits: Array.from(this.tileFillUnits),
+      tileTerraformEpoch: Array.from(this.tileTerraformEpoch),
+    };
+  }
+
+  importMutableState(data: {
+    heights: number[];
+    dugMask: number[];
+    bridgeMask: number[];
+    tileSoilUnits: number[];
+    tileFillUnits: number[];
+    tileTerraformEpoch: number[];
+  }): void {
+    if (data.heights.length === this.heights.length) this.heights.set(data.heights);
+    if (data.dugMask.length === this.dugMask.length) this.dugMask.set(data.dugMask);
+    if (data.bridgeMask.length === this.bridgeMask.length) this.bridgeMask.set(data.bridgeMask);
+    if (data.tileSoilUnits.length === this.tileSoilUnits.length) this.tileSoilUnits.set(data.tileSoilUnits);
+    if (data.tileFillUnits.length === this.tileFillUnits.length) this.tileFillUnits.set(data.tileFillUnits);
+    if (data.tileTerraformEpoch.length === this.tileTerraformEpoch.length) {
+      this.tileTerraformEpoch.set(data.tileTerraformEpoch);
+    }
+    this.computeStaticPassability();
+    this.version++;
   }
 
   getVertexHeight(vx: number, vz: number): number {
@@ -640,6 +867,64 @@ export class TerrainMap {
     return this.fordMask[tz * this.width + tx] === 0 && this.getVertexHeight(tx, tz) > WATER_LEVEL + 0.25;
   }
 
+  isTileWaterNavigable(tx: number, tz: number): boolean {
+    if (tx < 0 || tz < 0 || tx >= this.width || tz >= this.height) return false;
+    return this.waterPassable[tz * this.width + tx] === 1;
+  }
+
+  /**
+   * Checks whether (tx, tz) sits cleanly on a coastline suitable for a Harbor Dock:
+   * requires nearby dry land for builders to reach AND open navigable water right off the pier.
+   */
+  getCoastalDockInfo(tx: number, tz: number): {
+    ok: boolean;
+    waterAngle: number;
+    waterTile: { tx: number; tz: number } | null;
+  } {
+    if (tx < 4 || tz < 4 || tx >= this.width - 4 || tz >= this.height - 4) {
+      return { ok: false, waterAngle: 0, waterTile: null };
+    }
+    const centerH = this.getVertexHeight(tx, tz);
+    if (centerH < WATER_LEVEL - 1.5 || centerH > WATER_LEVEL + 1.8) {
+      return { ok: false, waterAngle: 0, waterTile: null };
+    }
+
+    let landCount = 0;
+    let waterCount = 0;
+    let waterDx = 0;
+    let waterDz = 0;
+    let bestWater: { tx: number; tz: number } | null = null;
+    let bestWaterDist = Infinity;
+
+    for (let dz = -3; dz <= 3; dz++) {
+      for (let dx = -3; dx <= 3; dx++) {
+        const nx = tx + dx;
+        const nz = tz + dz;
+        const d = Math.hypot(dx, dz);
+        if (d > 3.5) continue;
+        if (this.isTileDryLand(nx, nz) && d <= 2.8) {
+          landCount++;
+        }
+        if (this.isTileWaterNavigable(nx, nz)) {
+          waterCount++;
+          waterDx += dx;
+          waterDz += dz;
+          if (d >= 1.4 && d < bestWaterDist) {
+            bestWaterDist = d;
+            bestWater = { tx: nx, tz: nz };
+          }
+        }
+      }
+    }
+
+    if (landCount < 2 || waterCount < 4 || !bestWater) {
+      return { ok: false, waterAngle: 0, waterTile: null };
+    }
+
+    const waterAngle = Math.atan2(waterDx, waterDz);
+    return { ok: true, waterAngle, waterTile: bestWater };
+  }
+
   worldToTile(wx: number, wz: number): { tx: number; tz: number } {
     return {
       tx: Math.max(0, Math.min(this.width - 1, Math.floor(wx / this.tileSize))),
@@ -652,5 +937,220 @@ export class TerrainMap {
       x: (tx + 0.5) * this.tileSize,
       z: (tz + 0.5) * this.tileSize,
     };
+  }
+
+  /**
+   * Reshapes live terrain around a tile by `deltaHeight` meters (negative = dig, positive = pile/raise).
+   * Returns true if any vertex height changed.
+   */
+  modifyTerrainDelta(tileX: number, tileZ: number, deltaHeight: number): boolean {
+    if (tileX < 3 || tileZ < 3 || tileX > this.width - 4 || tileZ > this.height - 4) {
+      return false;
+    }
+    const vw = this.width + 1;
+    const cx = tileX + 0.5;
+    const cz = tileZ + 0.5;
+    const radius = 2.45;
+    const flatCore = 0.75;
+    const minH = WATER_LEVEL - 2.6;
+    const maxH = 12.0;
+
+    let changed = false;
+    const minVx = Math.max(2, Math.floor(cx - radius));
+    const maxVx = Math.min(this.width - 2, Math.ceil(cx + radius));
+    const minVz = Math.max(2, Math.floor(cz - radius));
+    const maxVz = Math.min(this.height - 2, Math.ceil(cz + radius));
+
+    for (let vz = minVz; vz <= maxVz; vz++) {
+      for (let vx = minVx; vx <= maxVx; vx++) {
+        const d = Math.hypot(vx - cx, vz - cz);
+        if (d >= radius) continue;
+        const t = d <= flatCore ? 1 : 1 - (d - flatCore) / (radius - flatCore);
+        const weight = t * t * (3 - 2 * t);
+        const idx = vz * vw + vx;
+        const prev = this.heights[idx];
+        const next = Math.max(minH, Math.min(maxH, prev + deltaHeight * weight));
+        if (Math.abs(next - prev) > 0.001) {
+          this.heights[idx] = next;
+          changed = true;
+        }
+        this.dugMask[idx] = Math.min(1, this.dugMask[idx] + weight * 0.9);
+      }
+    }
+
+    if (!changed) return false;
+    this.computeStaticPassability();
+    this.version++;
+    return true;
+  }
+
+  modifyTerrain(tileX: number, tileZ: number, mode: 'dig' | 'raise'): boolean {
+    return this.modifyTerrainDelta(tileX, tileZ, mode === 'dig' ? -1.25 : 1.25);
+  }
+
+  /** Marks or clears a bridge tile spanning over water so land units can walk straight across */
+  setBridgeTile(tileX: number, tileZ: number, active: boolean): void {
+    if (tileX < 2 || tileZ < 2 || tileX >= this.width - 2 || tileZ >= this.height - 2) return;
+    const idx = tileZ * this.width + tileX;
+    this.bridgeMask[idx] = active ? 1 : 0;
+    this.computeStaticPassability();
+    this.version++;
+  }
+
+  isTileBridge(tx: number, tz: number): boolean {
+    if (tx < 0 || tz < 0 || tx >= this.width || tz >= this.height) return false;
+    return this.bridgeMask[tz * this.width + tx] === 1;
+  }
+
+  getSoilUnits(tx: number, tz: number): number {
+    if (tx < 0 || tz < 0 || tx >= this.width || tz >= this.height) return 0;
+    return this.tileSoilUnits[tz * this.width + tx];
+  }
+
+  getFillUnits(tx: number, tz: number): number {
+    if (tx < 0 || tz < 0 || tx >= this.width || tz >= this.height) return 0;
+    return this.tileFillUnits[tz * this.width + tx];
+  }
+
+  getTerraformEpoch(tx: number, tz: number): number {
+    if (tx < 0 || tz < 0 || tx >= this.width || tz >= this.height) return 0;
+    return this.tileTerraformEpoch[tz * this.width + tx];
+  }
+
+  /** Returns all tiles that currently have partial excavation (<100 soil remaining) or fill (>0 soil dumped) */
+  getActiveSoilTiles(): Array<{ idx: number; tx: number; tz: number; dugUnits: number; fillUnits: number }> {
+    const out: Array<{ idx: number; tx: number; tz: number; dugUnits: number; fillUnits: number }> = [];
+    for (const idx of this.activeSoilIndices) {
+      const rem = this.tileSoilUnits[idx];
+      const fill = this.tileFillUnits[idx];
+      const dugUnits = SOIL_UNITS_PER_TILE - rem;
+      if (dugUnits <= 0 && fill <= 0) {
+        this.activeSoilIndices.delete(idx);
+        continue;
+      }
+      out.push({
+        idx,
+        tx: idx % this.width,
+        tz: Math.floor(idx / this.width),
+        dugUnits,
+        fillUnits: fill,
+      });
+    }
+    return out;
+  }
+
+  private syncActiveSoilIndex(idx: number): void {
+    if (this.tileSoilUnits[idx] < SOIL_UNITS_PER_TILE || this.tileFillUnits[idx] > 0) {
+      this.activeSoilIndices.add(idx);
+    } else {
+      this.activeSoilIndices.delete(idx);
+    }
+    this.soilProgressVersion++;
+  }
+
+  /**
+   * Excavates `units` (default 1 per worker dig cycle) from a tile's 100-unit soil layer.
+   * Only when all 100 units are removed does the terrain actually subside & visually drop!
+   */
+  digSoilUnit(tileX: number, tileZ: number, units = 1): { subsided: boolean; remaining: number } {
+    if (tileX < 3 || tileZ < 3 || tileX > this.width - 4 || tileZ > this.height - 4) {
+      return { subsided: false, remaining: 0 };
+    }
+    const idx = tileZ * this.width + tileX;
+    const prev = this.tileSoilUnits[idx];
+    const next = Math.max(0, prev - units);
+    if (next === 0) {
+      this.modifyTerrainDelta(tileX, tileZ, -1.05);
+      this.tileSoilUnits[idx] = SOIL_UNITS_PER_TILE;
+      this.tileTerraformEpoch[idx]++;
+      this.syncActiveSoilIndex(idx);
+      return { subsided: true, remaining: SOIL_UNITS_PER_TILE };
+    }
+    this.tileSoilUnits[idx] = next;
+    this.syncActiveSoilIndex(idx);
+    return { subsided: false, remaining: next };
+  }
+
+  /**
+   * Deposits `units` of hauled earth onto a destination tile.
+   * Once 100 units accumulate, the destination tile rises by +1.05m!
+   */
+  depositSoilUnit(tileX: number, tileZ: number, units = 1): { raised: boolean; filled: number } {
+    if (tileX < 3 || tileZ < 3 || tileX > this.width - 4 || tileZ > this.height - 4) {
+      return { raised: false, filled: 0 };
+    }
+    const idx = tileZ * this.width + tileX;
+    const total = this.tileFillUnits[idx] + units;
+    if (total >= SOIL_UNITS_PER_TILE) {
+      this.modifyTerrainDelta(tileX, tileZ, 1.05);
+      this.tileFillUnits[idx] = total - SOIL_UNITS_PER_TILE;
+      this.tileTerraformEpoch[idx]++;
+      this.syncActiveSoilIndex(idx);
+      return { raised: true, filled: this.tileFillUnits[idx] };
+    }
+    this.tileFillUnits[idx] = total;
+    this.syncActiveSoilIndex(idx);
+    return { raised: false, filled: total };
+  }
+
+  /**
+   * Grades and flattens an uneven hillside/slope around (tileX, tileZ) into a level buildable terrace
+   * once 100 soil units of grading work are completed!
+   */
+  levelSoilUnit(tileX: number, tileZ: number, units = 1): { leveled: boolean; remaining: number } {
+    if (tileX < 3 || tileZ < 3 || tileX > this.width - 4 || tileZ > this.height - 4) {
+      return { leveled: false, remaining: 0 };
+    }
+    const idx = tileZ * this.width + tileX;
+    const next = Math.max(0, this.tileSoilUnits[idx] - units);
+    if (next === 0) {
+      this.flattenTerrace(tileX, tileZ);
+      this.tileSoilUnits[idx] = SOIL_UNITS_PER_TILE;
+      this.tileTerraformEpoch[idx]++;
+      this.syncActiveSoilIndex(idx);
+      return { leveled: true, remaining: SOIL_UNITS_PER_TILE };
+    }
+    this.tileSoilUnits[idx] = next;
+    this.syncActiveSoilIndex(idx);
+    return { leveled: false, remaining: next };
+  }
+
+  /** Smoothly flattens a 4x4 tile area around (tileX, tileZ) so buildings can be constructed on formerly uneven slopes */
+  flattenTerrace(tileX: number, tileZ: number): boolean {
+    if (tileX < 3 || tileZ < 3 || tileX > this.width - 4 || tileZ > this.height - 4) return false;
+    const vw = this.width + 1;
+    const cx = tileX + 0.5;
+    const cz = tileZ + 0.5;
+
+    // Target height = average height of immediate center, clamped to dry buildable land
+    const avgH =
+      (this.getVertexHeight(tileX, tileZ) +
+        this.getVertexHeight(tileX + 1, tileZ) +
+        this.getVertexHeight(tileX, tileZ + 1) +
+        this.getVertexHeight(tileX + 1, tileZ + 1)) *
+      0.25;
+    const targetH = Math.max(WATER_LEVEL + 0.9, Math.min(9.5, avgH));
+
+    const flatRad = 2.6;
+    const blendRad = 4.5;
+    const minVx = Math.max(2, Math.floor(cx - blendRad));
+    const maxVx = Math.min(this.width - 2, Math.ceil(cx + blendRad));
+    const minVz = Math.max(2, Math.floor(cz - blendRad));
+    const maxVz = Math.min(this.height - 2, Math.ceil(cz + blendRad));
+
+    for (let vz = minVz; vz <= maxVz; vz++) {
+      for (let vx = minVx; vx <= maxVx; vx++) {
+        const d = Math.hypot(vx - cx, vz - cz);
+        if (d >= blendRad) continue;
+        const t = d <= flatRad ? 1 : 1 - (d - flatRad) / (blendRad - flatRad);
+        const smooth = t * t * (3 - 2 * t);
+        const vIdx = vz * vw + vx;
+        this.heights[vIdx] = this.heights[vIdx] * (1 - smooth) + targetH * smooth;
+        this.dugMask[vIdx] = Math.min(1, this.dugMask[vIdx] + smooth * 0.75);
+      }
+    }
+    this.computeStaticPassability();
+    this.version++;
+    return true;
   }
 }

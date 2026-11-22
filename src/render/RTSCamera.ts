@@ -5,10 +5,10 @@ export class RTSCamera {
   readonly camera: THREE.PerspectiveCamera;
   readonly target = new THREE.Vector3();
 
-  // Smooth damped goals for buttery 0 A.D.-style camera feel
+  // Smooth damped goals for buttery 0 A.D.-style camera feel (yaw = 0 aligns North/-Z Up & East/+X Right 1:1 with Minimap!)
   private readonly desiredTarget = new THREE.Vector3();
-  yaw = -Math.PI * 0.25;
-  private desiredYaw = -Math.PI * 0.25;
+  yaw = 0;
+  private desiredYaw = 0;
   distance = 44;
   private desiredDistance = 44;
   minDistance = 15;

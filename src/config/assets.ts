@@ -9,7 +9,19 @@ export const UI_ICONS = {
   metal: `${ASSET_BASE}/ui/res_metal.png`,
   population: `${ASSET_BASE}/ui/res_pop.png`,
   emblemAthenians: `${ASSET_BASE}/ui/emblem_athenians.png`,
+  emblemBritons: `${ASSET_BASE}/ui/emblem_britons.png`,
+  emblemCarthaginians: `${ASSET_BASE}/ui/emblem_carthaginians.png`,
+  emblemGauls: `${ASSET_BASE}/ui/emblem_gauls.png`,
+  emblemHan: `${ASSET_BASE}/ui/emblem_han.png`,
+  emblemIberians: `${ASSET_BASE}/ui/emblem_iberians.png`,
+  emblemKushites: `${ASSET_BASE}/ui/emblem_kushites.png`,
+  emblemMacedonians: `${ASSET_BASE}/ui/emblem_macedonians.png`,
+  emblemMauryas: `${ASSET_BASE}/ui/emblem_mauryas.png`,
+  emblemPersians: `${ASSET_BASE}/ui/emblem_persians.png`,
+  emblemPtolemies: `${ASSET_BASE}/ui/emblem_ptolemies.png`,
   emblemRomans: `${ASSET_BASE}/ui/emblem_romans.png`,
+  emblemSeleucids: `${ASSET_BASE}/ui/emblem_seleucids.png`,
+  emblemSpartans: `${ASSET_BASE}/ui/emblem_spartans.png`,
 } as const;
 
 export const ENTITY_PORTRAITS: Record<string, string> = {
@@ -19,17 +31,31 @@ export const ENTITY_PORTRAITS: Record<string, string> = {
   tree_pine: `${ASSET_BASE}/ui/tree_pine.png`,
   tree_palm: `${ASSET_BASE}/ui/tree_palm.png`,
   tree_oak: `${ASSET_BASE}/ui/tree_oak.png`,
+  tree_bamboo: `${ASSET_BASE}/ui/tree_bamboo.png`,
   berry_bush: `${ASSET_BASE}/ui/berry_bush.png`,
   grape_vine: `${ASSET_BASE}/ui/grape_vine.png`,
   deer_herd: `${ASSET_BASE}/ui/deer_herd.png`,
   wild_boar: `${ASSET_BASE}/ui/wild_boar.png`,
+  wild_gazelle: `${ASSET_BASE}/ui/wild_gazelle.png`,
+  wild_elephant: `${ASSET_BASE}/ui/wild_elephant.png`,
+  predator_wolf: `${ASSET_BASE}/ui/predator_wolf.png`,
+  predator_lion: `${ASSET_BASE}/ui/predator_lion.png`,
+  predator_bear: `${ASSET_BASE}/ui/predator_bear.png`,
+  wild_eagle: `${ASSET_BASE}/ui/wild_eagle.png`,
+  wild_seagull: `${ASSET_BASE}/ui/wild_seagull.png`,
+  sea_monster: `${ASSET_BASE}/ui/sea_monster.png`,
+  sea_kraken: `${ASSET_BASE}/ui/sea_kraken.png`,
+  lake_nessie: `${ASSET_BASE}/ui/lake_nessie.png`,
   stone_quarry: `${ASSET_BASE}/ui/stone_quarry.png`,
   marble_quarry: `${ASSET_BASE}/ui/marble_quarry.png`,
   metal_mine: `${ASSET_BASE}/ui/metal_mine.png`,
   gold_vein: `${ASSET_BASE}/ui/gold_vein.png`,
+  fish_shoal: `${ASSET_BASE}/ui/fish_shoal.png`,
+  ancient_ruin_pillar: `${ASSET_BASE}/ui/ancient_ruin_pillar.png`,
   // Buildings
   civic_center: `${ASSET_BASE}/ui/civic_center.png`,
   house: `${ASSET_BASE}/ui/house.png`,
+  apartment_house: `${ASSET_BASE}/ui/apartment_house.png`,
   storehouse: `${ASSET_BASE}/ui/storehouse.png`,
   farmstead: `${ASSET_BASE}/ui/farmstead.png`,
   field: `${ASSET_BASE}/ui/field.png`,
@@ -37,51 +63,344 @@ export const ENTITY_PORTRAITS: Record<string, string> = {
   defense_tower: `${ASSET_BASE}/ui/defense_tower.png`,
   outpost: `${ASSET_BASE}/ui/outpost.png`,
   fortress: `${ASSET_BASE}/ui/fortress.png`,
+  stone_wall: `${ASSET_BASE}/ui/stone_wall.png`,
+  stone_gate: `${ASSET_BASE}/ui/stone_gate.png`,
+  stone_bridge: `${ASSET_BASE}/ui/stone_bridge.png`,
+  tunnel_portal: `${ASSET_BASE}/ui/tunnel_portal.png`,
   temple: `${ASSET_BASE}/ui/temple.png`,
   blacksmith: `${ASSET_BASE}/ui/blacksmith.png`,
   market: `${ASSET_BASE}/ui/market.png`,
   stable: `${ASSET_BASE}/ui/stable.png`,
   workshop: `${ASSET_BASE}/ui/workshop.png`,
   wonder: `${ASSET_BASE}/ui/wonder.png`,
-  // Units
+  dock: `${ASSET_BASE}/ui/dock.png`,
+  // 14 Official Civ Unique Buildings
+  gymnasium: `${ASSET_BASE}/ui/gymnasium.png`,
+  brit_kennel: `${ASSET_BASE}/ui/brit_kennel.png`,
+  carth_embassy: `${ASSET_BASE}/ui/carth_embassy.png`,
+  gaul_tavern: `${ASSET_BASE}/ui/gaul_tavern.png`,
+  han_ministry: `${ASSET_BASE}/ui/han_ministry.png`,
+  iber_monument: `${ASSET_BASE}/ui/iber_monument.png`,
+  kush_pyramid: `${ASSET_BASE}/ui/kush_pyramid.png`,
+  mace_arsenal: `${ASSET_BASE}/ui/mace_arsenal.png`,
+  maur_pillar: `${ASSET_BASE}/ui/maur_pillar.png`,
+  apadana: `${ASSET_BASE}/ui/apadana.png`,
+  ptol_library: `${ASSET_BASE}/ui/ptol_library.png`,
+  army_camp: `${ASSET_BASE}/ui/army_camp.png`,
+  sele_colony: `${ASSET_BASE}/ui/sele_colony.png`,
+  syssition: `${ASSET_BASE}/ui/syssition.png`,
+  // Units (100% authentic official 0 A.D. portraits across all 14 vanilla civs)
   female_citizen: `${ASSET_BASE}/ui/female_citizen_athen.png`,
+  male_citizen: `${ASSET_BASE}/ui/male_citizen.png`,
+  trader: `${ASSET_BASE}/ui/trader.png`,
   healer: `${ASSET_BASE}/ui/healer_athen.png`,
   siege_ram: `${ASSET_BASE}/ui/siege_ram_athen.png`,
   athen_hoplite: `${ASSET_BASE}/ui/athen_hoplite.png`,
   athen_archer: `${ASSET_BASE}/ui/athen_archer.png`,
   athen_cavalry: `${ASSET_BASE}/ui/athen_cavalry.png`,
   athen_champion: `${ASSET_BASE}/ui/athen_champion.png`,
+  athen_marine: `${ASSET_BASE}/ui/athen_champion.png`,
+  brit_spearman: `${ASSET_BASE}/ui/brit_spearman.png`,
+  brit_slinger: `${ASSET_BASE}/ui/brit_slinger.png`,
+  brit_cavalry: `${ASSET_BASE}/ui/brit_cavalry.png`,
+  brit_champion: `${ASSET_BASE}/ui/brit_champion.png`,
+  brit_chariot: `${ASSET_BASE}/ui/brit_chariot.png`,
+  carth_spearman: `${ASSET_BASE}/ui/carth_spearman.png`,
+  carth_slinger: `${ASSET_BASE}/ui/carth_slinger.png`,
+  carth_cavalry: `${ASSET_BASE}/ui/carth_cavalry.png`,
+  carth_sacred_band: `${ASSET_BASE}/ui/carth_sacred_band.png`,
+  carth_mercenary: `${ASSET_BASE}/ui/carth_mercenary.png`,
+  gaul_spearman: `${ASSET_BASE}/ui/gaul_spearman.png`,
+  gaul_slinger: `${ASSET_BASE}/ui/gaul_slinger.png`,
+  gaul_cavalry: `${ASSET_BASE}/ui/gaul_cavalry.png`,
+  gaul_champion: `${ASSET_BASE}/ui/gaul_champion.png`,
+  gaul_fanatic: `${ASSET_BASE}/ui/gaul_fanatic.png`,
+  han_spearman: `${ASSET_BASE}/ui/han_spearman.png`,
+  han_crossbow: `${ASSET_BASE}/ui/han_crossbow.png`,
+  han_cavalry: `${ASSET_BASE}/ui/han_cavalry.png`,
+  han_champion: `${ASSET_BASE}/ui/han_champion.png`,
+  han_guard: `${ASSET_BASE}/ui/han_guard.png`,
+  iber_swordsman: `${ASSET_BASE}/ui/iber_swordsman.png`,
+  iber_slinger: `${ASSET_BASE}/ui/iber_slinger.png`,
+  iber_cavalry: `${ASSET_BASE}/ui/iber_cavalry.png`,
+  iber_champion: `${ASSET_BASE}/ui/iber_champion.png`,
+  iber_fire_cav: `${ASSET_BASE}/ui/iber_fire_cav.png`,
+  kush_spearman: `${ASSET_BASE}/ui/kush_spearman.png`,
+  kush_archer: `${ASSET_BASE}/ui/kush_archer.png`,
+  kush_cavalry: `${ASSET_BASE}/ui/kush_cavalry.png`,
+  kush_champion: `${ASSET_BASE}/ui/kush_champion.png`,
+  kush_elephant: `${ASSET_BASE}/ui/kush_elephant.png`,
+  mace_pikeman: `${ASSET_BASE}/ui/mace_pikeman.png`,
+  mace_archer: `${ASSET_BASE}/ui/mace_archer.png`,
+  mace_cavalry: `${ASSET_BASE}/ui/mace_cavalry.png`,
+  mace_champion: `${ASSET_BASE}/ui/mace_champion.png`,
+  mace_companion: `${ASSET_BASE}/ui/mace_companion.png`,
+  maur_spearman: `${ASSET_BASE}/ui/maur_spearman.png`,
+  maur_archer: `${ASSET_BASE}/ui/maur_archer.png`,
+  maur_cavalry: `${ASSET_BASE}/ui/maur_cavalry.png`,
+  maur_champion: `${ASSET_BASE}/ui/maur_champion.png`,
+  maur_elephant: `${ASSET_BASE}/ui/maur_elephant.png`,
+  pers_spearman: `${ASSET_BASE}/ui/pers_spearman.png`,
+  pers_archer: `${ASSET_BASE}/ui/pers_archer.png`,
+  pers_cavalry: `${ASSET_BASE}/ui/pers_cavalry.png`,
+  pers_immortal: `${ASSET_BASE}/ui/pers_immortal.png`,
+  pers_cataphract: `${ASSET_BASE}/ui/pers_cataphract.png`,
+  ptol_pikeman: `${ASSET_BASE}/ui/ptol_pikeman.png`,
+  ptol_archer: `${ASSET_BASE}/ui/ptol_archer.png`,
+  ptol_cavalry: `${ASSET_BASE}/ui/ptol_cavalry.png`,
+  ptol_royal_guard: `${ASSET_BASE}/ui/ptol_royal_guard.png`,
+  ptol_klerouch: `${ASSET_BASE}/ui/ptol_klerouch.png`,
   rome_hastatus: `${ASSET_BASE}/ui/rome_hastatus.png`,
   rome_velite: `${ASSET_BASE}/ui/rome_velite.png`,
   rome_cavalry: `${ASSET_BASE}/ui/rome_cavalry.png`,
   rome_champion: `${ASSET_BASE}/ui/rome_champion.png`,
+  rome_praetorian: `${ASSET_BASE}/ui/rome_champion.png`,
+  sele_pikeman: `${ASSET_BASE}/ui/sele_pikeman.png`,
+  sele_archer: `${ASSET_BASE}/ui/sele_archer.png`,
+  sele_cavalry: `${ASSET_BASE}/ui/sele_cavalry.png`,
+  sele_champion: `${ASSET_BASE}/ui/sele_champion.png`,
+  sele_elephant: `${ASSET_BASE}/ui/sele_elephant.png`,
+  spart_perioikos: `${ASSET_BASE}/ui/spart_perioikos.png`,
+  spart_skirmisher: `${ASSET_BASE}/ui/spart_skirmisher.png`,
+  spart_cavalry: `${ASSET_BASE}/ui/spart_cavalry.png`,
+  spart_spartiate: `${ASSET_BASE}/ui/spart_spartiate.png`,
+  spart_hero_guard: `${ASSET_BASE}/ui/spart_hero_guard.png`,
+  fishing_boat: `${ASSET_BASE}/ui/fishing_boat.png`,
+  merchant_ship: `${ASSET_BASE}/ui/merchant_ship.png`,
+  warship_trireme: `${ASSET_BASE}/ui/warship_trireme.png`,
+  // Specialized Cultural Warfare & Artillery Units
+  war_dog: `${ASSET_BASE}/ui/war_dog.png`,
+  camel_rider: `${ASSET_BASE}/ui/camel_rider.png`,
+  gastraphetes_crossbow: `${ASSET_BASE}/ui/han_crossbow.png`,
+  pers_chariot: `${ASSET_BASE}/ui/pers_chariot.png`,
+  han_chariot: `${ASSET_BASE}/ui/han_chariot.png`,
+  pers_elephant: `${ASSET_BASE}/ui/pers_elephant.png`,
+  ptol_elephant: `${ASSET_BASE}/ui/ptol_elephant.png`,
+  carth_elephant: `${ASSET_BASE}/ui/ptol_elephant.png`,
+  fire_archer: `${ASSET_BASE}/ui/fire_archer.png`,
+  siege_lithobolos: `${ASSET_BASE}/ui/siege_lithobolos.png`,
+  siege_catapult: `${ASSET_BASE}/ui/siege_catapult.png`,
+  siege_ballista: `${ASSET_BASE}/ui/siege_ballista.png`,
 };
 
 export const TECH_PORTRAITS: Record<string, string> = {
   phase_town: `${ASSET_BASE}/ui/phase_town.png`,
+  phase_city: `${ASSET_BASE}/ui/tech_phase_city.png`,
+  phase_empire: `${ASSET_BASE}/ui/tech_phase_empire.png`,
   tech_gather_tools: `${ASSET_BASE}/ui/tech_gather_tools.png`,
   tech_iron_weapons: `${ASSET_BASE}/ui/tech_iron_weapons.png`,
   tech_bronze_shields: `${ASSET_BASE}/ui/tech_bronze_shields.png`,
   tech_architecture: `${ASSET_BASE}/ui/tech_architecture.png`,
+  tech_multistory_housing: `${ASSET_BASE}/ui/apartment_house.png`,
   tech_temple_healing: `${ASSET_BASE}/ui/tech_temple_healing.png`,
   tech_coinage: `${ASSET_BASE}/ui/tech_coinage.png`,
   tech_cavalry_speed: `${ASSET_BASE}/ui/tech_cavalry_speed.png`,
   tech_steel_weapons: `${ASSET_BASE}/ui/tech_steel_weapons.png`,
   tech_heavy_armor: `${ASSET_BASE}/ui/tech_heavy_armor.png`,
   tech_siege_engineering: `${ASSET_BASE}/ui/tech_siege_engineering.png`,
+  tech_athen_phalanx: `${ASSET_BASE}/ui/tech_bronze_shields.png`,
+  tech_athen_delian: `${ASSET_BASE}/ui/tech_coinage.png`,
+  tech_brit_chariots: `${ASSET_BASE}/ui/tech_cavalry_speed.png`,
+  tech_brit_warfare: `${ASSET_BASE}/ui/tech_iron_weapons.png`,
+  tech_carth_colonization: `${ASSET_BASE}/ui/tech_coinage.png`,
+  tech_carth_mercenaries: `${ASSET_BASE}/ui/tech_iron_weapons.png`,
+  tech_gaul_charge: `${ASSET_BASE}/ui/tech_steel_weapons.png`,
+  tech_gaul_smithing: `${ASSET_BASE}/ui/tech_heavy_armor.png`,
+  tech_han_crossbow: `${ASSET_BASE}/ui/tech_steel_weapons.png`,
+  tech_han_silkroad: `${ASSET_BASE}/ui/tech_coinage.png`,
+  tech_iber_guerrilla: `${ASSET_BASE}/ui/tech_cavalry_speed.png`,
+  tech_iber_metallurgy: `${ASSET_BASE}/ui/tech_iron_weapons.png`,
+  tech_kush_pyramids: `${ASSET_BASE}/ui/tech_architecture.png`,
+  tech_kush_monumental: `${ASSET_BASE}/ui/tech_heavy_armor.png`,
+  tech_mace_sarissa: `${ASSET_BASE}/ui/tech_steel_weapons.png`,
+  tech_mace_siege: `${ASSET_BASE}/ui/tech_siege_engineering.png`,
+  tech_maur_elephants: `${ASSET_BASE}/ui/tech_heavy_armor.png`,
+  tech_maur_edicts: `${ASSET_BASE}/ui/tech_gather_tools.png`,
+  tech_pers_immortals: `${ASSET_BASE}/ui/tech_steel_weapons.png`,
+  tech_pers_satrapy: `${ASSET_BASE}/ui/tech_coinage.png`,
+  tech_ptol_nile: `${ASSET_BASE}/ui/tech_gather_tools.png`,
+  tech_ptol_pharos: `${ASSET_BASE}/ui/tech_architecture.png`,
+  tech_rome_marian: `${ASSET_BASE}/ui/tech_steel_weapons.png`,
+  tech_rome_corvus: `${ASSET_BASE}/ui/tech_architecture.png`,
+  tech_sele_cataphract: `${ASSET_BASE}/ui/tech_cavalry_speed.png`,
+  tech_sele_colony: `${ASSET_BASE}/ui/tech_architecture.png`,
+  tech_spart_agoge: `${ASSET_BASE}/ui/tech_iron_weapons.png`,
+  tech_spart_shieldwall: `${ASSET_BASE}/ui/tech_heavy_armor.png`,
+  tech_naval_hull: `${ASSET_BASE}/ui/tech_architecture.png`,
+  tech_naval_ram: `${ASSET_BASE}/ui/tech_siege_engineering.png`,
+};
+
+const CIV_PORTRAIT_OVERRIDES: Partial<Record<CivId, Partial<Record<string, string>>>> = {
+  athenians: {
+    market: `${ASSET_BASE}/ui/market_stoa.png`,
+    dock: `${ASSET_BASE}/ui/dock_shipyard.png`,
+  },
+  britons: {
+    civic_center: `${ASSET_BASE}/ui/cc_celt.png`,
+    farmstead: `${ASSET_BASE}/ui/farmstead_celt.png`,
+    fortress: `${ASSET_BASE}/ui/fortress_celt.png`,
+    defense_tower: `${ASSET_BASE}/ui/tower_celt.png`,
+    stone_wall: `${ASSET_BASE}/ui/wall_celt.png`,
+    stone_gate: `${ASSET_BASE}/ui/gate_celt.png`,
+    female_citizen: `${ASSET_BASE}/ui/female_citizen_celt.png`,
+    healer: `${ASSET_BASE}/ui/healer_celt.png`,
+    fishing_boat: `${ASSET_BASE}/ui/fishing_boat_celt.png`,
+    merchant_ship: `${ASSET_BASE}/ui/merchant_celt.png`,
+    warship_trireme: `${ASSET_BASE}/ui/warship_celt.png`,
+    siege_ram: `${ASSET_BASE}/ui/siege_ram_celt.png`,
+  },
+  gauls: {
+    civic_center: `${ASSET_BASE}/ui/cc_celt.png`,
+    farmstead: `${ASSET_BASE}/ui/farmstead_celt.png`,
+    fortress: `${ASSET_BASE}/ui/fortress_celt.png`,
+    defense_tower: `${ASSET_BASE}/ui/tower_celt.png`,
+    stone_wall: `${ASSET_BASE}/ui/wall_celt.png`,
+    stone_gate: `${ASSET_BASE}/ui/gate_celt.png`,
+    female_citizen: `${ASSET_BASE}/ui/female_citizen_celt.png`,
+    healer: `${ASSET_BASE}/ui/healer_celt.png`,
+    fishing_boat: `${ASSET_BASE}/ui/fishing_boat_celt.png`,
+    merchant_ship: `${ASSET_BASE}/ui/merchant_celt.png`,
+    warship_trireme: `${ASSET_BASE}/ui/warship_celt.png`,
+    siege_ram: `${ASSET_BASE}/ui/siege_ram_celt.png`,
+  },
+  carthaginians: {
+    house: `${ASSET_BASE}/ui/house_apartment.png`,
+    dock: `${ASSET_BASE}/ui/dock_cart.png`,
+    stable: `${ASSET_BASE}/ui/stable_elephant.png`,
+    female_citizen: `${ASSET_BASE}/ui/female_citizen_cart.png`,
+    healer: `${ASSET_BASE}/ui/healer_cart.png`,
+    merchant_ship: `${ASSET_BASE}/ui/merchant_cart.png`,
+    warship_trireme: `${ASSET_BASE}/ui/warship_cart.png`,
+  },
+  han: {
+    civic_center: `${ASSET_BASE}/ui/cc_palace.png`,
+    field: `${ASSET_BASE}/ui/field_rice.png`,
+    stone_gate: `${ASSET_BASE}/ui/gate_han.png`,
+    stable: `${ASSET_BASE}/ui/stable_02.png`,
+    female_citizen: `${ASSET_BASE}/ui/female_citizen_han.png`,
+    healer: `${ASSET_BASE}/ui/healer_han.png`,
+    fishing_boat: `${ASSET_BASE}/ui/han_fishing_boat.png`,
+    merchant_ship: `${ASSET_BASE}/ui/han_merchant_ship.png`,
+    warship_trireme: `${ASSET_BASE}/ui/han_warship.png`,
+    siege_ram: `${ASSET_BASE}/ui/siege_ram_han.png`,
+    siege_catapult: `${ASSET_BASE}/ui/han_siege_catapult.png`,
+    siege_ballista: `${ASSET_BASE}/ui/han_siege_ballista.png`,
+  },
+  iberians: {
+    female_citizen: `${ASSET_BASE}/ui/female_citizen_iber.png`,
+    healer: `${ASSET_BASE}/ui/healer_iber.png`,
+    fishing_boat: `${ASSET_BASE}/ui/fishing_boat_iber.png`,
+    merchant_ship: `${ASSET_BASE}/ui/merchant_iber.png`,
+    warship_trireme: `${ASSET_BASE}/ui/warship_iber.png`,
+    siege_ram: `${ASSET_BASE}/ui/siege_ram_iber.png`,
+  },
+  kushites: {
+    temple: `${ASSET_BASE}/ui/temple_epic.png`,
+    stable: `${ASSET_BASE}/ui/stable_elephant.png`,
+    female_citizen: `${ASSET_BASE}/ui/female_citizen_kush.png`,
+    healer: `${ASSET_BASE}/ui/healer_kush.png`,
+    warship_trireme: `${ASSET_BASE}/ui/warship_kush.png`,
+  },
+  macedonians: {
+    market: `${ASSET_BASE}/ui/market_stoa.png`,
+    siege_ballista: `${ASSET_BASE}/ui/hele_siege_ballista.png`,
+  },
+  mauryas: {
+    civic_center: `${ASSET_BASE}/ui/cc_palace.png`,
+    temple: `${ASSET_BASE}/ui/temple_epic.png`,
+    stable: `${ASSET_BASE}/ui/stable_elephant.png`,
+    female_citizen: `${ASSET_BASE}/ui/female_citizen_maur.png`,
+    healer: `${ASSET_BASE}/ui/healer_maur.png`,
+    fishing_boat: `${ASSET_BASE}/ui/fishing_boat_maur.png`,
+    merchant_ship: `${ASSET_BASE}/ui/merchant_maur.png`,
+    warship_trireme: `${ASSET_BASE}/ui/warship_maur.png`,
+    siege_ram: `${ASSET_BASE}/ui/siege_ram_maur.png`,
+  },
+  persians: {
+    civic_center: `${ASSET_BASE}/ui/cc_palace.png`,
+    barracks: `${ASSET_BASE}/ui/barracks_pers.png`,
+    storehouse: `${ASSET_BASE}/ui/storehouse_pers.png`,
+    stone_gate: `${ASSET_BASE}/ui/gate_pers.png`,
+    stable: `${ASSET_BASE}/ui/stable_02.png`,
+    female_citizen: `${ASSET_BASE}/ui/female_citizen_pers.png`,
+    healer: `${ASSET_BASE}/ui/healer_pers.png`,
+    fishing_boat: `${ASSET_BASE}/ui/fishing_boat_pers.png`,
+    merchant_ship: `${ASSET_BASE}/ui/merchant_pers.png`,
+    warship_trireme: `${ASSET_BASE}/ui/warship_pers.png`,
+    siege_ram: `${ASSET_BASE}/ui/siege_ram_pers.png`,
+  },
+  ptolemies: {
+    house: `${ASSET_BASE}/ui/house_tenement.png`,
+    temple: `${ASSET_BASE}/ui/temple_epic.png`,
+    dock: `${ASSET_BASE}/ui/dock_shipyard.png`,
+    female_citizen: `${ASSET_BASE}/ui/female_citizen_ptol.png`,
+    healer: `${ASSET_BASE}/ui/healer_ptol.png`,
+    fishing_boat: `${ASSET_BASE}/ui/fishing_boat_ptol.png`,
+    merchant_ship: `${ASSET_BASE}/ui/merchant_ptol.png`,
+    warship_trireme: `${ASSET_BASE}/ui/warship_ptol.png`,
+    siege_ballista: `${ASSET_BASE}/ui/hele_siege_ballista.png`,
+  },
+  romans: {
+    house: `${ASSET_BASE}/ui/house_apartment.png`,
+    temple: `${ASSET_BASE}/ui/temple_rome.png`,
+    defense_tower: `${ASSET_BASE}/ui/tower_rome.png`,
+    female_citizen: `${ASSET_BASE}/ui/female_citizen_rome.png`,
+    healer: `${ASSET_BASE}/ui/healer_rome.png`,
+    merchant_ship: `${ASSET_BASE}/ui/merchant_rome.png`,
+    warship_trireme: `${ASSET_BASE}/ui/warship_rome.png`,
+    siege_ram: `${ASSET_BASE}/ui/siege_ram_rome.png`,
+  },
+  seleucids: {
+    stable: `${ASSET_BASE}/ui/stable_elephant.png`,
+    female_citizen: `${ASSET_BASE}/ui/female_citizen_sele.png`,
+    siege_ballista: `${ASSET_BASE}/ui/hele_siege_ballista.png`,
+  },
+  spartans: {
+    female_citizen: `${ASSET_BASE}/ui/female_citizen_spart.png`,
+    siege_ram: `${ASSET_BASE}/ui/siege_ram_spart.png`,
+    siege_ballista: `${ASSET_BASE}/ui/hele_siege_ballista.png`,
+  },
 };
 
 export function getEntityPortrait(templateId: string, civId?: CivId): string | undefined {
-  if (civId === 'romans') {
-    if (templateId === 'female_citizen') return `${ASSET_BASE}/ui/female_citizen_rome.png`;
-    if (templateId === 'healer') return `${ASSET_BASE}/ui/healer_rome.png`;
-    if (templateId === 'siege_ram') return `${ASSET_BASE}/ui/siege_ram_rome.png`;
+  if (civId) {
+    const ov = CIV_PORTRAIT_OVERRIDES[civId]?.[templateId];
+    if (ov) return ov;
   }
   return ENTITY_PORTRAITS[templateId];
 }
 
 export function getCivEmblem(civId: CivId): string {
-  return civId === 'romans' ? UI_ICONS.emblemRomans : UI_ICONS.emblemAthenians;
+  switch (civId) {
+    case 'athenians':
+      return UI_ICONS.emblemAthenians;
+    case 'britons':
+      return UI_ICONS.emblemBritons;
+    case 'carthaginians':
+      return UI_ICONS.emblemCarthaginians;
+    case 'gauls':
+      return UI_ICONS.emblemGauls;
+    case 'han':
+      return UI_ICONS.emblemHan;
+    case 'iberians':
+      return UI_ICONS.emblemIberians;
+    case 'kushites':
+      return UI_ICONS.emblemKushites;
+    case 'macedonians':
+      return UI_ICONS.emblemMacedonians;
+    case 'mauryas':
+      return UI_ICONS.emblemMauryas;
+    case 'persians':
+      return UI_ICONS.emblemPersians;
+    case 'ptolemies':
+      return UI_ICONS.emblemPtolemies;
+    case 'romans':
+      return UI_ICONS.emblemRomans;
+    case 'seleucids':
+      return UI_ICONS.emblemSeleucids;
+    case 'spartans':
+      return UI_ICONS.emblemSpartans;
+  }
 }
 
 export const TERRAIN_TEXTURES = {
@@ -91,6 +410,8 @@ export const TERRAIN_TEXTURES = {
   cliff: `${ASSET_BASE}/terrain/cliff.png`,
   cliffNorm: `${ASSET_BASE}/terrain/cliff_norm.png`,
   farmland: `${ASSET_BASE}/terrain/farmland.png`,
+  waterNormalSea: `${ASSET_BASE}/terrain/water_normal_sea.png`,
+  waterNormalRipple: `${ASSET_BASE}/terrain/water_normal_ripple.png`,
 } as const;
 
 export const FIELD_TEXTURES = {
@@ -103,6 +424,13 @@ export const EFFECT_TEXTURES = {
   decalStone: `${ASSET_BASE}/textures/decal_stone_medit_01.png`,
   decalStoneNorm: `${ASSET_BASE}/textures/decal_stone_medit_01_norm.png`,
   sparkle: `${ASSET_BASE}/textures/sparkle_02.png`,
+} as const;
+
+export const RUIN_TEXTURES = {
+  stone: `${ASSET_BASE}/textures/stone_aegean_01.png`,
+  stoneNorm: `${ASSET_BASE}/textures/stone_india_01_norm.png`,
+  paving: `${ASSET_BASE}/textures/decal_stone_medit_01.png`,
+  pavingNorm: `${ASSET_BASE}/textures/decal_stone_medit_01_norm.png`,
 } as const;
 
 export const RALLY_FLAG_ASSETS = {
@@ -176,5 +504,33 @@ export const ANIMATION_ASSETS = {
   boarRun: `${ASSET_BASE}/animations/boar_run.dae`,
   boarAttack: `${ASSET_BASE}/animations/boar_attack.dae`,
   boarDeath: `${ASSET_BASE}/animations/boar_death.dae`,
+  wolfIdle: `${ASSET_BASE}/animations/wolf_idle_01.dae`,
+  wolfWalk: `${ASSET_BASE}/animations/wolf_walk.dae`,
+  wolfAttack: `${ASSET_BASE}/animations/wolf_attack_01.dae`,
+  lionIdle: `${ASSET_BASE}/animations/lion_idle_01.dae`,
+  lionWalk: `${ASSET_BASE}/animations/lion_walk.dae`,
+  bearIdle: `${ASSET_BASE}/animations/bear_idle_01.dae`,
+  bearWalk: `${ASSET_BASE}/animations/bear_walk.dae`,
+  bearAttack: `${ASSET_BASE}/animations/bear_attack_01.dae`,
+  elephantIdle: `${ASSET_BASE}/animations/elephant_asian_idle_01.dae`,
+  elephantWalk: `${ASSET_BASE}/animations/elephant_asian_walk.dae`,
+  hawkFlight: `${ASSET_BASE}/animations/hawk_flight.dae`,
+  seagullFlight: `${ASSET_BASE}/animations/seagull_flight_01.dae`,
+  rowingBoatIdle: `${ASSET_BASE}/animations/rowing_boat_idle.dae`,
+  rowingBoatMove: `${ASSET_BASE}/animations/rowing_boat_move.dae`,
+  mastiffIdle: `${ASSET_BASE}/animations/mastiff_idle.dae`,
+  mastiffRun: `${ASSET_BASE}/animations/mastiff_run.dae`,
+  mastiffAttack: `${ASSET_BASE}/animations/mastiff_attack.dae`,
+  camelIdle: `${ASSET_BASE}/animations/camel_idle_01.dae`,
+  camelWalk: `${ASSET_BASE}/animations/camel_walk.dae`,
+  camelRun: `${ASSET_BASE}/animations/camel_run.dae`,
+  lithobolosIdle: `${ASSET_BASE}/animations/lithobolos_idle_01.dae`,
+  lithobolosAttack: `${ASSET_BASE}/animations/lithobolos_attack_ranged_01.dae`,
+  oxybelesIdle: `${ASSET_BASE}/animations/oxybeles_idle_01.dae`,
+  oxybelesAttack: `${ASSET_BASE}/animations/oxybeles_attack_ranged_01.dae`,
+  onagerIdle: `${ASSET_BASE}/animations/siege_onager_idle.dae`,
+  onagerAttack: `${ASSET_BASE}/animations/siege_onager_attack.dae`,
+  chariotIdle: `${ASSET_BASE}/animations/chariot_idle.dae`,
+  chariotMove: `${ASSET_BASE}/animations/chariot_move.dae`,
   waypointFlagIdle: `${ASSET_BASE}/animations/waypoint_flag_idle.dae`,
 } as const;

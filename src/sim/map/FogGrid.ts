@@ -33,7 +33,7 @@ export class FogGrid {
     return g;
   }
 
-  update(entities: Iterable<Entity>): void {
+  update(entities: Iterable<Entity>, sharedAllies?: Map<number, number[]>): void {
     // Demote visible (2) to explored fog (1)
     for (const grid of this.grids.values()) {
       for (let i = 0; i < grid.length; i++) {
@@ -52,15 +52,43 @@ export class FogGrid {
       const radiusTiles = Math.max(2, Math.round(tpl.visionRange / this.terrain.tileSize));
       const { tx, tz } = this.terrain.worldToTile(e.x, e.z);
       const offsets = this.getCircleOffsets(radiusTiles);
+      const allies = sharedAllies?.get(e.owner);
       for (let i = 0; i < offsets.length; i += 2) {
         const nx = tx + offsets[i];
         const nz = tz + offsets[i + 1];
         if (nx >= 0 && nz >= 0 && nx < this.width && nz < this.height) {
-          grid[nz * this.width + nx] = 2;
+          const idx = nz * this.width + nx;
+          grid[idx] = 2;
+          // Authentic 0 A.D. Shared Allied Vision!
+          if (allies) {
+            for (let a = 0; a < allies.length; a++) {
+              const ag = this.grids.get(allies[a]);
+              if (ag) ag[idx] = 2;
+            }
+          }
         }
       }
     }
 
+    this.version++;
+  }
+
+  exportState(): Record<number, number[]> {
+    const out: Record<number, number[]> = {};
+    for (const [pid, g] of this.grids.entries()) {
+      out[pid] = Array.from(g);
+    }
+    return out;
+  }
+
+  importState(data: Record<number, number[]>): void {
+    for (const [k, arr] of Object.entries(data)) {
+      const pid = Number(k);
+      const g = this.getGrid(pid);
+      if (arr.length === g.length) {
+        g.set(arr);
+      }
+    }
     this.version++;
   }
 

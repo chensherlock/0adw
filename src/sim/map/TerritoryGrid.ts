@@ -24,7 +24,7 @@ export class TerritoryGrid {
     this.bestScore = new Float32Array(total);
   }
 
-  recompute(entities: Iterable<Entity>): void {
+  recompute(entities: Iterable<Entity>, playerPhases?: Map<number, number>): void {
     this.owner.fill(0);
     this.border.fill(0);
     this.bestScore.fill(0);
@@ -34,7 +34,17 @@ export class TerritoryGrid {
       const tpl = TEMPLATES[e.templateId];
       if (!tpl || !tpl.territoryRadius || tpl.territoryRadius <= 0) continue;
 
-      const rad = tpl.territoryRadius;
+      const phase = playerPhases?.get(e.owner) ?? 1;
+      const phaseBonus = tpl.isCivicCenter
+        ? phase >= 4
+          ? 12
+          : phase === 3
+            ? 7
+            : phase === 2
+              ? 3
+              : 0
+        : 0;
+      const rad = tpl.territoryRadius + phaseBonus;
       const rad2 = rad * rad;
       const weight = tpl.territoryWeight ?? 1.0;
       const cx = e.tileX;
@@ -51,7 +61,7 @@ export class TerritoryGrid {
           const d2 = dx * dx + dz * dz;
           if (d2 > rad2) continue;
           const idx = tz * this.width + tx;
-          if (this.terrain.staticPassable[idx] === 0) continue;
+          // Territory encompasses land, coasts, water bodies AND mountain peaks!
           const falloff = 1 - Math.sqrt(d2) / rad;
           const score = falloff * falloff * weight;
           if (score > this.bestScore[idx]) {

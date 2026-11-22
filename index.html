@@ -4,6 +4,12 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>0 A.D. Web — Empires Ascendant</title>
+    <style>
+      body { background: #0b111b; margin: 0; overflow: hidden; }
+      body:not(.app-ready) #top-bar,
+      body:not(.app-ready) #bottom-dock,
+      body:not(.app-ready) .modal-backdrop { opacity: 0; pointer-events: none; visibility: hidden; }
+    </style>
   </head>
   <body>
     <div id="viewport"></div>
@@ -11,66 +17,83 @@
 
     <!-- Top Resource & Control Bar -->
     <header id="top-bar">
-      <div class="brand-badge">
+      <button id="btn-civ-badge" class="brand-badge brand-btn" title="Click to change Civilization or Terrain">
         <img id="civ-emblem" class="brand-emblem" src="/assets/0ad/ui/emblem_athenians.png" alt="Civ Emblem" />
-        <span class="brand-title">0 A.D.</span>
-      </div>
+        <span id="civ-emblem-fallback" class="brand-emblem-fallback hidden">⛩️</span>
+        <span class="brand-meta">
+          <span id="civ-name-pill" class="brand-title">Athenians</span>
+          <span id="map-name-pill" class="brand-sub">Aegean River Valley</span>
+        </span>
+      </button>
 
       <div class="resource-strip">
         <div id="pill-food" class="res-pill" title="Food (Berries & Wheat Fields)">
           <img class="res-icon-img" src="/assets/0ad/ui/res_food.png" alt="Food" />
-          <span id="lbl-food" class="res-label">Food</span>
           <strong id="res-food">350</strong>
         </div>
         <div id="pill-wood" class="res-pill" title="Wood (Cypress & Olive Groves)">
           <img class="res-icon-img" src="/assets/0ad/ui/res_wood.png" alt="Wood" />
-          <span id="lbl-wood" class="res-label">Wood</span>
           <strong id="res-wood">350</strong>
         </div>
         <div id="pill-stone" class="res-pill" title="Stone (Limestone Quarries)">
           <img class="res-icon-img" src="/assets/0ad/ui/res_stone.png" alt="Stone" />
-          <span id="lbl-stone" class="res-label">Stone</span>
           <strong id="res-stone">200</strong>
         </div>
         <div id="pill-metal" class="res-pill" title="Metal (Copper & Iron Veins)">
           <img class="res-icon-img" src="/assets/0ad/ui/res_metal.png" alt="Metal" />
-          <span id="lbl-metal" class="res-label">Metal</span>
           <strong id="res-metal">150</strong>
         </div>
         <div id="pill-pop" class="res-pill pop-pill" title="Population Used / Limit (Build Houses to raise limit)">
           <img class="res-icon-img" src="/assets/0ad/ui/res_pop.png" alt="Pop" />
           <strong id="res-pop">9 / 15</strong>
         </div>
-        <div class="phase-pill" id="res-phase">Phase I: Village</div>
+        <div class="phase-pill" id="res-phase">I</div>
+        <div class="peaceful-pill hidden" id="peaceful-pill">🕊️ 和平</div>
+        <button id="btn-civ-skill" class="skill-pill ready" title="Activate Civilization Skill (Hotkey: F)">
+          <span id="civ-skill-icon">🦉</span>
+          <span id="civ-skill-name">Athena's Aegis</span>
+          <span id="civ-skill-state" class="skill-state">[F]</span>
+        </button>
       </div>
 
       <div class="top-controls">
+        <button id="btn-terraform-dig" class="top-btn terraform-top-btn" title="Dig &amp; Haul Earth (Hotkey: T)">⛏️</button>
+        <button id="btn-terraform-raise" class="top-btn terraform-top-btn" title="Push &amp; Raise Earth (Hotkey: Y)">⛰️</button>
+        <button id="btn-terraform-level" class="top-btn terraform-top-btn" title="Level Uneven Ground (Hotkey: U)">📐</button>
         <button id="btn-idle" class="top-btn" title="Select Idle Worker (Hotkey: .)">
-          👷 <span id="lbl-idle">Idle</span> <span id="idle-count">0</span>
+          👷 <span id="idle-count">0</span>
         </button>
         <button id="btn-order-mode" class="top-btn active" title="Toggle Capture vs Destroy Enemy Buildings (Hotkey: C)">
-          🚩 Capture
+          🚩
         </button>
         <span id="match-clock" class="clock-pill">00:00</span>
-        <button id="btn-pause" class="top-btn">⏸ Pause</button>
+        <button id="btn-pause" class="top-btn" title="Pause / Resume">⏸</button>
         <button id="btn-speed" class="top-btn" title="Toggle Simulation Speed">1×</button>
-        <button id="btn-edge" class="top-btn active" title="Toggle Mouse Screen-Edge Scrolling">🖱️ Edge</button>
-        <button id="btn-reveal" class="top-btn" title="Toggle Fog of War">👁️ Map</button>
-        <button id="btn-music" class="top-btn active" title="Toggle Background Music">🎵 Music</button>
-        <button id="btn-sfx" class="top-btn active" title="Toggle Action & Combat Sound Effects">🔊 SFX</button>
-        <button id="btn-lang" class="top-btn" title="Switch Language (繁體中文 / English)">🌐 中文</button>
-        <button id="btn-random-map" class="top-btn" title="Generate a brand new Random Map & Resources">🎲 Random</button>
-        <button id="btn-menu" class="top-btn accent-btn">⚙️ New</button>
+        <button id="btn-edge" class="top-btn active" title="Toggle Mouse Screen-Edge Scrolling">🖱️</button>
+        <button id="btn-reveal" class="top-btn" title="Toggle Fog of War">👁️</button>
+        <button id="btn-music" class="top-btn active" title="Toggle Background Music">🎵</button>
+        <button id="btn-sfx" class="top-btn active" title="Toggle Action & Combat Sound Effects">🔊</button>
+        <button id="btn-lang" class="top-btn" title="Switch Language (繁體中文 / English)">🌐</button>
+        <button id="btn-diplomacy" class="top-btn" title="Diplomacy &amp; Alliances">🤝</button>
+        <button id="btn-save-game" class="top-btn" title="Save Match">💾</button>
+        <button id="btn-load-game" class="top-btn" title="Load Saved Match">📂</button>
+        <button id="btn-random-map" class="top-btn" title="Generate a brand new Random Map & Resources">🎲</button>
+        <button id="btn-cheat" class="top-btn cheat-btn" title="Cheat Console (Hotkey: F9)">⚡</button>
+        <button id="btn-dock-toggle" class="top-btn" title="Collapse / Expand HUD (Hotkey: H)">▾</button>
+        <button id="btn-menu" class="top-btn accent-btn" title="Open New Match Setup">⚙️</button>
       </div>
     </header>
+
+    <!-- Active Mode Banner (Dig & Haul / Push Earth) -->
+    <div id="mode-banner" class="mode-banner hidden"></div>
 
     <!-- Notification Feed -->
     <div id="toast-container"></div>
 
     <!-- Bottom RTS Dock -->
-    <footer id="bottom-dock">
+    <footer id="bottom-dock" class="no-selection">
       <div class="dock-card minimap-card">
-        <canvas id="minimap-canvas" width="192" height="192"></canvas>
+        <canvas id="minimap-canvas" width="144" height="144"></canvas>
       </div>
 
       <div class="dock-card selection-card" id="selection-panel"></div>
@@ -79,58 +102,125 @@
     </footer>
 
     <!-- New Match / Skirmish Setup Modal -->
-    <div id="setup-modal" class="modal-backdrop hidden">
-      <div class="modal-card">
+    <div id="setup-modal" class="modal-backdrop">
+      <div class="modal-card modal-card-wide">
         <div class="modal-header">
           <h2 id="setup-title">🏛️ 0 A.D. — Skirmish Match Setup</h2>
           <button id="btn-close-setup" class="icon-close">✕</button>
         </div>
-        <div class="modal-body">
-          <label class="field-row">
-            <span id="lbl-setup-player-civ">Your Civilization</span>
-            <select id="setup-player-civ">
-              <option value="athenians" selected>Athenians (+10% Food/Wood, +1 Infantry Pierce Armor)</option>
-              <option value="romans">Romans (+10% Infantry Attack, +15% Building HP)</option>
-            </select>
-          </label>
-          <label class="field-row">
-            <span id="lbl-setup-ai-civ">AI Opponent Civilization</span>
-            <select id="setup-ai-civ">
-              <option value="romans" selected>Romans (Petra AI)</option>
-              <option value="athenians">Athenians (Petra AI)</option>
-            </select>
-          </label>
-          <label class="field-row">
-            <span id="lbl-setup-difficulty">AI Difficulty</span>
-            <select id="setup-difficulty">
-              <option value="easy">Easy (Relaxed Skirmish)</option>
-              <option value="medium" selected>Medium (Balanced)</option>
-              <option value="hard">Hard (Aggressive Expansion)</option>
-            </select>
-          </label>
-          <label class="field-row">
-            <span id="lbl-setup-map-type">Map Type</span>
-            <select id="setup-map-type">
-              <option value="random" selected>🎲 Random Archetype (New Terrain Every Match)</option>
-              <option value="aegean_valley">Aegean River Valley (Meandering River & Fords)</option>
-              <option value="medit_highlands">Mediterranean Highlands (Alpine Passes & Rich Ore)</option>
-              <option value="twin_peninsulas">Twin Peninsulas (Aegean Coasts & Palm Beaches)</option>
-              <option value="inland_oasis">Inland Oasis (Great Central Lake & Vineyards)</option>
-              <option value="open_plains">Peloponnesian Plains (Broad Forests & Cavalry Fields)</option>
-            </select>
-          </label>
-          <label class="field-row">
-            <span id="lbl-setup-seed">Map Seed (blank = random)</span>
-            <input id="setup-seed" type="text" placeholder="Leave blank for random seed" />
-          </label>
+        <div class="modal-body setup-body-scroll">
+          <div class="setup-section">
+            <div id="lbl-setup-player-civ" class="setup-section-title">Your Civilization</div>
+            <div id="setup-civ-grid" class="civ-card-grid"></div>
+          </div>
+
+          <div class="setup-section">
+            <div id="lbl-setup-map-type" class="setup-section-title">Terrain / Map Type</div>
+            <div id="setup-map-grid" class="map-card-grid"></div>
+          </div>
+
+          <div class="setup-inline-row">
+            <label class="field-row">
+              <span id="lbl-setup-num-players">Nations (2–8)</span>
+              <select id="setup-num-players">
+                <option value="2" selected>2 Nations</option>
+                <option value="3">3 Nations</option>
+                <option value="4">4 Nations</option>
+                <option value="5">5 Nations</option>
+                <option value="6">6 Nations</option>
+                <option value="7">7 Nations</option>
+                <option value="8">8 Nations</option>
+              </select>
+            </label>
+            <label class="field-row">
+              <span id="lbl-setup-difficulty">AI Difficulty</span>
+              <select id="setup-difficulty">
+                <option value="easy">Easy (Relaxed Skirmish)</option>
+                <option value="medium" selected>Medium (Balanced)</option>
+                <option value="hard">Hard (Aggressive Expansion)</option>
+              </select>
+            </label>
+            <label class="field-row">
+              <span id="lbl-setup-game-mode">Match Mode</span>
+              <select id="setup-game-mode">
+                <option value="skirmish" selected>⚔️ Skirmish (Combat)</option>
+                <option value="peaceful">🕊️ Peaceful (No PvP Combat)</option>
+              </select>
+            </label>
+            <label class="field-row">
+              <span id="lbl-setup-map-size">Map Size</span>
+              <select id="setup-map-size">
+                <option value="small">Small (96×96)</option>
+                <option value="medium" selected>Medium (128×128)</option>
+                <option value="large">Large (160×160)</option>
+                <option value="huge">Huge (192×192)</option>
+              </select>
+            </label>
+            <label class="field-row">
+              <span id="lbl-setup-seed">Map Seed (blank = random)</span>
+              <input id="setup-seed" type="text" placeholder="Leave blank for random seed" />
+            </label>
+          </div>
+
+          <div class="setup-section" id="setup-players-section">
+            <div id="lbl-setup-players" class="setup-section-title">Nations &amp; Alliances (Teams)</div>
+            <div id="setup-players-list" class="setup-players-list"></div>
+          </div>
+
           <div id="setup-controls-guide" class="controls-guide">
             <b>Quick Controls:</b> Left-drag to select &bull; Double-click unit to select all of type &bull;
             Right-click to gather / move / capture &bull; <code>WASD</code> pan, <code>Q/E</code> rotate, Wheel zoom &bull;
-            <code>Ctrl+1..9</code> control groups &bull; <code>.</code> idle worker &bull; <code>C</code> toggle Capture / Destroy.
+            <code>Ctrl+1..9</code> control groups &bull; <code>.</code> idle worker &bull; <code>F</code> Civ Skill &bull; <code>C</code> toggle Capture / Destroy.
           </div>
         </div>
-        <div class="modal-footer">
+        <div class="modal-footer setup-footer-row">
+          <div class="setup-footer-left">
+            <button type="button" id="btn-reset-setup" class="secondary-btn">🔄 Reset</button>
+            <button type="button" id="btn-load-setup-save" class="secondary-btn hidden">📂 Load Save</button>
+          </div>
           <button id="btn-launch-match" class="launch-btn">⚔️ Launch Skirmish</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 0 A.D. Diplomacy & Alliances Modal -->
+    <div id="diplomacy-modal" class="modal-backdrop hidden">
+      <div class="modal-card diplomacy-modal-card">
+        <div class="modal-header">
+          <h2 id="diplomacy-title">🤝 Diplomacy &amp; Alliances</h2>
+          <button id="btn-close-diplomacy" class="icon-close">✕</button>
+        </div>
+        <div class="modal-body">
+          <div id="diplomacy-desc" class="diplo-note">
+            Mutual Allies share live vision, pass through each other's City Gates &amp; Tunnels, trade between Markets (+25% bonus), and win together!
+          </div>
+          <div id="diplomacy-list" class="diplomacy-list"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Cheat Console Modal -->
+    <div id="cheat-modal" class="modal-backdrop hidden">
+      <div class="modal-card cheat-modal-card">
+        <div class="modal-header">
+          <h2 id="cheat-title">⚡ Cheat Console</h2>
+          <button id="btn-close-cheat" class="icon-close">✕</button>
+        </div>
+        <div class="modal-body cheat-body">
+          <form id="cheat-code-form" class="cheat-input-row">
+            <input id="cheat-code-input" type="text" autocomplete="off" placeholder="greedisgood / fastbuild / alltech ..." />
+            <button type="submit" id="btn-cheat-run" class="launch-btn cheat-run-btn">Run</button>
+          </form>
+          <div class="cheat-btn-grid">
+            <button type="button" class="cheat-action-btn" data-cheat="resources" id="btn-cheat-res">💰 +5000 All</button>
+            <button type="button" class="cheat-action-btn" data-cheat="fast_build" id="btn-cheat-fast">⚡ Instant Build</button>
+            <button type="button" class="cheat-action-btn" data-cheat="all_techs" id="btn-cheat-tech">🏛️ Phase II + Techs</button>
+            <button type="button" class="cheat-action-btn" data-cheat="reveal_map" id="btn-cheat-map">👁️ Reveal Map</button>
+            <button type="button" class="cheat-action-btn" data-cheat="reset_skill" id="btn-cheat-skill">🔄 Reset Skill CD</button>
+            <button type="button" class="cheat-action-btn" data-cheat="spawn_army" id="btn-cheat-army">⚔️ Spawn Army</button>
+            <button type="button" class="cheat-action-btn" data-cheat="heal_all" id="btn-cheat-heal">❤️ Full Heal</button>
+            <button type="button" class="cheat-action-btn cheat-danger" data-cheat="instant_win" id="btn-cheat-win">🏆 Instant Win</button>
+          </div>
         </div>
       </div>
     </div>

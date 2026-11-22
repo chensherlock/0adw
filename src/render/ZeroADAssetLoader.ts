@@ -183,6 +183,10 @@ const RIDER_ANIMS: AnimClipSet = {
 
 export function getZeroADModelSpec(templateId: string, civId: CivId): EntityModelSpec | null {
   const isRome = civId === 'romans';
+  const isPersia = civId === 'persians';
+  const isSparta = civId === 'spartans';
+  const isCarth = civId === 'carthaginians';
+  const isPtol = civId === 'ptolemies';
 
   switch (templateId) {
     // ======================== RESOURCES (GAIA) ========================
@@ -224,6 +228,29 @@ export function getZeroADModelSpec(templateId: string, civId: CivId): EntityMode
         targetHeight: 5.4,
         parts: [
           { mesh: m('oak_tree_a.dae'), texture: t('oak_tree_a.png'), mode: 'alpha', roughness: 0.9, doubleSide: true },
+        ],
+      };
+
+    case 'tree_bamboo':
+      return {
+        targetHeight: 6.4,
+        parts: [
+          {
+            mesh: m('bamboo_1.dae'),
+            texture: t('bamboo_1.png'),
+            normTex: t('bamboo_1_norm.png'),
+            mode: 'alpha',
+            roughness: 0.84,
+            doubleSide: true,
+          },
+          {
+            mesh: m('bamboo_2.dae'),
+            texture: t('bamboo_1.png'),
+            normTex: t('bamboo_1_norm.png'),
+            mode: 'alpha',
+            roughness: 0.84,
+            doubleSide: true,
+          },
         ],
       };
 
@@ -276,6 +303,177 @@ export function getZeroADModelSpec(templateId: string, civId: CivId): EntityMode
               attack: ANIMATION_ASSETS.boarAttack,
               death: ANIMATION_ASSETS.boarDeath,
             },
+          },
+        ],
+      };
+
+    case 'wild_gazelle':
+      return {
+        targetHeight: 1.28,
+        parts: [
+          {
+            mesh: m('deer_mesh.dae'),
+            texture: t('animal_gazelle.png'),
+            mode: 'opaque',
+            roughness: 0.84,
+            animations: {
+              idle: ANIMATION_ASSETS.deerIdle,
+              walk: ANIMATION_ASSETS.deerRun,
+              death: ANIMATION_ASSETS.deerDeath,
+            },
+          },
+        ],
+      };
+
+    case 'wild_elephant':
+      return {
+        targetHeight: 3.1,
+        parts: [
+          {
+            mesh: m('elephant_asian_male.dae'),
+            texture: t('animal_elephant_asian.png'),
+            normTex: t('animal_elephant_asian_norm.png'),
+            mode: 'opaque',
+            roughness: 0.9,
+            animations: {
+              idle: ANIMATION_ASSETS.elephantIdle,
+              walk: ANIMATION_ASSETS.elephantWalk,
+              attack: ANIMATION_ASSETS.elephantWalk,
+            },
+          },
+        ],
+      };
+
+    case 'predator_wolf':
+      return {
+        targetHeight: 1.02,
+        parts: [
+          {
+            mesh: m('wolf.dae'),
+            texture: t('animal_wolf_grey.png'),
+            mode: 'opaque',
+            roughness: 0.88,
+            animations: {
+              idle: ANIMATION_ASSETS.wolfIdle,
+              walk: ANIMATION_ASSETS.wolfWalk,
+              attack: ANIMATION_ASSETS.wolfAttack,
+            },
+          },
+        ],
+      };
+
+    case 'predator_lion':
+      return {
+        targetHeight: 1.32,
+        parts: [
+          {
+            mesh: m('animal_lion.dae'),
+            texture: t('animal_lion.png'),
+            mode: 'opaque',
+            roughness: 0.86,
+            animations: {
+              idle: ANIMATION_ASSETS.lionIdle,
+              walk: ANIMATION_ASSETS.lionWalk,
+              attack: ANIMATION_ASSETS.lionWalk,
+            },
+          },
+        ],
+      };
+
+    case 'predator_bear':
+      return {
+        targetHeight: 1.68,
+        parts: [
+          {
+            mesh: m('bear.dae'),
+            texture: t('animal_bear_brown.png'),
+            mode: 'opaque',
+            roughness: 0.9,
+            animations: {
+              idle: ANIMATION_ASSETS.bearIdle,
+              walk: ANIMATION_ASSETS.bearWalk,
+              attack: ANIMATION_ASSETS.bearAttack,
+            },
+          },
+        ],
+      };
+
+    case 'wild_eagle':
+      return {
+        targetHeight: 1.05,
+        // Note: hawk_flight.dae rotates the Body bone 180 deg around Z on every frame,
+        // which already orients hawk.dae head-first (+Z). Do NOT add rotateY: Math.PI here!
+        parts: [
+          {
+            mesh: m('hawk.dae'),
+            texture: t('animal_hawk.png'),
+            mode: 'alpha',
+            roughness: 0.85,
+            doubleSide: true,
+            animations: {
+              idle: ANIMATION_ASSETS.hawkFlight,
+              walk: ANIMATION_ASSETS.hawkFlight,
+            },
+          },
+        ],
+      };
+
+    case 'wild_seagull':
+      return {
+        targetHeight: 0.78,
+        rotateY: Math.PI,
+        parts: [
+          {
+            mesh: m('seagull.dae'),
+            texture: t('animal_seagull.png'),
+            mode: 'opaque',
+            roughness: 0.8,
+            doubleSide: true,
+            animations: {
+              idle: ANIMATION_ASSETS.seagullFlight,
+              walk: ANIMATION_ASSETS.seagullFlight,
+            },
+          },
+        ],
+      };
+
+    case 'fishing_boat':
+      return {
+        targetFootprint: 3.55,
+        sinkY: -0.05,
+        parts: [
+          {
+            mesh: m('hele_fishing_boat.dae'),
+            texture: t('hele_fishing_boat.png'),
+            mode: 'player',
+            roughness: 0.84,
+            animations: {
+              idle: ANIMATION_ASSETS.rowingBoatIdle,
+              walk: ANIMATION_ASSETS.rowingBoatMove,
+              gather_food: ANIMATION_ASSETS.rowingBoatIdle,
+            },
+            children: [
+              {
+                mesh: m('fish_bucket.dae'),
+                texture: t('hele_fishing_boat.png'),
+                mode: 'player',
+                attachPoint: 'prop_fish_bucket',
+              },
+              {
+                mesh: m('m_tunic_short.dae'),
+                texture: t('hele_tunic_01_01.png'),
+                mode: 'player',
+                attachPoint: 'prop_fisherman',
+                children: [
+                  {
+                    mesh: m('dude_head.dae'),
+                    texture: t('head_hele_a.png'),
+                    mode: 'opaque',
+                    attachPoint: 'prop-head',
+                  },
+                ],
+              },
+            ],
           },
         ],
       };
@@ -364,6 +562,71 @@ export function getZeroADModelSpec(templateId: string, civId: CivId): EntityMode
 
     // ======================== BUILDINGS ========================
     case 'civic_center':
+      if (civId === 'han') {
+        return {
+          targetFootprint: 7.6,
+          sinkY: -0.1,
+          parts: [
+            { mesh: m('han_fortress.dae'), texture: t('han_struct_02.png'), normTex: t('han_struct_02_norm.png'), mode: 'player' },
+          ],
+        };
+      }
+      if (civId === 'ptolemies') {
+        return {
+          targetFootprint: 7.5,
+          sinkY: -0.1,
+          parts: [{ mesh: m('ptol_civic_centre.dae'), texture: t('ptol_struct.png'), mode: 'player' }],
+        };
+      }
+      if (civId === 'britons') {
+        return {
+          targetFootprint: 7.4,
+          sinkY: -0.1,
+          parts: [{ mesh: m('brit_civic_centre_struct1.dae'), texture: t('brit_struct_1.png'), mode: 'player' }],
+        };
+      }
+      if (civId === 'gauls') {
+        return {
+          targetFootprint: 7.4,
+          sinkY: -0.1,
+          parts: [{ mesh: m('gaul_civic_centre_struct1.dae'), texture: t('gaul_struct_1.png'), mode: 'player' }],
+        };
+      }
+      if (civId === 'persians') {
+        return {
+          targetFootprint: 7.6,
+          sinkY: -0.1,
+          parts: [{ mesh: m('pers_fortress.dae'), texture: t('pers_struct.png'), mode: 'player' }],
+        };
+      }
+      if (civId === 'kushites') {
+        return {
+          targetFootprint: 7.5,
+          sinkY: -0.1,
+          parts: [{ mesh: m('kush_fortress.dae'), texture: t('kush_struct.png'), mode: 'player' }],
+        };
+      }
+      if (civId === 'mauryas') {
+        return {
+          targetFootprint: 7.6,
+          sinkY: -0.1,
+          parts: [{ mesh: m('maur_fortress.dae'), texture: t('maur_struct.png'), mode: 'player' }],
+        };
+      }
+      if (civId === 'carthaginians') {
+        return {
+          targetFootprint: 7.5,
+          sinkY: -0.1,
+          parts: [{ mesh: m('kart_fortress_b.dae'), texture: t('kart_struct.png'), mode: 'player' }],
+        };
+      }
+      if (civId === 'iberians') {
+        return {
+          targetFootprint: 7.4,
+          sinkY: -0.1,
+          parts: [{ mesh: m('iber_fortress.dae'), texture: t('iber_struct.png'), mode: 'player' }],
+        };
+      }
       if (isRome) {
         return {
           targetFootprint: 7.4,
@@ -372,6 +635,17 @@ export function getZeroADModelSpec(templateId: string, civId: CivId): EntityMode
             { mesh: m('roman_cc.dae'), texture: t('rome_struct.png'), normTex: t('rome_struct_norm.png'), mode: 'player' },
             { mesh: m('roman_cc_columns.dae'), texture: t('rome_struct.png'), normTex: t('rome_struct_norm.png'), mode: 'opaque' },
             { mesh: m('roman_cc_transp.dae'), texture: t('rome_struct.png'), mode: 'alpha', doubleSide: true },
+          ],
+        };
+      }
+      if (isSparta) {
+        return {
+          targetFootprint: 7.4,
+          sinkY: -0.1,
+          parts: [
+            { mesh: m('hele_fortress_up.dae'), texture: t('hele_struct_b.png'), normTex: t('hele_struct_b_norm.png'), mode: 'player' },
+            { mesh: m('hele_fortress_up_tile_b.dae'), texture: t('hele_tile_b.png'), mode: 'player' },
+            { mesh: m('hele_fortress_up_gate.dae'), texture: t('hele_gate.png'), mode: 'player' },
           ],
         };
       }
@@ -387,6 +661,33 @@ export function getZeroADModelSpec(templateId: string, civId: CivId): EntityMode
       };
 
     case 'house':
+      if (civId === 'han') {
+        return { targetFootprint: 3.6, sinkY: -0.06, parts: [{ mesh: m('han_house_a.dae'), texture: t('han_struct_02.png'), normTex: t('han_struct_02_norm.png'), mode: 'player' }] };
+      }
+      if (civId === 'persians') {
+        return { targetFootprint: 3.5, sinkY: -0.06, parts: [{ mesh: m('pers_house_a.dae'), texture: t('pers_struct.png'), mode: 'player' }] };
+      }
+      if (civId === 'ptolemies') {
+        return { targetFootprint: 3.5, sinkY: -0.06, parts: [{ mesh: m('ptol_house_01.dae'), texture: t('ptol_struct.png'), mode: 'player' }] };
+      }
+      if (civId === 'kushites') {
+        return { targetFootprint: 3.5, sinkY: -0.06, parts: [{ mesh: m('kush_house_1.dae'), texture: t('kush_struct.png'), mode: 'player' }] };
+      }
+      if (civId === 'mauryas') {
+        return { targetFootprint: 3.6, sinkY: -0.06, parts: [{ mesh: m('maur_house_a.dae'), texture: t('maur_struct.png'), mode: 'player' }] };
+      }
+      if (civId === 'carthaginians') {
+        return { targetFootprint: 3.5, sinkY: -0.06, parts: [{ mesh: m('kart_house_01.dae'), texture: t('kart_struct.png'), mode: 'player' }] };
+      }
+      if (civId === 'britons') {
+        return { targetFootprint: 3.4, sinkY: -0.06, parts: [{ mesh: m('brit_house_01.dae'), texture: t('brit_struct_1.png'), mode: 'player' }] };
+      }
+      if (civId === 'gauls') {
+        return { targetFootprint: 3.5, sinkY: -0.06, parts: [{ mesh: m('gaul_house_a.dae'), texture: t('celt_struct_1.png'), mode: 'player' }] };
+      }
+      if (civId === 'iberians') {
+        return { targetFootprint: 3.5, sinkY: -0.06, parts: [{ mesh: m('iber_house_1.dae'), texture: t('iber_struct.png'), mode: 'player' }] };
+      }
       if (isRome) {
         return {
           targetFootprint: 3.4,
@@ -443,6 +744,30 @@ export function getZeroADModelSpec(templateId: string, civId: CivId): EntityMode
       };
 
     case 'barracks':
+      if (civId === 'han') {
+        return { targetFootprint: 5.4, sinkY: -0.08, parts: [{ mesh: m('han_barracks.dae'), texture: t('han_struct_02.png'), normTex: t('han_struct_02_norm.png'), mode: 'player' }] };
+      }
+      if (civId === 'persians') {
+        return { targetFootprint: 5.4, sinkY: -0.08, parts: [{ mesh: m('pers_barracks.dae'), texture: t('pers_struct.png'), mode: 'player' }] };
+      }
+      if (civId === 'ptolemies') {
+        return { targetFootprint: 5.3, sinkY: -0.08, parts: [{ mesh: m('ptol_barracks.dae'), texture: t('ptol_struct.png'), mode: 'player' }] };
+      }
+      if (civId === 'kushites') {
+        return { targetFootprint: 5.3, sinkY: -0.08, parts: [{ mesh: m('kush_barracks.dae'), texture: t('kush_struct.png'), mode: 'player' }] };
+      }
+      if (civId === 'mauryas') {
+        return { targetFootprint: 5.4, sinkY: -0.08, parts: [{ mesh: m('maur_barracks_a_struct.dae'), texture: t('maur_struct.png'), mode: 'player' }] };
+      }
+      if (civId === 'carthaginians') {
+        return { targetFootprint: 5.3, sinkY: -0.08, parts: [{ mesh: m('kart_barracks.dae'), texture: t('kart_struct.png'), mode: 'player' }] };
+      }
+      if (civId === 'britons' || civId === 'gauls') {
+        return { targetFootprint: 5.2, sinkY: -0.08, parts: [{ mesh: m('brit_barracks_struct.dae'), texture: t('brit_struct.png'), mode: 'player' }] };
+      }
+      if (civId === 'iberians') {
+        return { targetFootprint: 5.2, sinkY: -0.08, parts: [{ mesh: m('iber_barracks_b.dae'), texture: t('iber_struct.png'), mode: 'player' }] };
+      }
       if (isRome) {
         return {
           targetFootprint: 5.2,
@@ -463,9 +788,18 @@ export function getZeroADModelSpec(templateId: string, civId: CivId): EntityMode
       };
 
     case 'defense_tower':
+      if (civId === 'han') {
+        return {
+          targetHeight: 6.8,
+          sinkY: -0.08,
+          parts: [
+            { mesh: m('han_defense_tower.dae'), texture: t('han_struct_02.png'), normTex: t('han_struct_02_norm.png'), mode: 'player' },
+          ],
+        };
+      }
       if (isRome) {
         return {
-          targetFootprint: 3.0,
+          targetHeight: 6.4,
           sinkY: -0.08,
           parts: [
             { mesh: m('rome_tower.dae'), texture: t('rome_struct_2.png'), normTex: t('rome_struct_2_norm.png'), mode: 'player' },
@@ -474,16 +808,16 @@ export function getZeroADModelSpec(templateId: string, civId: CivId): EntityMode
         };
       }
       return {
-        targetFootprint: 3.0,
+        targetHeight: 6.4,
         sinkY: -0.08,
         parts: [
-          { mesh: m('hele_scout_tower.dae'), texture: t('hele_struct_b.png'), normTex: t('hele_struct_b_norm.png'), mode: 'player' },
+          { mesh: m('athen_wall_tower.dae'), texture: t('hele_struct_b.png'), normTex: t('hele_struct_b_norm.png'), mode: 'player' },
         ],
       };
 
     case 'outpost':
       return {
-        targetFootprint: 2.2,
+        targetHeight: 4.7,
         sinkY: -0.06,
         parts: [
           { mesh: m('palisade_rocks_outpost.dae'), texture: t('palisade_main.png'), mode: 'opaque' },
@@ -491,6 +825,33 @@ export function getZeroADModelSpec(templateId: string, civId: CivId): EntityMode
       };
 
     case 'fortress':
+      if (civId === 'han') {
+        return { targetFootprint: 7.3, sinkY: -0.1, parts: [{ mesh: m('han_fortress.dae'), texture: t('han_struct_02.png'), normTex: t('han_struct_02_norm.png'), mode: 'player' }] };
+      }
+      if (civId === 'persians') {
+        return { targetFootprint: 7.3, sinkY: -0.1, parts: [{ mesh: m('pers_fortress.dae'), texture: t('pers_struct.png'), mode: 'player' }] };
+      }
+      if (civId === 'ptolemies') {
+        return { targetFootprint: 7.2, sinkY: -0.1, parts: [{ mesh: m('ptol_fortress.dae'), texture: t('ptol_struct.png'), mode: 'player' }] };
+      }
+      if (civId === 'kushites') {
+        return { targetFootprint: 7.2, sinkY: -0.1, parts: [{ mesh: m('kush_fortress.dae'), texture: t('kush_struct.png'), mode: 'player' }] };
+      }
+      if (civId === 'mauryas') {
+        return { targetFootprint: 7.3, sinkY: -0.1, parts: [{ mesh: m('maur_fortress.dae'), texture: t('maur_struct.png'), mode: 'player' }] };
+      }
+      if (civId === 'carthaginians') {
+        return { targetFootprint: 7.3, sinkY: -0.1, parts: [{ mesh: m('kart_fortress_b.dae'), texture: t('kart_struct.png'), mode: 'player' }] };
+      }
+      if (civId === 'britons') {
+        return { targetFootprint: 7.2, sinkY: -0.1, parts: [{ mesh: m('brit_fortress_struct1.dae'), texture: t('celt_struct_1.png'), mode: 'player' }] };
+      }
+      if (civId === 'gauls') {
+        return { targetFootprint: 7.2, sinkY: -0.1, parts: [{ mesh: m('gaul_fortress_struct1.dae'), texture: t('celt_struct_1.png'), mode: 'player' }] };
+      }
+      if (civId === 'iberians') {
+        return { targetFootprint: 7.2, sinkY: -0.1, parts: [{ mesh: m('iber_fortress.dae'), texture: t('iber_struct.png'), mode: 'player' }] };
+      }
       if (isRome) {
         return {
           targetFootprint: 7.2,
@@ -512,6 +873,30 @@ export function getZeroADModelSpec(templateId: string, civId: CivId): EntityMode
       };
 
     case 'temple':
+      if (civId === 'han') {
+        return { targetFootprint: 5.6, sinkY: -0.08, parts: [{ mesh: m('han_temple.dae'), texture: t('han_struct_02.png'), normTex: t('han_struct_02_norm.png'), mode: 'player' }] };
+      }
+      if (civId === 'persians') {
+        return { targetFootprint: 5.5, sinkY: -0.08, parts: [{ mesh: m('pers_temple_1.dae'), texture: t('pers_struct.png'), mode: 'player' }] };
+      }
+      if (civId === 'ptolemies') {
+        return { targetFootprint: 5.6, sinkY: -0.08, parts: [{ mesh: m('ptol_temple.dae'), texture: t('ptol_struct.png'), mode: 'player' }] };
+      }
+      if (civId === 'kushites') {
+        return { targetFootprint: 5.6, sinkY: -0.08, parts: [{ mesh: m('kush_temple.dae'), texture: t('kush_struct_02.png'), mode: 'player' }] };
+      }
+      if (civId === 'mauryas') {
+        return { targetFootprint: 5.6, sinkY: -0.08, parts: [{ mesh: m('maur_temple_struct.dae'), texture: t('maur_struct.png'), mode: 'player' }] };
+      }
+      if (civId === 'carthaginians') {
+        return { targetFootprint: 5.5, sinkY: -0.08, parts: [{ mesh: m('kart_hc.dae'), texture: t('kart_struct_1.png'), mode: 'player' }] };
+      }
+      if (civId === 'britons' || civId === 'gauls') {
+        return { targetFootprint: 5.4, sinkY: -0.08, parts: [{ mesh: m('celt_temple.dae'), texture: t('brit_struct_1.png'), mode: 'player' }] };
+      }
+      if (civId === 'iberians') {
+        return { targetFootprint: 5.4, sinkY: -0.08, parts: [{ mesh: m('iber_temple.dae'), texture: t('iber_struct.png'), mode: 'player' }] };
+      }
       if (isRome) {
         return {
           targetFootprint: 5.4,
@@ -628,14 +1013,98 @@ export function getZeroADModelSpec(templateId: string, civId: CivId): EntityMode
         ],
       };
 
+    case 'gymnasium':
+      return {
+        targetFootprint: 5.8,
+        sinkY: -0.08,
+        parts: [
+          { mesh: m('athen_barracks_struct_b.dae'), texture: t('hele_struct_b.png'), normTex: t('hele_struct_b_norm.png'), mode: 'player' },
+          { mesh: m('hele_market_struct_b.dae'), texture: t('hele_struct.png'), normTex: t('hele_struct_norm.png'), mode: 'player' },
+          { mesh: m('hele_market_tile_c.dae'), texture: t('hele_tile_c.png'), mode: 'player' },
+        ],
+      };
+
+    case 'carth_embassy':
+      return {
+        targetFootprint: 6.0,
+        sinkY: -0.08,
+        parts: [
+          { mesh: m('rome_market_struct1.dae'), texture: t('rome_struct.png'), normTex: t('rome_struct_norm.png'), mode: 'player' },
+          { mesh: m('rome_market_struct2.dae'), texture: t('rome_struct_2.png'), normTex: t('rome_struct_2_norm.png'), mode: 'player' },
+        ],
+      };
+
+    case 'ptol_library':
+      return {
+        targetFootprint: 6.2,
+        sinkY: -0.08,
+        parts: [
+          { mesh: m('athen_erechtheion_struct.dae'), texture: t('hele_struct.png'), normTex: t('hele_struct_norm.png'), mode: 'player' },
+          { mesh: m('erechtheion_roof.dae'), texture: t('hele_wonder_rooftile.png'), mode: 'player' },
+          { mesh: m('athen_cc_decor.dae'), texture: t('hele_decor.png'), mode: 'player' },
+        ],
+      };
+
+    case 'army_camp':
+      return {
+        targetFootprint: 5.8,
+        sinkY: -0.08,
+        parts: [
+          { mesh: m('rome_fortress.dae'), texture: t('rome_struct_2.png'), normTex: t('rome_struct_2_norm.png'), mode: 'player' },
+          { mesh: m('rome_tower_wood.dae'), texture: t('palisade_main.png'), mode: 'opaque' },
+        ],
+      };
+
+    case 'syssition':
+      return {
+        targetFootprint: 5.6,
+        sinkY: -0.08,
+        parts: [
+          { mesh: m('athen_barracks_struct.dae'), texture: t('hele_struct_b.png'), normTex: t('hele_struct_b_norm.png'), mode: 'player' },
+          { mesh: m('athen_barracks_struct_b.dae'), texture: t('hele_struct.png'), normTex: t('hele_struct_norm.png'), mode: 'player' },
+          { mesh: m('hele_fortress_up_gate.dae'), texture: t('hele_gate.png'), mode: 'player' },
+        ],
+      };
+
+    case 'apadana':
+      return {
+        targetFootprint: 6.6,
+        sinkY: -0.09,
+        parts: [
+          { mesh: m('athen_erechtheion_struct.dae'), texture: t('rome_struct.png'), normTex: t('rome_struct_norm.png'), mode: 'player' },
+          { mesh: m('erechtheion_roof.dae'), texture: t('metal_gold_aegean.png'), normTex: t('metal_gold_aegean_norm.png'), mode: 'player', roughness: 0.42, metalness: 0.35 },
+          { mesh: m('athen_cc_decor.dae'), texture: t('hele_decor.png'), mode: 'player' },
+        ],
+      };
+
     // ======================== UNITS ========================
-    case 'healer':
+    case 'healer': {
+      const healerTex =
+        civId === 'han'
+          ? t('han_tunic_01.png')
+          : civId === 'persians'
+            ? t('pers_tunic_01.png')
+            : civId === 'ptolemies'
+              ? t('ptol_tunic_01.png')
+              : civId === 'kushites'
+                ? t('kush_dress_01.png')
+                : civId === 'mauryas'
+                  ? t('maur_tunic_01.png')
+                  : civId === 'britons' || civId === 'gauls'
+                    ? t('celt_tunic_01.png')
+                    : civId === 'iberians'
+                      ? t('iber_tunic_01.png')
+                      : civId === 'carthaginians'
+                        ? t('cart_tunic_01.png')
+                        : isRome
+                          ? t('robes_healer_01.png')
+                          : t('toga_healer_01.png');
       return {
         targetHeight: 1.82,
         parts: [
           {
             mesh: m('m_dress.dae'),
-            texture: isRome ? t('robes_healer_01.png') : t('toga_healer_01.png'),
+            texture: healerTex,
             mode: 'player',
             animations: HEALER_ANIMS,
             children: [
@@ -645,6 +1114,7 @@ export function getZeroADModelSpec(templateId: string, civId: CivId): EntityMode
           },
         ],
       };
+    }
 
     case 'siege_ram':
       return {
@@ -658,13 +1128,31 @@ export function getZeroADModelSpec(templateId: string, civId: CivId): EntityMode
           },
         ],
       };
-    case 'female_citizen':
+    case 'female_citizen': {
+      const workerDressTex =
+        civId === 'han'
+          ? t('han_dress_01.png')
+          : civId === 'britons' || civId === 'gauls'
+            ? t('celt_dress_01.png')
+            : civId === 'persians'
+              ? t('pers_dress_01.png')
+              : civId === 'kushites'
+                ? t('kush_dress_01.png')
+                : civId === 'ptolemies'
+                  ? t('ptol_dress_01.png')
+                  : civId === 'mauryas'
+                    ? t('maur_tunic_01.png')
+                    : civId === 'iberians'
+                      ? t('iber_tunic_01.png')
+                      : civId === 'carthaginians'
+                        ? t('cart_tunic_01.png')
+                        : t('dress_female_01.png');
       return {
         targetHeight: 1.72,
         parts: [
           {
             mesh: m('f_dress.dae'),
-            texture: t('dress_female_01.png'),
+            texture: workerDressTex,
             mode: 'player',
             animations: FEMALE_ANIMS,
             children: [
@@ -674,6 +1162,45 @@ export function getZeroADModelSpec(templateId: string, civId: CivId): EntityMode
           },
         ],
       };
+    }
+
+    case 'male_citizen': {
+      const maleTunicTex =
+        civId === 'han'
+          ? t('han_tunic_01.png')
+          : civId === 'britons' || civId === 'gauls'
+            ? t('celt_tunic_01.png')
+            : civId === 'persians'
+              ? t('pers_tunic_01.png')
+              : civId === 'ptolemies'
+                ? t('ptol_tunic_01.png')
+                : civId === 'mauryas'
+                  ? t('maur_tunic_01.png')
+                  : civId === 'iberians'
+                    ? t('iber_tunic_01.png')
+                    : civId === 'carthaginians'
+                      ? t('cart_tunic_01.png')
+                      : civId === 'romans'
+                        ? t('rome_tunic_basic_01.png')
+                        : civId === 'athenians'
+                          ? t('athen_tunic_01_01.png')
+                          : t('hele_tunic_01_01.png');
+      return {
+        targetHeight: 1.82,
+        parts: [
+          {
+            mesh: m('m_tunic_short.dae'),
+            texture: maleTunicTex,
+            mode: 'player',
+            animations: HOPLITE_ANIMS,
+            children: [
+              { mesh: m('dude_head.dae'), texture: t('head_hele_a.png'), mode: 'opaque', attachPoint: 'prop-head' },
+              ...WORKER_TOOLS,
+            ],
+          },
+        ],
+      };
+    }
 
     case 'athen_hoplite':
       return {
@@ -850,6 +1377,951 @@ export function getZeroADModelSpec(templateId: string, civId: CivId): EntityMode
         ],
       };
 
+    case 'athen_marine':
+      return {
+        targetHeight: 1.92,
+        parts: [
+          {
+            mesh: m('m_armor_tunic_short.dae'),
+            texture: t('athen_epilektos_01.png'),
+            mode: 'player',
+            roughness: 0.55,
+            metalness: 0.3,
+            animations: SWORDSMAN_ANIMS,
+            children: [
+              { mesh: m('dude_head.dae'), texture: t('head_hele_a.png'), mode: 'opaque', attachPoint: 'prop-head' },
+              { mesh: m('hele_phrygian_a.dae'), texture: t('hele_phrygian_01_bronze.png'), mode: 'opaque', roughness: 0.38, metalness: 0.65, attachPoint: 'prop-helmet' },
+              { mesh: m('aspis_athen.dae'), texture: t('aspis_athen_b.png'), mode: 'player', doubleSide: true, attachPoint: 'prop-shield_arm', isCombatGear: true },
+              { mesh: m('gladius_03.dae'), texture: t('prop_weap.png'), mode: 'opaque', attachPoint: 'prop-weapon_R', isWeapon: true, isCombatGear: true },
+              ...WORKER_TOOLS,
+            ],
+          },
+        ],
+      };
+
+    case 'rome_praetorian':
+      return {
+        targetHeight: 2.02,
+        parts: [
+          {
+            mesh: m('m_armor_tunic_short.dae'),
+            texture: t('rome_cuirass_01_01.png'),
+            mode: 'player',
+            roughness: 0.48,
+            metalness: 0.45,
+            animations: SWORDSMAN_ANIMS,
+            children: [
+              { mesh: m('dude_head.dae'), texture: t('head_hele_a.png'), mode: 'opaque', attachPoint: 'prop-head' },
+              { mesh: m('rome_montefortino_a_2.dae'), texture: t('rome_montefortino_bronze.png'), mode: 'alpha', roughness: 0.35, metalness: 0.65, attachPoint: 'prop-helmet' },
+              { mesh: m('scutum_rome.dae'), texture: t('scutum_rome_01.png'), mode: 'player', doubleSide: true, attachPoint: 'prop-shield' },
+              { mesh: m('gladius_03.dae'), texture: t('prop_weap.png'), mode: 'opaque', attachPoint: 'prop-weapon_R', isWeapon: true },
+            ],
+          },
+        ],
+      };
+
+    case 'spart_perioikos':
+      return {
+        targetHeight: 1.88,
+        parts: [
+          {
+            mesh: m('m_tunic_short.dae'),
+            texture: t('hele_tunic_02_01.png'),
+            mode: 'player',
+            animations: HOPLITE_ANIMS,
+            children: [
+              { mesh: m('dude_head.dae'), texture: t('head_hele_a.png'), mode: 'opaque', attachPoint: 'prop-head' },
+              { mesh: m('hele_pilos_a1.dae'), texture: t('hele_pilos_01_bronze.png'), mode: 'opaque', roughness: 0.38, metalness: 0.65, attachPoint: 'prop-helmet' },
+              { mesh: m('aspis_athen.dae'), texture: t('aspis_athen_c.png'), mode: 'player', doubleSide: true, attachPoint: 'prop-shield_arm', isCombatGear: true },
+              { mesh: m('spear_hoplite.dae'), texture: t('prop_weap.png'), mode: 'opaque', attachPoint: 'prop-weapon_R', isWeapon: true, isCombatGear: true },
+              ...WORKER_TOOLS,
+            ],
+          },
+        ],
+      };
+
+    case 'spart_skirmisher':
+      return {
+        targetHeight: 1.78,
+        parts: [
+          {
+            mesh: m('m_tunic_short.dae'),
+            texture: t('hele_tunic_01_01.png'),
+            mode: 'player',
+            animations: JAVELIN_ANIMS,
+            children: [
+              { mesh: m('dude_head.dae'), texture: t('head_hele_a.png'), mode: 'opaque', attachPoint: 'prop-head' },
+              { mesh: m('round_b_f.dae'), texture: t('rome_parma_a.png'), mode: 'player', doubleSide: true, attachPoint: 'prop-shield', isCombatGear: true },
+              { mesh: m('weap_javelin_shaft_loaded_a.dae'), texture: t('prop_weap.png'), mode: 'opaque', attachPoint: 'prop-weapon_R', isWeapon: true, isCombatGear: true },
+              ...WORKER_TOOLS,
+            ],
+          },
+        ],
+      };
+
+    case 'spart_cavalry':
+      return {
+        targetHeight: 2.38,
+        parts: [
+          {
+            mesh: m('horse_tessalian.dae'),
+            texture: t('horse_brown.png'),
+            mode: 'opaque',
+            animations: HORSE_ANIMS,
+            children: [
+              {
+                mesh: m('m_armor_tunic_short.dae'),
+                texture: t('athen_epilektos_01.png'),
+                mode: 'player',
+                attachPoint: 'prop_rider',
+                animations: RIDER_ANIMS,
+                children: [
+                  { mesh: m('dude_head.dae'), texture: t('head_hele_a.png'), mode: 'opaque', attachPoint: 'prop-head' },
+                  { mesh: m('hele_phrygian_a.dae'), texture: t('hele_phrygian_01_bronze.png'), mode: 'opaque', roughness: 0.38, metalness: 0.65, attachPoint: 'prop-helmet' },
+                  { mesh: m('spear_lance_cavalry_reverse.dae'), texture: t('prop_weap.png'), mode: 'opaque', attachPoint: 'prop-weapon_R', isWeapon: true },
+                ],
+              },
+            ],
+          },
+        ],
+      };
+
+    case 'spart_spartiate':
+      return {
+        targetHeight: 2.08,
+        parts: [
+          {
+            mesh: m('m_armor_tunic_short.dae'),
+            texture: t('athen_epilektos_01.png'),
+            mode: 'player',
+            roughness: 0.45,
+            metalness: 0.5,
+            animations: HOPLITE_ANIMS,
+            children: [
+              { mesh: m('dude_head.dae'), texture: t('head_hele_a.png'), mode: 'opaque', attachPoint: 'prop-head' },
+              { mesh: m('hele_phrygian_a.dae'), texture: t('hele_phrygian_01_bronze.png'), mode: 'opaque', roughness: 0.35, metalness: 0.72, attachPoint: 'prop-helmet' },
+              { mesh: m('aspis_athen.dae'), texture: t('aspis_athen_c.png'), mode: 'player', doubleSide: true, attachPoint: 'prop-shield_arm' },
+              { mesh: m('spear_hoplite.dae'), texture: t('prop_weap.png'), mode: 'opaque', attachPoint: 'prop-weapon_R', isWeapon: true },
+            ],
+          },
+        ],
+      };
+
+    case 'spart_hero_guard':
+      return {
+        targetHeight: 2.04,
+        parts: [
+          {
+            mesh: m('m_armor_tunic_short.dae'),
+            texture: t('rome_cuirass_01_01.png'),
+            mode: 'player',
+            roughness: 0.45,
+            metalness: 0.5,
+            animations: SWORDSMAN_ANIMS,
+            children: [
+              { mesh: m('dude_head.dae'), texture: t('head_hele_a.png'), mode: 'opaque', attachPoint: 'prop-head' },
+              { mesh: m('rome_wolfskin_a.dae'), texture: t('rome_wolfskin_a.png'), mode: 'player', attachPoint: 'prop-helmet' },
+              { mesh: m('aspis_athen.dae'), texture: t('aspis_athen_c.png'), mode: 'player', doubleSide: true, attachPoint: 'prop-shield_arm' },
+              { mesh: m('gladius_03.dae'), texture: t('prop_weap.png'), mode: 'opaque', attachPoint: 'prop-weapon_R', isWeapon: true },
+            ],
+          },
+        ],
+      };
+
+    case 'pers_spearman':
+      return {
+        targetHeight: 1.85,
+        parts: [
+          {
+            mesh: m('m_tunic_short.dae'),
+            texture: t('athen_tunic_01_01.png'),
+            mode: 'player',
+            animations: HOPLITE_ANIMS,
+            children: [
+              { mesh: m('dude_head.dae'), texture: t('head_hele_a.png'), mode: 'opaque', attachPoint: 'prop-head' },
+              { mesh: m('hele_phrygian_a.dae'), texture: t('hele_tunic_01_01.png'), mode: 'player', attachPoint: 'prop-helmet' },
+              { mesh: m('round_b_f.dae'), texture: t('rome_parma_a.png'), mode: 'player', doubleSide: true, attachPoint: 'prop-shield_arm', isCombatGear: true },
+              { mesh: m('spear_hoplite.dae'), texture: t('prop_weap.png'), mode: 'opaque', attachPoint: 'prop-weapon_R', isWeapon: true, isCombatGear: true },
+              ...WORKER_TOOLS,
+            ],
+          },
+        ],
+      };
+
+    case 'pers_archer':
+      return {
+        targetHeight: 1.82,
+        parts: [
+          {
+            mesh: m('m_tunic_short.dae'),
+            texture: t('athen_tunic_01_01.png'),
+            mode: 'player',
+            animations: ARCHER_ANIMS,
+            children: [
+              { mesh: m('dude_head.dae'), texture: t('head_hele_a.png'), mode: 'opaque', attachPoint: 'prop-head' },
+              { mesh: m('hele_phrygian_a.dae'), texture: t('hele_tunic_02_01.png'), mode: 'player', attachPoint: 'prop-helmet' },
+              { mesh: m('bow_greek.dae'), texture: t('bow_wood.png'), mode: 'player', attachPoint: 'prop-weapon_bow', isWeapon: true, isCombatGear: true },
+              ...WORKER_TOOLS,
+            ],
+          },
+        ],
+      };
+
+    case 'pers_cavalry':
+      return {
+        targetHeight: 2.38,
+        parts: [
+          {
+            mesh: m('horse_tessalian.dae'),
+            texture: t('horse_brown.png'),
+            mode: 'opaque',
+            animations: HORSE_ANIMS,
+            children: [
+              {
+                mesh: m('m_tunic_short.dae'),
+                texture: t('athen_tunic_01_01.png'),
+                mode: 'player',
+                attachPoint: 'prop_rider',
+                animations: RIDER_ANIMS,
+                children: [
+                  { mesh: m('dude_head.dae'), texture: t('head_hele_a.png'), mode: 'opaque', attachPoint: 'prop-head' },
+                  { mesh: m('hele_phrygian_a.dae'), texture: t('hele_phrygian_01_bronze.png'), mode: 'opaque', roughness: 0.4, metalness: 0.55, attachPoint: 'prop-helmet' },
+                  { mesh: m('spear_lance_cavalry_reverse.dae'), texture: t('prop_weap.png'), mode: 'opaque', attachPoint: 'prop-weapon_R', isWeapon: true },
+                ],
+              },
+            ],
+          },
+        ],
+      };
+
+    case 'pers_immortal':
+      return {
+        targetHeight: 2.04,
+        parts: [
+          {
+            mesh: m('m_armor_tunic_short.dae'),
+            texture: t('athen_epilektos_01.png'),
+            mode: 'player',
+            roughness: 0.48,
+            metalness: 0.45,
+            animations: HOPLITE_ANIMS,
+            children: [
+              { mesh: m('dude_head.dae'), texture: t('head_hele_a.png'), mode: 'opaque', attachPoint: 'prop-head' },
+              { mesh: m('hele_phrygian_a.dae'), texture: t('metal_gold_aegean.png'), mode: 'opaque', roughness: 0.32, metalness: 0.72, attachPoint: 'prop-helmet' },
+              { mesh: m('round_b_f.dae'), texture: t('aspis_athen_b.png'), mode: 'player', doubleSide: true, attachPoint: 'prop-shield_arm' },
+              { mesh: m('spear_hoplite.dae'), texture: t('prop_weap.png'), mode: 'opaque', attachPoint: 'prop-weapon_R', isWeapon: true },
+            ],
+          },
+        ],
+      };
+
+    case 'pers_cataphract':
+      return {
+        targetHeight: 2.48,
+        parts: [
+          {
+            mesh: m('horse_tessalian.dae'),
+            texture: t('horse_brown.png'),
+            mode: 'opaque',
+            animations: HORSE_ANIMS,
+            children: [
+              {
+                mesh: m('m_armor_tunic_short.dae'),
+                texture: t('rome_cuirass_01_01.png'),
+                mode: 'player',
+                roughness: 0.38,
+                metalness: 0.65,
+                attachPoint: 'prop_rider',
+                animations: RIDER_ANIMS,
+                children: [
+                  { mesh: m('dude_head.dae'), texture: t('head_hele_a.png'), mode: 'opaque', attachPoint: 'prop-head' },
+                  { mesh: m('rome_montefortino_a_2.dae'), texture: t('metal_gold_aegean.png'), mode: 'alpha', roughness: 0.32, metalness: 0.75, attachPoint: 'prop-helmet' },
+                  { mesh: m('round_b_f.dae'), texture: t('aspis_athen_c.png'), mode: 'player', doubleSide: true, attachPoint: 'prop-shield_arm' },
+                  { mesh: m('spear_lance_cavalry_reverse.dae'), texture: t('prop_weap.png'), mode: 'opaque', attachPoint: 'prop-weapon_R', isWeapon: true },
+                ],
+              },
+            ],
+          },
+        ],
+      };
+
+    case 'carth_spearman':
+      return {
+        targetHeight: 1.86,
+        parts: [
+          {
+            mesh: m('m_tunic_short.dae'),
+            texture: t('hele_tunic_01_01.png'),
+            mode: 'player',
+            animations: HOPLITE_ANIMS,
+            children: [
+              { mesh: m('dude_head.dae'), texture: t('head_hele_a.png'), mode: 'opaque', attachPoint: 'prop-head' },
+              { mesh: m('hele_pilos_a1.dae'), texture: t('hele_pilos_01_bronze.png'), mode: 'opaque', roughness: 0.4, metalness: 0.6, attachPoint: 'prop-helmet' },
+              { mesh: m('round_b_f.dae'), texture: t('aspis_athen_b.png'), mode: 'player', doubleSide: true, attachPoint: 'prop-shield_arm', isCombatGear: true },
+              { mesh: m('spear_hoplite.dae'), texture: t('prop_weap.png'), mode: 'opaque', attachPoint: 'prop-weapon_R', isWeapon: true, isCombatGear: true },
+              ...WORKER_TOOLS,
+            ],
+          },
+        ],
+      };
+
+    case 'carth_slinger':
+      return {
+        targetHeight: 1.8,
+        parts: [
+          {
+            mesh: m('m_tunic_short.dae'),
+            texture: t('rome_tunic_basic_01.png'),
+            mode: 'player',
+            animations: JAVELIN_ANIMS,
+            children: [
+              { mesh: m('dude_head.dae'), texture: t('head_hele_a.png'), mode: 'opaque', attachPoint: 'prop-head' },
+              { mesh: m('round_b_f.dae'), texture: t('rome_parma_a.png'), mode: 'player', doubleSide: true, attachPoint: 'prop-shield', isCombatGear: true },
+              { mesh: m('weap_javelin_shaft_loaded_a.dae'), texture: t('prop_weap.png'), mode: 'opaque', attachPoint: 'prop-weapon_R', isWeapon: true, isCombatGear: true },
+              ...WORKER_TOOLS,
+            ],
+          },
+        ],
+      };
+
+    case 'carth_cavalry':
+      return {
+        targetHeight: 2.34,
+        parts: [
+          {
+            mesh: m('horse_tessalian.dae'),
+            texture: t('horse_brown.png'),
+            mode: 'opaque',
+            animations: HORSE_ANIMS,
+            children: [
+              {
+                mesh: m('m_tunic_short.dae'),
+                texture: t('rome_tunic_basic_01.png'),
+                mode: 'player',
+                attachPoint: 'prop_rider',
+                animations: RIDER_ANIMS,
+                children: [
+                  { mesh: m('dude_head.dae'), texture: t('head_hele_a.png'), mode: 'opaque', attachPoint: 'prop-head' },
+                  { mesh: m('round_b_f.dae'), texture: t('rome_parma_a.png'), mode: 'player', doubleSide: true, attachPoint: 'prop-shield_arm' },
+                  { mesh: m('spear_lance_cavalry_reverse.dae'), texture: t('prop_weap.png'), mode: 'opaque', attachPoint: 'prop-weapon_R', isWeapon: true },
+                ],
+              },
+            ],
+          },
+        ],
+      };
+
+    case 'carth_sacred_band':
+      return {
+        targetHeight: 2.05,
+        parts: [
+          {
+            mesh: m('m_armor_tunic_short.dae'),
+            texture: t('athen_epilektos_01.png'),
+            mode: 'player',
+            roughness: 0.45,
+            metalness: 0.48,
+            animations: HOPLITE_ANIMS,
+            children: [
+              { mesh: m('dude_head.dae'), texture: t('head_hele_a.png'), mode: 'opaque', attachPoint: 'prop-head' },
+              { mesh: m('hele_phrygian_a.dae'), texture: t('hele_phrygian_01_bronze.png'), mode: 'opaque', roughness: 0.35, metalness: 0.7, attachPoint: 'prop-helmet' },
+              { mesh: m('aspis_athen.dae'), texture: t('aspis_athen_c.png'), mode: 'player', doubleSide: true, attachPoint: 'prop-shield_arm' },
+              { mesh: m('spear_hoplite.dae'), texture: t('prop_weap.png'), mode: 'opaque', attachPoint: 'prop-weapon_R', isWeapon: true },
+            ],
+          },
+        ],
+      };
+
+    case 'carth_mercenary':
+      return {
+        targetHeight: 1.92,
+        parts: [
+          {
+            mesh: m('m_tunic_short.dae'),
+            texture: t('rome_cardiopylax_01_01.png'),
+            mode: 'player',
+            animations: SWORDSMAN_ANIMS,
+            children: [
+              { mesh: m('dude_head.dae'), texture: t('head_hele_a.png'), mode: 'opaque', attachPoint: 'prop-head' },
+              { mesh: m('rome_montefortino_a.dae'), texture: t('rome_montefortino_bronze.png'), mode: 'alpha', roughness: 0.4, metalness: 0.6, attachPoint: 'prop-helmet' },
+              { mesh: m('round_b_f.dae'), texture: t('rome_parma_a.png'), mode: 'player', doubleSide: true, attachPoint: 'prop-shield' },
+              { mesh: m('gladius_03.dae'), texture: t('prop_weap.png'), mode: 'opaque', attachPoint: 'prop-weapon_R', isWeapon: true },
+            ],
+          },
+        ],
+      };
+
+    case 'ptol_pikeman':
+      return {
+        targetHeight: 1.88,
+        parts: [
+          {
+            mesh: m('m_tunic_short.dae'),
+            texture: t('athen_tunic_01_01.png'),
+            mode: 'player',
+            animations: HOPLITE_ANIMS,
+            children: [
+              { mesh: m('dude_head.dae'), texture: t('head_hele_a.png'), mode: 'opaque', attachPoint: 'prop-head' },
+              { mesh: m('hele_phrygian_a.dae'), texture: t('hele_phrygian_01_bronze.png'), mode: 'opaque', roughness: 0.4, metalness: 0.6, attachPoint: 'prop-helmet' },
+              { mesh: m('round_b_f.dae'), texture: t('aspis_athen_b.png'), mode: 'player', doubleSide: true, attachPoint: 'prop-shield_arm', isCombatGear: true },
+              { mesh: m('spear_hoplite.dae'), texture: t('prop_weap.png'), mode: 'opaque', attachPoint: 'prop-weapon_R', isWeapon: true, isCombatGear: true },
+              ...WORKER_TOOLS,
+            ],
+          },
+        ],
+      };
+
+    case 'ptol_archer':
+      return {
+        targetHeight: 1.82,
+        parts: [
+          {
+            mesh: m('m_tunic_short.dae'),
+            texture: t('hele_tunic_01_01.png'),
+            mode: 'player',
+            animations: ARCHER_ANIMS,
+            children: [
+              { mesh: m('dude_head.dae'), texture: t('head_hele_a.png'), mode: 'opaque', attachPoint: 'prop-head' },
+              { mesh: m('bow_greek.dae'), texture: t('bow_wood.png'), mode: 'player', attachPoint: 'prop-weapon_bow', isWeapon: true, isCombatGear: true },
+              ...WORKER_TOOLS,
+            ],
+          },
+        ],
+      };
+
+    case 'ptol_cavalry':
+      return {
+        targetHeight: 2.38,
+        parts: [
+          {
+            mesh: m('horse_tessalian.dae'),
+            texture: t('horse_brown.png'),
+            mode: 'opaque',
+            animations: HORSE_ANIMS,
+            children: [
+              {
+                mesh: m('m_armor_tunic_short.dae'),
+                texture: t('athen_tunic_01_01.png'),
+                mode: 'player',
+                attachPoint: 'prop_rider',
+                animations: RIDER_ANIMS,
+                children: [
+                  { mesh: m('dude_head.dae'), texture: t('head_hele_a.png'), mode: 'opaque', attachPoint: 'prop-head' },
+                  { mesh: m('hele_phrygian_a.dae'), texture: t('metal_gold_aegean.png'), mode: 'opaque', roughness: 0.35, metalness: 0.7, attachPoint: 'prop-helmet' },
+                  { mesh: m('spear_lance_cavalry_reverse.dae'), texture: t('prop_weap.png'), mode: 'opaque', attachPoint: 'prop-weapon_R', isWeapon: true },
+                ],
+              },
+            ],
+          },
+        ],
+      };
+
+    case 'ptol_royal_guard':
+      return {
+        targetHeight: 2.06,
+        parts: [
+          {
+            mesh: m('m_armor_tunic_short.dae'),
+            texture: t('athen_epilektos_01.png'),
+            mode: 'player',
+            roughness: 0.44,
+            metalness: 0.5,
+            animations: HOPLITE_ANIMS,
+            children: [
+              { mesh: m('dude_head.dae'), texture: t('head_hele_a.png'), mode: 'opaque', attachPoint: 'prop-head' },
+              { mesh: m('hele_phrygian_a.dae'), texture: t('metal_gold_aegean.png'), mode: 'opaque', roughness: 0.32, metalness: 0.75, attachPoint: 'prop-helmet' },
+              { mesh: m('aspis_athen.dae'), texture: t('aspis_athen_c.png'), mode: 'player', doubleSide: true, attachPoint: 'prop-shield_arm' },
+              { mesh: m('spear_hoplite.dae'), texture: t('prop_weap.png'), mode: 'opaque', attachPoint: 'prop-weapon_R', isWeapon: true },
+            ],
+          },
+        ],
+      };
+
+    case 'ptol_klerouch':
+      return {
+        targetHeight: 1.96,
+        parts: [
+          {
+            mesh: m('m_armor_tunic_short.dae'),
+            texture: t('rome_cuirass_01_01.png'),
+            mode: 'player',
+            roughness: 0.5,
+            metalness: 0.4,
+            animations: SWORDSMAN_ANIMS,
+            children: [
+              { mesh: m('dude_head.dae'), texture: t('head_hele_a.png'), mode: 'opaque', attachPoint: 'prop-head' },
+              { mesh: m('hele_pilos_a1.dae'), texture: t('hele_pilos_01_bronze.png'), mode: 'opaque', roughness: 0.38, metalness: 0.65, attachPoint: 'prop-helmet' },
+              { mesh: m('aspis_athen.dae'), texture: t('aspis_athen_b.png'), mode: 'player', doubleSide: true, attachPoint: 'prop-shield_arm' },
+              { mesh: m('gladius_03.dae'), texture: t('prop_weap.png'), mode: 'opaque', attachPoint: 'prop-weapon_R', isWeapon: true },
+            ],
+          },
+        ],
+      };
+
+    // --- HAN, CELTIC, IBERIAN, KUSHITE, HELLENISTIC & MAURYAN UNITS ---
+    case 'han_spearman':
+    case 'brit_spearman':
+    case 'gaul_spearman':
+    case 'kush_spearman':
+    case 'mace_pikeman':
+    case 'maur_spearman':
+    case 'sele_pikeman': {
+      const spearTex =
+        templateId === 'han_spearman'
+          ? t('han_tunic_01.png')
+          : templateId === 'brit_spearman' || templateId === 'gaul_spearman'
+            ? t('celt_tunic_01.png')
+            : templateId === 'kush_spearman'
+              ? t('kush_dress_01.png')
+              : templateId === 'maur_spearman'
+                ? t('maur_tunic_01.png')
+                : templateId === 'mace_pikeman'
+                  ? t('rome_cardiopylax_01_01.png')
+                  : t('hele_tunic_02_01.png');
+      return {
+        targetHeight: 1.86,
+        parts: [
+          {
+            mesh: m('m_armor_tunic_short.dae'),
+            texture: spearTex,
+            mode: 'player',
+            animations: HOPLITE_ANIMS,
+            children: [
+              { mesh: m('dude_head.dae'), texture: t('head_hele_a.png'), mode: 'opaque', attachPoint: 'prop-head' },
+              { mesh: m('hele_pilos_a1.dae'), texture: t('rome_montefortino_bronze.png'), mode: 'opaque', roughness: 0.38, metalness: 0.62, attachPoint: 'prop-helmet' },
+              { mesh: m('round_b_f.dae'), texture: t('rome_parma_a.png'), mode: 'player', doubleSide: true, attachPoint: 'prop-shield_arm', isCombatGear: true },
+              { mesh: m('spear_hoplite.dae'), texture: t('prop_weap.png'), mode: 'opaque', attachPoint: 'prop-weapon_R', isWeapon: true, isCombatGear: true },
+              ...WORKER_TOOLS,
+            ],
+          },
+        ],
+      };
+    }
+
+    case 'iber_swordsman':
+      return {
+        targetHeight: 1.85,
+        parts: [
+          {
+            mesh: m('m_tunic_short.dae'),
+            texture: t('iber_tunic_01.png'),
+            mode: 'player',
+            animations: SWORDSMAN_ANIMS,
+            children: [
+              { mesh: m('dude_head.dae'), texture: t('head_hele_a.png'), mode: 'opaque', attachPoint: 'prop-head' },
+              { mesh: m('round_b_f.dae'), texture: t('rome_parma_a.png'), mode: 'player', doubleSide: true, attachPoint: 'prop-shield_arm', isCombatGear: true },
+              { mesh: m('gladius_03.dae'), texture: t('prop_weap.png'), mode: 'opaque', attachPoint: 'prop-weapon_R', isWeapon: true, isCombatGear: true },
+              ...WORKER_TOOLS,
+            ],
+          },
+        ],
+      };
+
+    case 'han_crossbow':
+    case 'han_guard':
+    case 'kush_archer':
+    case 'mace_archer':
+    case 'maur_archer':
+    case 'sele_archer': {
+      const archTex =
+        templateId === 'han_crossbow' || templateId === 'han_guard'
+          ? t('han_tunic_01.png')
+          : templateId === 'kush_archer'
+            ? t('kush_dress_01.png')
+            : templateId === 'maur_archer'
+              ? t('maur_tunic_01.png')
+              : t('hele_tunic_01_01.png');
+      return {
+        targetHeight: templateId === 'han_guard' ? 1.92 : 1.82,
+        parts: [
+          {
+            mesh: templateId === 'han_guard' ? m('m_armor_tunic_short.dae') : m('m_tunic_short.dae'),
+            texture: archTex,
+            mode: 'player',
+            animations: ARCHER_ANIMS,
+            children: [
+              { mesh: m('dude_head.dae'), texture: t('head_hele_a.png'), mode: 'opaque', attachPoint: 'prop-head' },
+              { mesh: m('hele_pilos_a1.dae'), texture: t('hele_pilos_01_bronze.png'), mode: 'opaque', roughness: 0.42, metalness: 0.58, attachPoint: 'prop-helmet' },
+              { mesh: m('bow_greek.dae'), texture: t('bow_wood.png'), mode: 'player', attachPoint: 'prop-weapon_bow', isWeapon: true, isCombatGear: true },
+              ...(templateId === 'han_guard' ? [] : WORKER_TOOLS),
+            ],
+          },
+        ],
+      };
+    }
+
+    case 'brit_slinger':
+    case 'gaul_slinger':
+    case 'iber_slinger':
+      return {
+        targetHeight: 1.8,
+        parts: [
+          {
+            mesh: m('m_tunic_short.dae'),
+            texture: templateId === 'iber_slinger' ? t('iber_tunic_01.png') : t('celt_tunic_01.png'),
+            mode: 'player',
+            animations: JAVELIN_ANIMS,
+            children: [
+              { mesh: m('dude_head.dae'), texture: t('head_hele_a.png'), mode: 'opaque', attachPoint: 'prop-head' },
+              { mesh: m('round_b_f.dae'), texture: t('rome_parma_a.png'), mode: 'player', doubleSide: true, attachPoint: 'prop-shield', isCombatGear: true },
+              { mesh: m('weap_javelin_shaft_loaded_a.dae'), texture: t('prop_weap.png'), mode: 'opaque', attachPoint: 'prop-weapon_R', isWeapon: true, isCombatGear: true },
+              ...WORKER_TOOLS,
+            ],
+          },
+        ],
+      };
+
+    case 'han_cavalry':
+    case 'brit_cavalry':
+    case 'gaul_cavalry':
+    case 'gaul_champion':
+    case 'iber_cavalry':
+    case 'iber_fire_cav':
+    case 'kush_cavalry':
+    case 'mace_cavalry':
+    case 'mace_companion':
+    case 'maur_cavalry':
+    case 'sele_cavalry':
+      return {
+        targetHeight: templateId === 'mace_companion' || templateId === 'gaul_champion' ? 2.48 : 2.38,
+        parts: [
+          {
+            mesh: m('horse_tessalian.dae'),
+            texture: t('horse_brown.png'),
+            mode: 'opaque',
+            animations: HORSE_ANIMS,
+            children: [
+              {
+                mesh: m('m_armor_tunic_short.dae'),
+                texture: t('rome_subarmalis_01_01.png'),
+                mode: 'player',
+                attachPoint: 'prop_rider',
+                animations: RIDER_ANIMS,
+                children: [
+                  { mesh: m('dude_head.dae'), texture: t('head_hele_a.png'), mode: 'opaque', attachPoint: 'prop-head' },
+                  { mesh: m('hele_pilos_a1.dae'), texture: t('rome_montefortino_bronze.png'), mode: 'opaque', roughness: 0.36, metalness: 0.65, attachPoint: 'prop-helmet' },
+                  { mesh: m('spear_lance_cavalry_reverse.dae'), texture: t('prop_weap.png'), mode: 'opaque', attachPoint: 'prop-weapon_R', isWeapon: true },
+                ],
+              },
+            ],
+          },
+        ],
+      };
+
+    case 'han_champion':
+    case 'brit_champion':
+    case 'gaul_fanatic':
+    case 'iber_champion':
+    case 'kush_champion':
+    case 'mace_champion':
+    case 'sele_champion':
+      return {
+        targetHeight: 2.04,
+        parts: [
+          {
+            mesh: templateId === 'gaul_fanatic' ? m('m_tunic_short.dae') : m('m_armor_tunic_short.dae'),
+            texture: templateId === 'mace_champion' || templateId === 'sele_champion' ? t('athen_epilektos_01.png') : t('rome_cuirass_01_01.png'),
+            mode: 'player',
+            roughness: 0.42,
+            metalness: 0.52,
+            animations: templateId === 'mace_champion' || templateId === 'sele_champion' ? HOPLITE_ANIMS : SWORDSMAN_ANIMS,
+            children: [
+              { mesh: m('dude_head.dae'), texture: t('head_hele_a.png'), mode: 'opaque', attachPoint: 'prop-head' },
+              { mesh: m('rome_montefortino_a_2.dae'), texture: t('metal_gold_aegean.png'), mode: 'alpha', roughness: 0.32, metalness: 0.72, attachPoint: 'prop-helmet' },
+              {
+                mesh: templateId === 'mace_champion' || templateId === 'sele_champion' ? m('spear_hoplite.dae') : m('gladius_03.dae'),
+                texture: t('prop_weap.png'),
+                mode: 'opaque',
+                attachPoint: 'prop-weapon_R',
+                isWeapon: true,
+              },
+            ],
+          },
+        ],
+      };
+
+    // --- SPECIALIZED CULTURAL WARFARE & ARTILLERY (Official 0 A.D. 3D Models!) ---
+    case 'war_dog':
+      return {
+        targetHeight: 0.96,
+        parts: [
+          {
+            mesh: m('mastiff.dae'),
+            texture: t('mastiff_b_01.png'),
+            mode: 'player',
+            roughness: 0.86,
+            animations: {
+              idle: ANIMATION_ASSETS.mastiffIdle,
+              walk: ANIMATION_ASSETS.mastiffRun,
+              attack: ANIMATION_ASSETS.mastiffAttack,
+            },
+          },
+        ],
+      };
+
+    case 'camel_rider':
+      return {
+        targetHeight: 2.52,
+        parts: [
+          {
+            mesh: m('camel.dae'),
+            texture: t('animal_camel_b_belt.png'),
+            mode: 'opaque',
+            roughness: 0.88,
+            animations: {
+              idle: ANIMATION_ASSETS.camelIdle,
+              walk: ANIMATION_ASSETS.camelRun,
+              attack: ANIMATION_ASSETS.camelIdle,
+            },
+            children: [
+              {
+                mesh: m('m_tunic_short.dae'),
+                texture: t('hele_tunic_01_01.png'),
+                mode: 'player',
+                attachPoint: 'prop_rider',
+                animations: RIDER_ANIMS,
+                children: [
+                  { mesh: m('dude_head.dae'), texture: t('head_hele_a.png'), mode: 'opaque', attachPoint: 'prop-head' },
+                  { mesh: m('hele_phrygian_a.dae'), texture: t('hele_pilos_01_bronze.png'), mode: 'opaque', attachPoint: 'prop-helmet' },
+                  { mesh: m('bow_greek.dae'), texture: t('bow_wood.png'), mode: 'player', attachPoint: 'prop-weapon_bow', isWeapon: true },
+                ],
+              },
+            ],
+          },
+        ],
+      };
+
+    case 'gastraphetes_crossbow':
+    case 'fire_archer':
+      return {
+        targetHeight: 1.88,
+        parts: [
+          {
+            mesh: templateId === 'gastraphetes_crossbow' ? m('m_armor_tunic_short.dae') : m('m_tunic_short.dae'),
+            texture: templateId === 'fire_archer' ? t('rome_subarmalis_01_01.png') : t('athen_epilektos_01.png'),
+            mode: 'player',
+            animations: ARCHER_ANIMS,
+            children: [
+              { mesh: m('dude_head.dae'), texture: t('head_hele_a.png'), mode: 'opaque', attachPoint: 'prop-head' },
+              { mesh: m('hele_pilos_a1.dae'), texture: t('rome_montefortino_bronze.png'), mode: 'opaque', roughness: 0.38, metalness: 0.62, attachPoint: 'prop-helmet' },
+              { mesh: m('bow_greek.dae'), texture: t('bow_wood.png'), mode: 'player', attachPoint: 'prop-weapon_bow', isWeapon: true },
+            ],
+          },
+        ],
+      };
+
+    case 'kush_elephant':
+    case 'maur_elephant':
+    case 'sele_elephant':
+    case 'pers_elephant':
+    case 'ptol_elephant':
+    case 'carth_elephant':
+      return {
+        targetHeight: 3.35,
+        parts: [
+          {
+            mesh: m('elephant_asian_male.dae'),
+            texture: t('animal_elephant_asian.png'),
+            normTex: t('animal_elephant_asian_norm.png'),
+            mode: 'opaque',
+            roughness: 0.88,
+            animations: {
+              idle: ANIMATION_ASSETS.elephantIdle,
+              walk: ANIMATION_ASSETS.elephantWalk,
+              attack: ANIMATION_ASSETS.elephantWalk,
+            },
+          },
+        ],
+      };
+
+    case 'siege_lithobolos':
+      return {
+        targetFootprint: 3.5,
+        sinkY: -0.05,
+        parts: [
+          {
+            mesh: m('lithobolos_01.dae'),
+            texture: t('siege_artillery_01.png'),
+            normTex: t('siege_artillery_01_norm.png'),
+            mode: 'opaque',
+            roughness: 0.85,
+            animations: {
+              idle: ANIMATION_ASSETS.lithobolosIdle,
+              walk: ANIMATION_ASSETS.lithobolosIdle,
+              attack: ANIMATION_ASSETS.lithobolosAttack,
+            },
+          },
+        ],
+      };
+
+    case 'siege_catapult':
+      return {
+        targetFootprint: 3.8,
+        sinkY: -0.05,
+        parts: [
+          {
+            mesh: m('siege_onager.dae'),
+            texture: t('rome_siege_onager.png'),
+            mode: 'player',
+            roughness: 0.86,
+            animations: {
+              idle: ANIMATION_ASSETS.onagerIdle,
+              walk: ANIMATION_ASSETS.onagerIdle,
+              attack: ANIMATION_ASSETS.onagerAttack,
+            },
+          },
+        ],
+      };
+
+    case 'siege_ballista':
+      return {
+        targetFootprint: 3.1,
+        sinkY: -0.05,
+        parts: [
+          {
+            mesh: m('oxybeles_01.dae'),
+            texture: t('siege_artillery_01.png'),
+            normTex: t('siege_artillery_01_norm.png'),
+            mode: 'opaque',
+            roughness: 0.84,
+            animations: {
+              idle: ANIMATION_ASSETS.oxybelesIdle,
+              walk: ANIMATION_ASSETS.oxybelesIdle,
+              attack: ANIMATION_ASSETS.oxybelesAttack,
+            },
+          },
+        ],
+      };
+
+    // --- OFFICIAL 0 A.D. 3D WAR CHARIOTS (Celtic, Persian Scythed & Han Imperial!) ---
+    case 'brit_chariot':
+      return {
+        targetFootprint: 4.4,
+        sinkY: -0.04,
+        parts: [
+          {
+            mesh: m('celt_char_a.dae'),
+            texture: t('celt_chariot_a.png'),
+            mode: 'player',
+            roughness: 0.84,
+            animations: {
+              idle: ANIMATION_ASSETS.chariotIdle,
+              walk: ANIMATION_ASSETS.chariotMove,
+              attack: ANIMATION_ASSETS.chariotIdle,
+            },
+            children: [
+              { mesh: m('horse_tessalian.dae'), texture: t('horse_brown.png'), mode: 'opaque', attachPoint: 'prop_horse2', animations: HORSE_ANIMS },
+              { mesh: m('horse_tessalian.dae'), texture: t('horse_brown.png'), mode: 'opaque', attachPoint: 'prop_horse3', animations: HORSE_ANIMS },
+              {
+                mesh: m('m_tunic_short.dae'),
+                texture: t('celt_tunic_01.png'),
+                mode: 'player',
+                attachPoint: 'prop_driver1',
+                children: [{ mesh: m('dude_head.dae'), texture: t('head_hele_a.png'), mode: 'opaque', attachPoint: 'prop-head' }],
+              },
+              {
+                mesh: m('m_armor_tunic_short.dae'),
+                texture: t('celt_tunic_01.png'),
+                mode: 'player',
+                attachPoint: 'prop_rider1',
+                animations: JAVELIN_ANIMS,
+                children: [
+                  { mesh: m('dude_head.dae'), texture: t('head_hele_a.png'), mode: 'opaque', attachPoint: 'prop-head' },
+                  { mesh: m('weap_javelin_shaft_loaded_a.dae'), texture: t('prop_weap.png'), mode: 'opaque', attachPoint: 'prop-weapon_R', isWeapon: true },
+                ],
+              },
+            ],
+          },
+        ],
+      };
+
+    case 'pers_chariot':
+      return {
+        targetFootprint: 4.8,
+        sinkY: -0.04,
+        parts: [
+          {
+            mesh: m('pers_chariot_a.dae'),
+            texture: t('pers_chariot_a.png'),
+            mode: 'player',
+            roughness: 0.82,
+            animations: {
+              idle: ANIMATION_ASSETS.chariotIdle,
+              walk: ANIMATION_ASSETS.chariotMove,
+              attack: ANIMATION_ASSETS.chariotIdle,
+            },
+            children: [
+              { mesh: m('horse_tessalian.dae'), texture: t('horse_brown.png'), mode: 'opaque', attachPoint: 'prop_horse1', animations: HORSE_ANIMS },
+              { mesh: m('horse_tessalian.dae'), texture: t('horse_brown.png'), mode: 'opaque', attachPoint: 'prop_horse2', animations: HORSE_ANIMS },
+              { mesh: m('horse_tessalian.dae'), texture: t('horse_brown.png'), mode: 'opaque', attachPoint: 'prop_horse3', animations: HORSE_ANIMS },
+              { mesh: m('horse_tessalian.dae'), texture: t('horse_brown.png'), mode: 'opaque', attachPoint: 'prop_horse4', animations: HORSE_ANIMS },
+              {
+                mesh: m('m_tunic_short.dae'),
+                texture: t('pers_tunic_01.png'),
+                mode: 'player',
+                attachPoint: 'prop_driver1',
+                children: [{ mesh: m('dude_head.dae'), texture: t('head_hele_a.png'), mode: 'opaque', attachPoint: 'prop-head' }],
+              },
+              {
+                mesh: m('m_armor_tunic_short.dae'),
+                texture: t('pers_tunic_01.png'),
+                mode: 'player',
+                attachPoint: 'prop_rider1',
+                animations: ARCHER_ANIMS,
+                children: [
+                  { mesh: m('dude_head.dae'), texture: t('head_hele_a.png'), mode: 'opaque', attachPoint: 'prop-head' },
+                  { mesh: m('bow_greek.dae'), texture: t('bow_wood.png'), mode: 'player', attachPoint: 'prop-weapon_bow', isWeapon: true },
+                ],
+              },
+            ],
+          },
+        ],
+      };
+
+    case 'han_chariot':
+      return {
+        targetFootprint: 4.8,
+        sinkY: -0.04,
+        parts: [
+          {
+            mesh: m('han_chariot.dae'),
+            texture: t('chariot_01.png'),
+            normTex: t('chariot_01_norm.png'),
+            mode: 'player',
+            roughness: 0.82,
+            animations: {
+              idle: ANIMATION_ASSETS.chariotIdle,
+              walk: ANIMATION_ASSETS.chariotMove,
+              attack: ANIMATION_ASSETS.chariotIdle,
+            },
+            children: [
+              { mesh: m('horse_tessalian.dae'), texture: t('horse_brown.png'), mode: 'opaque', attachPoint: 'prop_horse1', animations: HORSE_ANIMS },
+              { mesh: m('horse_tessalian.dae'), texture: t('horse_brown.png'), mode: 'opaque', attachPoint: 'prop_horse2', animations: HORSE_ANIMS },
+              { mesh: m('horse_tessalian.dae'), texture: t('horse_brown.png'), mode: 'opaque', attachPoint: 'prop_horse3', animations: HORSE_ANIMS },
+              { mesh: m('horse_tessalian.dae'), texture: t('horse_brown.png'), mode: 'opaque', attachPoint: 'prop_horse4', animations: HORSE_ANIMS },
+              {
+                mesh: m('m_tunic_short.dae'),
+                texture: t('han_tunic_01.png'),
+                mode: 'player',
+                attachPoint: 'prop_driver1',
+                children: [{ mesh: m('dude_head.dae'), texture: t('head_hele_a.png'), mode: 'opaque', attachPoint: 'prop-head' }],
+              },
+              {
+                mesh: m('m_armor_tunic_short.dae'),
+                texture: t('han_tunic_01.png'),
+                mode: 'player',
+                attachPoint: 'prop_rider1',
+                animations: ARCHER_ANIMS,
+                children: [
+                  { mesh: m('dude_head.dae'), texture: t('head_hele_a.png'), mode: 'opaque', attachPoint: 'prop-head' },
+                  { mesh: m('bow_greek.dae'), texture: t('bow_wood.png'), mode: 'player', attachPoint: 'prop-weapon_bow', isWeapon: true },
+                ],
+              },
+            ],
+          },
+        ],
+      };
+
     default:
       return null;
   }
@@ -920,7 +2392,17 @@ export class UnitAnimator {
     gatherTargetTemplate?: string | null
   ): void {
     const isFarmingField = animState === 'gather' && gatherTargetTemplate === 'field';
-    const isPreyTarget = gatherTargetTemplate === 'deer_herd' || gatherTargetTemplate === 'wild_boar';
+    const isPreyTarget =
+      gatherTargetTemplate === 'deer_herd' ||
+      gatherTargetTemplate === 'wild_boar' ||
+      gatherTargetTemplate === 'wild_gazelle' ||
+      gatherTargetTemplate === 'wild_elephant' ||
+      gatherTargetTemplate === 'predator_wolf' ||
+      gatherTargetTemplate === 'predator_lion' ||
+      gatherTargetTemplate === 'predator_bear' ||
+      gatherTargetTemplate === 'sea_monster' ||
+      gatherTargetTemplate === 'sea_kraken' ||
+      gatherTargetTemplate === 'lake_nessie';
 
     // Equip the appropriate 0 A.D. tool for the active task:
     // - Hunting live prey: female citizen draws hunting dagger; soldiers use combat weapon
@@ -959,6 +2441,13 @@ export class UnitAnimator {
     const isOneShot = animState === 'death';
 
     for (const target of this.targets) {
+      // When dead and no dedicated death clip exists, pause the skeletal rig so the dead animal lies still instead of looping idle!
+      if (animState === 'death' && !target.clips.death) {
+        if (target.activeAction) {
+          target.activeAction.paused = true;
+        }
+        continue;
+      }
       const desiredUrl = target.clips[key] ?? target.clips.idle;
       const clip = zeroADAssets.getAnimationClipSync(desiredUrl);
       if (!clip) {
@@ -974,6 +2463,7 @@ export class UnitAnimator {
           nextAction = target.mixer.clipAction(clip);
           target.actions.set(desiredUrl, nextAction);
         }
+        nextAction.paused = false;
         if (isOneShot) {
           nextAction.setLoop(THREE.LoopOnce, 1);
           nextAction.clampWhenFinished = true;
@@ -1010,7 +2500,24 @@ export class UnitAnimator {
   }
 }
 
-const SKIP_ROOT_ARMS = new Set(['Biped', 'Horse_Armature', 'Deer01', 'Boar_Armature']);
+const SKIP_ROOT_ARMS = new Set([
+  'Biped',
+  'Horse_Armature',
+  'Deer01',
+  'Boar_Armature',
+  'Wolf',
+  'Horse',
+  'Ursidae_Armature',
+  'Elephantidae_Asian_Quadraped',
+  'BlenderHawk',
+  'RowingBoat',
+  'Armature',
+  'Camelus',
+  'Lithobolos_Armature',
+  'Oxybeles_Armature',
+  'onager',
+  'Chariot',
+]);
 
 class ZeroADAssetCache {
   private readonly colladaLoader = new ColladaLoader();
@@ -1383,6 +2890,12 @@ export function preloadZeroADModels(civs: CivId[]): void {
     'stable',
     'workshop',
     'wonder',
+    'gymnasium',
+    'army_camp',
+    'syssition',
+    'apadana',
+    'carth_embassy',
+    'ptol_library',
     'tree_cypress',
     'tree_olive',
     'tree_pine',
@@ -1398,16 +2911,96 @@ export function preloadZeroADModels(civs: CivId[]): void {
     'gold_vein',
     'rally_flag',
     'female_citizen',
+    'male_citizen',
     'healer',
     'siege_ram',
     'athen_hoplite',
     'athen_archer',
     'athen_cavalry',
     'athen_champion',
+    'athen_marine',
     'rome_hastatus',
     'rome_velite',
     'rome_cavalry',
     'rome_champion',
+    'rome_praetorian',
+    'spart_perioikos',
+    'spart_skirmisher',
+    'spart_cavalry',
+    'spart_spartiate',
+    'spart_hero_guard',
+    'pers_spearman',
+    'pers_archer',
+    'pers_cavalry',
+    'pers_immortal',
+    'pers_cataphract',
+    'carth_spearman',
+    'carth_slinger',
+    'carth_cavalry',
+    'carth_sacred_band',
+    'carth_mercenary',
+    'ptol_pikeman',
+    'ptol_archer',
+    'ptol_cavalry',
+    'ptol_royal_guard',
+    'ptol_klerouch',
+    'han_spearman',
+    'han_crossbow',
+    'han_cavalry',
+    'han_champion',
+    'han_guard',
+    'brit_spearman',
+    'brit_slinger',
+    'brit_cavalry',
+    'brit_champion',
+    'gaul_spearman',
+    'gaul_slinger',
+    'gaul_cavalry',
+    'gaul_champion',
+    'gaul_fanatic',
+    'iber_swordsman',
+    'iber_slinger',
+    'iber_cavalry',
+    'iber_champion',
+    'iber_fire_cav',
+    'kush_spearman',
+    'kush_archer',
+    'kush_cavalry',
+    'kush_champion',
+    'mace_pikeman',
+    'mace_archer',
+    'mace_cavalry',
+    'mace_champion',
+    'mace_companion',
+    'maur_spearman',
+    'maur_archer',
+    'maur_cavalry',
+    'sele_pikeman',
+    'sele_archer',
+    'sele_cavalry',
+    'sele_champion',
+    'tree_bamboo',
+    'wild_gazelle',
+    'wild_elephant',
+    'predator_wolf',
+    'predator_lion',
+    'predator_bear',
+    'wild_eagle',
+    'wild_seagull',
+    'fishing_boat',
+    'war_dog',
+    'camel_rider',
+    'gastraphetes_crossbow',
+    'fire_archer',
+    'pers_elephant',
+    'ptol_elephant',
+    'carth_elephant',
+    'siege_lithobolos',
+    'siege_catapult',
+    'siege_ballista',
+    'brit_chariot',
+    'pers_chariot',
+    'han_chariot',
   ];
   for (const civ of civs) {
     for (const tpl of templates) {

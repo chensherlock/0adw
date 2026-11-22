@@ -9,10 +9,12 @@ import {
   getCivEmblem,
   getEntityPortrait,
   RALLY_FLAG_ASSETS,
+  RUIN_TEXTURES,
   TECH_PORTRAITS,
   TERRAIN_TEXTURES,
   UI_ICONS,
 } from '../src/config/assets';
+import { ALL_CIV_IDS } from '../src/config/civs';
 import { TECHS, TEMPLATES } from '../src/config/entities';
 import { getLanguage, getTechText, getTemplateText, setLanguage, t, toggleLanguage } from '../src/config/i18n';
 import { getZeroADModelSpec, ModelPartSpec } from '../src/render/ZeroADAssetLoader';
@@ -31,15 +33,32 @@ describe('0 A.D. Asset Catalog & Model Specs', () => {
     for (const p of Object.values(UI_ICONS)) {
       expect(p.startsWith(`${ASSET_BASE}/ui/`)).toBe(true);
     }
-    expect(getCivEmblem('athenians')).toBe(UI_ICONS.emblemAthenians);
-    expect(getCivEmblem('romans')).toBe(UI_ICONS.emblemRomans);
-
-    for (const id of Object.keys(TEMPLATES)) {
-      const athenP = getEntityPortrait(id, 'athenians');
-      const romeP = getEntityPortrait(id, 'romans');
-      expect(athenP, `No portrait mapped for ${id}`).toBeTruthy();
-      expect(romeP, `No portrait mapped for ${id}`).toBeTruthy();
+    expect(ALL_CIV_IDS.length).toBe(14);
+    for (const civ of ALL_CIV_IDS) {
+      const emblem = getCivEmblem(civ);
+      expect(emblem, `No official emblem for ${civ}`).toBeTruthy();
+      expect(emblem.startsWith(`${ASSET_BASE}/ui/emblem_`)).toBe(true);
     }
+
+    // Verify authentic official 0 A.D. portraits for EVERY template across all 14 official civs
+    for (const id of Object.keys(TEMPLATES)) {
+      for (const civ of ALL_CIV_IDS) {
+        const portrait = getEntityPortrait(id, civ);
+        expect(portrait, `No portrait mapped for ${id} (${civ})`).toBeTruthy();
+      }
+    }
+    expect(getEntityPortrait('dock', 'athenians')).toBe(`${ASSET_BASE}/ui/dock_shipyard.png`);
+    expect(getEntityPortrait('dock', 'carthaginians')).toBe(`${ASSET_BASE}/ui/dock_cart.png`);
+    expect(getEntityPortrait('dock', 'romans')).toBe(`${ASSET_BASE}/ui/dock.png`);
+    expect(getEntityPortrait('stone_wall', 'athenians')).toBe(`${ASSET_BASE}/ui/stone_wall.png`);
+    expect(getEntityPortrait('stone_gate', 'athenians')).toBe(`${ASSET_BASE}/ui/stone_gate.png`);
+    expect(getEntityPortrait('gymnasium', 'athenians')).toBe(`${ASSET_BASE}/ui/gymnasium.png`);
+    expect(getEntityPortrait('kush_pyramid', 'kushites')).toBe(`${ASSET_BASE}/ui/kush_pyramid.png`);
+    expect(getEntityPortrait('maur_elephant', 'mauryas')).toBe(`${ASSET_BASE}/ui/maur_elephant.png`);
+    expect(getEntityPortrait('brit_chariot', 'britons')).toBe(`${ASSET_BASE}/ui/brit_chariot.png`);
+    expect(getEntityPortrait('han_ministry', 'han')).toBe(`${ASSET_BASE}/ui/han_ministry.png`);
+    expect(getEntityPortrait('warship_trireme', 'han')).toBe(`${ASSET_BASE}/ui/han_warship.png`);
+
     for (const p of Object.values(ENTITY_PORTRAITS)) {
       expect(p.startsWith(`${ASSET_BASE}/ui/`)).toBe(true);
     }
@@ -48,9 +67,14 @@ describe('0 A.D. Asset Catalog & Model Specs', () => {
     }
   });
 
-  it('maps Mediterranean terrain textures and audio assets', () => {
+  it('maps Mediterranean terrain textures, ruin stone textures, water normal maps, and audio assets', () => {
+    expect(TERRAIN_TEXTURES.waterNormalSea).toBe(`${ASSET_BASE}/terrain/water_normal_sea.png`);
+    expect(TERRAIN_TEXTURES.waterNormalRipple).toBe(`${ASSET_BASE}/terrain/water_normal_ripple.png`);
     for (const p of Object.values(TERRAIN_TEXTURES)) {
       expect(p.startsWith(`${ASSET_BASE}/terrain/`)).toBe(true);
+    }
+    for (const p of Object.values(RUIN_TEXTURES)) {
+      expect(p.startsWith(`${ASSET_BASE}/textures/`)).toBe(true);
     }
     for (const val of Object.values(AUDIO_ASSETS)) {
       const list: readonly string[] = typeof val === 'string' ? [val] : val;
@@ -61,16 +85,57 @@ describe('0 A.D. Asset Catalog & Model Specs', () => {
     }
   });
 
-  it('maps distinct 3D 0 A.D. COLLADA specs for every Athenian and Roman entity', () => {
+  it('maps distinct 3D 0 A.D. COLLADA specs for every civilization entity', () => {
     const files = new Set<string>();
-    for (const civ of ['athenians', 'romans'] as const) {
+    const custom3D = new Set([
+      'field',
+      'dock',
+      'stone_wall',
+      'stone_gate',
+      'stone_bridge',
+      'tunnel_portal',
+      'apartment_house',
+      'trader',
+      'ancient_ruin_pillar',
+      'sea_monster',
+      'sea_kraken',
+      'lake_nessie',
+      'merchant_ship',
+      'warship_trireme',
+      'fish_shoal',
+      'han_ministry',
+      'brit_kennel',
+      'gaul_tavern',
+      'iber_monument',
+      'kush_pyramid',
+      'mace_arsenal',
+      'maur_pillar',
+      'sele_colony',
+      'maur_champion',
+    ]);
+    for (const civ of ALL_CIV_IDS) {
       for (const id of Object.keys(TEMPLATES)) {
-        if (id === 'field') continue;
+        if (custom3D.has(id)) continue;
         const spec = getZeroADModelSpec(id, civ);
         expect(spec, `No 0 A.D. 3D spec for ${id} (${civ})`).not.toBeNull();
         collectPartFiles(spec!.parts, files);
       }
     }
+    // Eagle's hawk_flight.dae already rotates Body 180° around Z to face +Z; seagull_flight_01.dae needs rotateY = PI
+    expect(getZeroADModelSpec('wild_eagle', 'athenians')?.rotateY).toBeUndefined();
+    expect(getZeroADModelSpec('wild_seagull', 'athenians')?.rotateY).toBe(Math.PI);
+    // Chariots use official 0 A.D. 3D DAE specs
+    expect(getZeroADModelSpec('brit_chariot', 'britons')?.parts[0].mesh).toContain('celt_char_a.dae');
+    expect(getZeroADModelSpec('pers_chariot', 'persians')?.parts[0].mesh).toContain('pers_chariot_a.dae');
+    expect(getZeroADModelSpec('han_chariot', 'han')?.parts[0].mesh).toContain('han_chariot.dae');
+    // Different civs have distinct official 0 A.D. building & worker portraits and 3D models
+    expect(getEntityPortrait('female_citizen', 'han')).not.toBe(getEntityPortrait('female_citizen', 'britons'));
+    expect(getEntityPortrait('civic_center', 'han')).not.toBe(getEntityPortrait('civic_center', 'britons'));
+    expect(getZeroADModelSpec('house', 'han')?.parts[0].mesh).not.toBe(getZeroADModelSpec('house', 'persians')?.parts[0].mesh);
+    expect(getZeroADModelSpec('female_citizen', 'han')?.parts[0].texture).not.toBe(getZeroADModelSpec('female_citizen', 'persians')?.parts[0].texture);
+    // Gymnasium must not reuse temple geometry
+    const gymSpec = getZeroADModelSpec('gymnasium', 'athenians')!;
+    expect(gymSpec.parts.some((p) => p.mesh.includes('temple'))).toBe(false);
     expect(files.size).toBeGreaterThan(50);
     for (const f of files) {
       expect(f.startsWith(`${ASSET_BASE}/`)).toBe(true);

@@ -1,8 +1,9 @@
 import { AudioManager } from '../audio/AudioManager';
 import { TEMPLATES } from '../config/entities';
 import { t, translateBuildReason } from '../config/i18n';
-import { BuildingOrderMode, Entity } from '../config/types';
+import { BuildingOrderMode, Entity, TerraformMode } from '../config/types';
 import { SceneManager } from '../render/SceneManager';
+import { WATER_LEVEL } from '../sim/map/TerrainMap';
 import { World } from '../sim/World';
 
 export interface InputCallbacks {
@@ -16,6 +17,9 @@ export class InputController {
   readonly controlGroups = new Map<number, number[]>();
 
   placementTemplateId: string | null = null;
+  placementFacing = 0;
+  terraformMode: TerraformMode | null = null;
+  pendingDigSource: { tx: number; tz: number; x: number; y: number; z: number } | null = null;
   attackMoveMode = false;
   garrisonTargetMode = false;
   buildingOrderMode: BuildingOrderMode = 'capture';
@@ -24,6 +28,12 @@ export class InputController {
   private isDraggingBox = false;
   private dragStartX = 0;
   private dragStartY = 0;
+  private isDraggingWall = false;
+  private wallDragStartTile: { tx: number; tz: number } | null = null;
+  private wallDragSegments: Array<{ tx: number; tz: number; facing: number }> = [];
+  private isDraggingTunnel = false;
+  private tunnelDragStartTile: { tx: number; tz: number } | null = null;
+  private tunnelDragEndTile: { tx: number; tz: number } | null = null;
   private isRightDown = false;
   private rightStartX = 0;
   private rightStartY = 0;
@@ -56,6 +66,8 @@ export class InputController {
     this.selectedIds.clear();
     this.controlGroups.clear();
     this.placementTemplateId = null;
+    this.terraformMode = null;
+    this.pendingDigSource = null;
     this.attackMoveMode = false;
     this.garrisonTargetMode = false;
     this.attach();
@@ -63,12 +75,81 @@ export class InputController {
 
   setPlacementMode(templateId: string | null): void {
     this.placementTemplateId = templateId;
+    this.placementFacing = 0;
+    this.terraformMode = null;
+    this.pendingDigSource = null;
+    this.isDraggingWall = false;
+    this.wallDragStartTile = null;
+    this.wallDragSegments = [];
+    this.isDraggingTunnel = false;
+    this.tunnelDragStartTile = null;
+    this.tunnelDragEndTile = null;
     this.attackMoveMode = false;
     this.garrisonTargetMode = false;
+    this.sceneManager.updateWallLinePreview([]);
+    this.sceneManager.updateTunnelDragPreview(null, null, false);
+    this.sceneManager.updateTerraformPreview(0, 0, 0, null, false);
     if (!templateId) {
       this.sceneManager.updateGhostPreview(null, this.world.config.playerCiv, 0, 0, 0, false);
     }
     this.callbacks.onPlacementChanged(templateId);
+    if (templateId === 'tunnel_portal') {
+      this.callbacks.onStatusToast(t('toastTunnelDragHint'), 'info');
+    }
+  }
+
+  setTerraformMode(mode: TerraformMode | null): void {
+    if (this.placementTemplateId) {
+      this.setPlacementMode(null);
+    }
+    this.terraformMode = mode;
+    this.pendingDigSource = null;
+    this.attackMoveMode = false;
+    this.garrisonTargetMode = false;
+    if (!mode) {
+      this.sceneManager.updateTerraformPreview(0, 0, 0, null, false);
+    } else {
+      this.callbacks.onStatusToast(
+        mode === 'dig' ? t('toastDigMode') : mode === 'level' ? t('toastLevelMode') : t('toastRaiseMode'),
+        'info'
+      );
+    }
+    this.callbacks.onSelectionChanged();
+  }
+
+  /** Triggered from the top UI buttons: auto-selects available workers if none are currently selected */
+  activateTerraformFromUI(mode: TerraformMode): void {
+    if (this.terraformMode === mode) {
+      this.setTerraformMode(null);
+      return;
+    }
+    const selectedWorkers = Array.from(this.selectedIds).filter((id) => {
+      const e = this.world.entities.get(id);
+      if (!e || !e.alive || e.owner !== this.humanPlayerId || e.garrisonedIn !== null) return false;
+      const tpl = TEMPLATES[e.templateId];
+      return Boolean(tpl.gather && !tpl.isNaval);
+    });
+    if (selectedWorkers.length === 0) {
+      const idleWorkers: Entity[] = [];
+      const busyWorkers: Entity[] = [];
+      for (const e of this.world.entities.values()) {
+        if (!e.alive || e.owner !== this.humanPlayerId || e.garrisonedIn !== null) continue;
+        const tpl = TEMPLATES[e.templateId];
+        if (!tpl.gather || tpl.isNaval) continue;
+        if (e.order.type === 'idle') idleWorkers.push(e);
+        else busyWorkers.push(e);
+      }
+      const chosen = (idleWorkers.length > 0 ? idleWorkers : busyWorkers).slice(0, 3);
+      if (chosen.length === 0) {
+        this.audio.playError();
+        this.callbacks.onStatusToast(t('toastNeedWorkers'), 'warn');
+        return;
+      }
+      this.selectedIds.clear();
+      for (const w of chosen) this.selectedIds.add(w.id);
+      this.audio.playSelect(chosen[0].templateId);
+    }
+    this.setTerraformMode(mode);
   }
 
   selectIdleWorker(): void {
@@ -114,9 +195,35 @@ export class InputController {
     const onMouseDown = (e: MouseEvent) => {
       this.audio.unlock();
       if (e.button === 0) {
-        // Placement mode confirmation
+        // Placement mode confirmation (drag-line for walls/bridges, straight underground drag for tunnels!)
         if (this.placementTemplateId) {
+          if (this.placementTemplateId === 'tunnel_portal') {
+            const hit = this.sceneManager.raycastTerrain(e.clientX, e.clientY);
+            if (hit) {
+              const start = this.world.terrain.worldToTile(hit.x, hit.z);
+              this.isDraggingTunnel = true;
+              this.tunnelDragStartTile = start;
+              this.tunnelDragEndTile = start;
+              this.updateTunnelDrag(start.tx, start.tz);
+              return;
+            }
+          }
+          if (this.placementTemplateId === 'stone_wall' || this.placementTemplateId === 'stone_bridge') {
+            const hit = this.sceneManager.raycastTerrain(e.clientX, e.clientY);
+            if (hit) {
+              const start = this.world.terrain.worldToTile(hit.x, hit.z);
+              this.isDraggingWall = true;
+              this.wallDragStartTile = start;
+              this.updateWallDrag(start.tx, start.tz);
+              return;
+            }
+          }
           this.tryConfirmPlacement(e.clientX, e.clientY, e.shiftKey);
+          return;
+        }
+        // Worker terraforming mode (Dig / Raise terrain)
+        if (this.terraformMode) {
+          this.tryConfirmTerraform(e.clientX, e.clientY, e.shiftKey);
           return;
         }
         // Attack-move mode click
@@ -156,6 +263,27 @@ export class InputController {
     };
 
     const onMouseMove = (e: MouseEvent) => {
+      if (this.isDraggingTunnel && this.tunnelDragStartTile && this.placementTemplateId === 'tunnel_portal') {
+        const hit = this.sceneManager.raycastTerrain(e.clientX, e.clientY);
+        if (hit) {
+          const cur = this.world.terrain.worldToTile(hit.x, hit.z);
+          this.updateTunnelDrag(cur.tx, cur.tz);
+        }
+        return;
+      }
+      if (
+        this.isDraggingWall &&
+        this.wallDragStartTile &&
+        (this.placementTemplateId === 'stone_wall' || this.placementTemplateId === 'stone_bridge')
+      ) {
+        const hit = this.sceneManager.raycastTerrain(e.clientX, e.clientY);
+        if (hit) {
+          const cur = this.world.terrain.worldToTile(hit.x, hit.z);
+          this.updateWallDrag(cur.tx, cur.tz);
+        }
+        return;
+      }
+
       if (this.placementTemplateId) {
         const hit = this.sceneManager.raycastTerrain(e.clientX, e.clientY);
         if (hit) {
@@ -163,14 +291,26 @@ export class InputController {
           const center = this.world.terrain.tileToWorldCenter(tx, tz);
           const check = this.world.canPlaceBuilding(this.humanPlayerId, this.placementTemplateId, tx, tz);
           const y = this.world.terrain.getHeightAt(center.x, center.z);
+          const pTpl = TEMPLATES[this.placementTemplateId];
+          const facingY = pTpl?.isDock ? this.world.terrain.getCoastalDockInfo(tx, tz).waterAngle : this.placementFacing;
           this.sceneManager.updateGhostPreview(
             this.placementTemplateId,
             this.world.config.playerCiv,
             center.x,
             center.z,
             y,
-            check.ok
+            check.ok,
+            facingY
           );
+        }
+      } else if (this.terraformMode) {
+        const hit = this.sceneManager.raycastTerrain(e.clientX, e.clientY);
+        if (hit) {
+          const { tx, tz } = this.world.terrain.worldToTile(hit.x, hit.z);
+          const center = this.world.terrain.tileToWorldCenter(tx, tz);
+          const y = this.world.terrain.getHeightAt(center.x, center.z);
+          const valid = this.world.canTerraformTile(tx, tz);
+          this.sceneManager.updateTerraformPreview(center.x, y, center.z, this.terraformMode, valid, this.pendingDigSource);
         }
       }
 
@@ -198,10 +338,26 @@ export class InputController {
             this.setPlacementMode(null);
             return;
           }
+          if (this.terraformMode) {
+            this.setTerraformMode(null);
+            return;
+          }
           this.attackMoveMode = false;
           this.garrisonTargetMode = false;
           this.handleRightClick(e);
         }
+        return;
+      }
+
+      if (e.button === 0 && this.isDraggingTunnel) {
+        this.isDraggingTunnel = false;
+        this.commitTunnelDrag(e.shiftKey);
+        return;
+      }
+
+      if (e.button === 0 && this.isDraggingWall) {
+        this.isDraggingWall = false;
+        this.commitWallDrag(e.shiftKey);
         return;
       }
 
@@ -231,6 +387,8 @@ export class InputController {
       if (e.code === 'Escape') {
         if (this.placementTemplateId) {
           this.setPlacementMode(null);
+        } else if (this.terraformMode) {
+          this.setTerraformMode(null);
         } else {
           this.attackMoveMode = false;
           this.garrisonTargetMode = false;
@@ -256,10 +414,42 @@ export class InputController {
         return;
       }
 
+      if (e.code === 'KeyR' && this.placementTemplateId) {
+        const allow45 =
+          this.placementTemplateId === 'stone_bridge' ||
+          this.placementTemplateId === 'stone_wall' ||
+          this.placementTemplateId === 'stone_gate';
+        const step = allow45 ? Math.PI * 0.25 : Math.PI * 0.5;
+        this.placementFacing = (this.placementFacing + step) % (Math.PI * 2);
+        return;
+      }
+
       if (e.code === 'KeyG' && this.selectedIds.size > 0) {
         this.garrisonTargetMode = true;
         this.callbacks.onStatusToast(t('toastGarrison'), 'info');
         return;
+      }
+
+      if (e.code === 'KeyT' || e.code === 'KeyY' || e.code === 'KeyU') {
+        this.activateTerraformFromUI(e.code === 'KeyT' ? 'dig' : e.code === 'KeyU' ? 'level' : 'raise');
+        return;
+      }
+
+      if (e.code === 'KeyX' && this.selectedIds.size > 0) {
+        const ownedBuildings = Array.from(this.selectedIds).filter((id) => {
+          const ent = this.world.entities.get(id);
+          return ent && ent.alive && ent.owner === this.humanPlayerId && TEMPLATES[ent.templateId].kind === 'building';
+        });
+        if (ownedBuildings.length > 0) {
+          this.world.enqueueCommand({
+            type: 'demolish',
+            playerId: this.humanPlayerId,
+            entityIds: ownedBuildings,
+          });
+          this.selectedIds.clear();
+          this.callbacks.onSelectionChanged();
+          return;
+        }
       }
 
       if (e.code === 'KeyC') {
@@ -354,6 +544,8 @@ export class InputController {
       return e && e.alive && e.owner === this.humanPlayerId && TEMPLATES[e.templateId].canBuild?.includes(this.placementTemplateId!);
     });
 
+    const pTpl = TEMPLATES[this.placementTemplateId];
+    const facing = pTpl?.isDock ? undefined : this.placementFacing;
     this.world.enqueueCommand({
       type: 'build',
       playerId: this.humanPlayerId,
@@ -361,9 +553,256 @@ export class InputController {
       templateId: this.placementTemplateId,
       tileX: tx,
       tileZ: tz,
+      facing,
     });
     this.audio.playOrder();
     this.sceneManager.spawnClickPing(hit.x, hit.z, hit.y, 0x22c55e);
+
+    if (!keepPlacing) {
+      this.setPlacementMode(null);
+    }
+  }
+
+  private tryConfirmTerraform(clientX: number, clientY: number, keepTerraforming: boolean): void {
+    if (!this.terraformMode) return;
+    const hit = this.sceneManager.raycastTerrain(clientX, clientY);
+    if (!hit) return;
+
+    const { tx, tz } = this.world.terrain.worldToTile(hit.x, hit.z);
+    if (!this.world.canTerraformTile(tx, tz)) {
+      this.audio.playError();
+      this.callbacks.onStatusToast(t('toastCannotTerraform'), 'warn');
+      return;
+    }
+
+    const workers = Array.from(this.selectedIds).filter((id) => {
+      const e = this.world.entities.get(id);
+      if (!e || !e.alive || e.owner !== this.humanPlayerId) return false;
+      const tpl = TEMPLATES[e.templateId];
+      return Boolean(tpl.gather && !tpl.isNaval);
+    });
+    if (workers.length === 0) {
+      this.setTerraformMode(null);
+      return;
+    }
+
+    // 2-step mass-conserving Dig & Haul: Step 1 selects where to DIG, Step 2 selects where to DUMP the soil!
+    if (this.terraformMode === 'dig' && !this.pendingDigSource) {
+      const center = this.world.terrain.tileToWorldCenter(tx, tz);
+      this.pendingDigSource = { tx, tz, x: center.x, y: hit.y, z: center.z };
+      this.audio.playOrder();
+      this.sceneManager.spawnClickPing(center.x, center.z, hit.y, 0xf59e0b);
+      this.callbacks.onStatusToast(t('toastDigStep2'), 'info');
+      this.callbacks.onSelectionChanged();
+      return;
+    }
+
+    const srcTx = this.terraformMode === 'dig' && this.pendingDigSource ? this.pendingDigSource.tx : tx;
+    const srcTz = this.terraformMode === 'dig' && this.pendingDigSource ? this.pendingDigSource.tz : tz;
+    const destTx = this.terraformMode === 'dig' ? tx : undefined;
+    const destTz = this.terraformMode === 'dig' ? tz : undefined;
+
+    this.world.enqueueCommand({
+      type: 'terraform',
+      playerId: this.humanPlayerId,
+      entityIds: workers,
+      tileX: srcTx,
+      tileZ: srcTz,
+      destTileX: destTx,
+      destTileZ: destTz,
+      mode: this.terraformMode,
+      queued: keepTerraforming,
+    });
+    this.audio.playOrder();
+    this.sceneManager.spawnClickPing(
+      hit.x,
+      hit.z,
+      hit.y,
+      this.terraformMode === 'dig' ? 0x22c55e : 0x22c55e
+    );
+
+    this.pendingDigSource = null;
+    if (!keepTerraforming) {
+      this.setTerraformMode(null);
+    } else {
+      this.callbacks.onSelectionChanged();
+    }
+  }
+
+  private updateWallDrag(endTx: number, endTz: number): void {
+    if (!this.wallDragStartTile) return;
+    const { tx: sx, tz: sz } = this.wallDragStartTile;
+    const dx = endTx - sx;
+    const dz = endTz - sz;
+    const segs: Array<{ tx: number; tz: number; facing: number }> = [];
+
+    const dragTplId = this.placementTemplateId === 'stone_bridge' ? 'stone_bridge' : 'stone_wall';
+    const isBridge = dragTplId === 'stone_bridge';
+
+    // BOTH Stone Bridges AND Stone Walls support arbitrary-angle straight lines (diagonal, oblique, or orthogonal!)
+    const maxSegs = 32;
+    const adx = Math.abs(dx);
+    const adz = Math.abs(dz);
+    const stepX = dx >= 0 ? 1 : -1;
+    const stepZ = dz >= 0 ? 1 : -1;
+    // Align local +X span along world direction (dx, dz): in Three.js Y-up, +X rotated by theta -> (cos theta, 0, -sin theta)
+    const spanFacing = adx === 0 && adz === 0 ? this.placementFacing : Math.atan2(-dz, dx);
+    let cx = sx;
+    let cz = sz;
+    let err = adx - adz;
+    while (segs.length < maxSegs) {
+      segs.push({ tx: cx, tz: cz, facing: spanFacing });
+      if (cx === endTx && cz === endTz) break;
+      const e2 = err * 2;
+      if (e2 > -adz) {
+        err -= adz;
+        cx += stepX;
+      }
+      if (e2 < adx) {
+        err += adx;
+        cz += stepZ;
+      }
+    }
+
+    if (segs.length === 1) {
+      segs[0].facing = this.placementFacing;
+    }
+
+    this.wallDragSegments = segs;
+    this.sceneManager.updateGhostPreview(null, this.world.config.playerCiv, 0, 0, 0, false);
+    this.sceneManager.updateWallLinePreview(
+      segs.map((s) => {
+        const c = this.world.terrain.tileToWorldCenter(s.tx, s.tz);
+        const y = this.world.terrain.getHeightAt(c.x, c.z);
+        const check = this.world.canPlaceBuilding(this.humanPlayerId, dragTplId, s.tx, s.tz);
+        const bridgeSpanOk = isBridge && !this.world.terrain.isTileDryLand(s.tx, s.tz);
+        return { x: c.x, y, z: c.z, facing: s.facing, valid: check.ok || bridgeSpanOk };
+      }),
+      isBridge
+    );
+  }
+
+  private commitWallDrag(keepPlacing: boolean): void {
+    const dragTplId = this.placementTemplateId === 'stone_bridge' ? 'stone_bridge' : 'stone_wall';
+    const isBridge = dragTplId === 'stone_bridge';
+    const segs = this.wallDragSegments.slice();
+    this.wallDragStartTile = null;
+    this.wallDragSegments = [];
+    this.sceneManager.updateWallLinePreview([]);
+    if (segs.length === 0) return;
+
+    const builders = Array.from(this.selectedIds).filter((id) => {
+      const e = this.world.entities.get(id);
+      return e && e.alive && e.owner === this.humanPlayerId && TEMPLATES[e.templateId].canBuild?.includes(dragTplId);
+    });
+
+    const p = this.world.players.get(this.humanPlayerId);
+    const segCost = TEMPLATES[dragTplId].cost!;
+    let remWood = p?.resources.wood ?? 0;
+    let remStone = p?.resources.stone ?? 0;
+    let remMetal = p?.resources.metal ?? 0;
+    let placed = 0;
+    let lastReason: string | undefined;
+
+    for (const seg of segs) {
+      if (remWood < segCost.wood || remStone < segCost.stone || remMetal < segCost.metal) {
+        lastReason = 'Not enough resources';
+        break;
+      }
+      const check = this.world.canPlaceBuilding(this.humanPlayerId, dragTplId, seg.tx, seg.tz);
+      const chainOk = isBridge && placed > 0 && !this.world.terrain.isTileDryLand(seg.tx, seg.tz);
+      if (!check.ok && !chainOk) {
+        lastReason = check.reason;
+        continue;
+      }
+      remWood -= segCost.wood;
+      remStone -= segCost.stone;
+      remMetal -= segCost.metal;
+      this.world.enqueueCommand({
+        type: 'build',
+        playerId: this.humanPlayerId,
+        entityIds: builders,
+        templateId: dragTplId,
+        tileX: seg.tx,
+        tileZ: seg.tz,
+        facing: seg.facing,
+      });
+      const c = this.world.terrain.tileToWorldCenter(seg.tx, seg.tz);
+      this.sceneManager.spawnClickPing(c.x, c.z, this.world.terrain.getHeightAt(c.x, c.z), 0x22c55e);
+      placed++;
+    }
+
+    if (placed > 0) {
+      this.audio.playOrder();
+    } else if (lastReason) {
+      this.audio.playError();
+      this.callbacks.onStatusToast(translateBuildReason(lastReason), 'warn');
+    }
+
+    if (!keepPlacing) {
+      this.setPlacementMode(null);
+    }
+  }
+
+  private updateTunnelDrag(endTx: number, endTz: number): void {
+    if (!this.tunnelDragStartTile) return;
+    this.tunnelDragEndTile = { tx: endTx, tz: endTz };
+    const s = this.tunnelDragStartTile;
+    const sc = this.world.terrain.tileToWorldCenter(s.tx, s.tz);
+    const ec = this.world.terrain.tileToWorldCenter(endTx, endTz);
+    const sy = this.world.terrain.getHeightAt(sc.x, sc.z);
+    const ey = this.world.terrain.getHeightAt(ec.x, ec.z);
+    const len = Math.hypot(endTx - s.tx, endTz - s.tz);
+    const valid =
+      len >= 4 &&
+      this.world.canPlaceBuilding(this.humanPlayerId, 'tunnel_portal', s.tx, s.tz).ok &&
+      this.world.canPlaceBuilding(this.humanPlayerId, 'tunnel_portal', endTx, endTz).ok;
+    this.sceneManager.updateGhostPreview(null, this.world.config.playerCiv, 0, 0, 0, false);
+    this.sceneManager.updateTunnelDragPreview({ x: sc.x, y: sy, z: sc.z }, { x: ec.x, y: ey, z: ec.z }, valid);
+  }
+
+  private commitTunnelDrag(keepPlacing: boolean): void {
+    const start = this.tunnelDragStartTile;
+    const end = this.tunnelDragEndTile;
+    this.tunnelDragStartTile = null;
+    this.tunnelDragEndTile = null;
+    this.sceneManager.updateTunnelDragPreview(null, null, false);
+    if (!start || !end) return;
+
+    const len = Math.round(Math.hypot(end.tx - start.tx, end.tz - start.tz));
+    if (len < 4) {
+      this.audio.playError();
+      this.callbacks.onStatusToast(t('toastTunnelTooShort'), 'warn');
+      return;
+    }
+
+    const checkA = this.world.canPlaceBuilding(this.humanPlayerId, 'tunnel_portal', start.tx, start.tz);
+    const checkB = this.world.canPlaceBuilding(this.humanPlayerId, 'tunnel_portal', end.tx, end.tz);
+    if (!checkA.ok || !checkB.ok) {
+      this.audio.playError();
+      this.callbacks.onStatusToast(translateBuildReason(checkA.reason ?? checkB.reason), 'warn');
+      return;
+    }
+
+    const builders = Array.from(this.selectedIds).filter((id) => {
+      const e = this.world.entities.get(id);
+      return e && e.alive && e.owner === this.humanPlayerId && TEMPLATES[e.templateId].canBuild?.includes('tunnel_portal');
+    });
+
+    this.world.enqueueCommand({
+      type: 'build_tunnel',
+      playerId: this.humanPlayerId,
+      entityIds: builders,
+      startTileX: start.tx,
+      startTileZ: start.tz,
+      endTileX: end.tx,
+      endTileZ: end.tz,
+    });
+    this.audio.playOrder();
+    const sc = this.world.terrain.tileToWorldCenter(start.tx, start.tz);
+    const ec = this.world.terrain.tileToWorldCenter(end.tx, end.tz);
+    this.sceneManager.spawnClickPing(sc.x, sc.z, this.world.terrain.getHeightAt(sc.x, sc.z), 0x38bdf8);
+    this.sceneManager.spawnClickPing(ec.x, ec.z, this.world.terrain.getHeightAt(ec.x, ec.z), 0x38bdf8);
 
     if (!keepPlacing) {
       this.setPlacementMode(null);
@@ -428,7 +867,8 @@ export class InputController {
     for (const e of this.world.entities.values()) {
       if (!e.alive || e.owner !== this.humanPlayerId || e.garrisonedIn !== null) continue;
       const tpl = TEMPLATES[e.templateId];
-      const y = this.world.terrain.getHeightAt(e.x, e.z) + (tpl.kind === 'building' ? 1.5 : 0.9);
+      const baseY = tpl.isNaval || tpl.isDock ? WATER_LEVEL : this.world.terrain.getHeightAt(e.x, e.z);
+      const y = baseY + (tpl.kind === 'building' ? 1.5 : 0.9);
       const proj = this.sceneManager.projectToScreen(e.x, y, e.z);
       if (!proj.inFront) continue;
       if (proj.sx >= minX && proj.sx <= maxX && proj.sy >= minY && proj.sy <= maxY) {
@@ -517,8 +957,54 @@ export class InputController {
       const pTpl = TEMPLATES[picked.templateId];
       const py = this.world.terrain.getHeightAt(picked.x, picked.z);
 
-      // Enemy -> Attack or Capture
+      // Allied or Friendly Market / Tunnel right-click support (0 A.D. Alliance trade & passage!)
+      if (picked.owner !== 0 && this.world.isAlliedOrOwn(this.humanPlayerId, picked.owner) && pTpl.kind === 'building') {
+        if (pTpl.isMarket && !picked.isFoundation) {
+          const traderIds = units.filter((u) => TEMPLATES[u.templateId]?.isTrader).map((u) => u.id);
+          if (traderIds.length > 0) {
+            const partner = this.world.findBestPartnerMarket(this.humanPlayerId, picked.id);
+            if (!partner) {
+              this.audio.playError();
+              this.callbacks.onStatusToast(t('toastTradeNeedTwoMarkets'), 'warn');
+              return;
+            }
+            this.world.enqueueCommand({
+              type: 'trade',
+              playerId: this.humanPlayerId,
+              entityIds: traderIds,
+              targetMarketId: picked.id,
+              homeMarketId: partner.id,
+            });
+            this.audio.playOrder();
+            this.sceneManager.spawnClickPing(picked.x, picked.z, py, 0xfacc15);
+            this.callbacks.onStatusToast(t('toastTradeRouteSet'), 'good');
+            return;
+          }
+        }
+        if (pTpl.isTunnel && !picked.isFoundation && picked.linkedTunnelId) {
+          this.world.enqueueCommand({
+            type: 'use_tunnel',
+            playerId: this.humanPlayerId,
+            entityIds: unitIds,
+            portalId: picked.id,
+          });
+          this.audio.playOrder();
+          this.sceneManager.spawnClickPing(picked.x, picked.z, py, 0x38bdf8);
+          this.callbacks.onStatusToast(t('toastTunnelTransit'), 'info');
+          return;
+        }
+      }
+
+      // Enemy -> Attack or Capture (blocked for Allies/Neutrals & in Peaceful Mode!)
       if (picked.owner !== 0 && picked.owner !== this.humanPlayerId) {
+        if (!this.world.areHostile(this.humanPlayerId, picked.owner)) {
+          this.audio.playError();
+          this.callbacks.onStatusToast(
+            this.world.areAllies(this.humanPlayerId, picked.owner) ? t('toastAllyNoAttack') : t('toastPeacefulNoAttack'),
+            'info'
+          );
+          return;
+        }
         const mode: BuildingOrderMode =
           pTpl.kind === 'building' ? (e.altKey ? 'attack' : this.buildingOrderMode) : 'attack';
         this.world.enqueueCommand({
@@ -546,6 +1032,40 @@ export class InputController {
           this.sceneManager.spawnClickPing(picked.x, picked.z, py, 0x22c55e);
           return;
         }
+        if (pTpl.isTunnel && picked.linkedTunnelId) {
+          this.world.enqueueCommand({
+            type: 'use_tunnel',
+            playerId: this.humanPlayerId,
+            entityIds: unitIds,
+            portalId: picked.id,
+          });
+          this.audio.playOrder();
+          this.sceneManager.spawnClickPing(picked.x, picked.z, py, 0x38bdf8);
+          this.callbacks.onStatusToast(t('toastTunnelTransit'), 'info');
+          return;
+        }
+        if (pTpl.isMarket) {
+          const traderIds = units.filter((u) => TEMPLATES[u.templateId]?.isTrader).map((u) => u.id);
+          if (traderIds.length > 0) {
+            const partner = this.world.findBestPartnerMarket(this.humanPlayerId, picked.id);
+            if (!partner) {
+              this.audio.playError();
+              this.callbacks.onStatusToast(t('toastTradeNeedTwoMarkets'), 'warn');
+              return;
+            }
+            this.world.enqueueCommand({
+              type: 'trade',
+              playerId: this.humanPlayerId,
+              entityIds: traderIds,
+              targetMarketId: picked.id,
+              homeMarketId: partner.id,
+            });
+            this.audio.playOrder();
+            this.sceneManager.spawnClickPing(picked.x, picked.z, py, 0xfacc15);
+            this.callbacks.onStatusToast(t('toastTradeRouteSet'), 'good');
+            return;
+          }
+        }
         if (pTpl.isFarmField) {
           this.world.enqueueCommand({
             type: 'gather',
@@ -570,6 +1090,55 @@ export class InputController {
         }
       }
 
+      // Friendly worker currently digging/terraforming -> Right-click to join & accelerate the SAME job!
+      if (picked.owner === this.humanPlayerId && picked.order.type === 'terraform') {
+        const landWorkers = units
+          .filter((u) => {
+            const ut = TEMPLATES[u.templateId];
+            return Boolean(ut.gather && !ut.isNaval);
+          })
+          .map((u) => u.id);
+        if (landWorkers.length > 0) {
+          const ord = picked.order;
+          const cmdTileX = ord.mode === 'raise' ? ord.destTileX : ord.tileX;
+          const cmdTileZ = ord.mode === 'raise' ? ord.destTileZ : ord.tileZ;
+          const cmdDestX = ord.mode === 'raise' ? ord.tileX : ord.destTileX;
+          const cmdDestZ = ord.mode === 'raise' ? ord.tileZ : ord.destTileZ;
+          this.world.enqueueCommand({
+            type: 'terraform',
+            playerId: this.humanPlayerId,
+            entityIds: landWorkers,
+            tileX: cmdTileX,
+            tileZ: cmdTileZ,
+            destTileX: cmdDestX,
+            destTileZ: cmdDestZ,
+            mode: ord.mode,
+            queued: e.shiftKey,
+          });
+          this.audio.playOrder();
+          this.sceneManager.spawnClickPing(picked.x, picked.z, py, 0xf59e0b);
+          this.callbacks.onStatusToast(t('toastAssistDig'), 'info');
+          return;
+        }
+      }
+
+      // Live wild predator or sea monster -> Attack with combat units/warships (or gather once slain!)
+      if (picked.owner === 0 && pTpl.isPredator && picked.hp > 0) {
+        const combatIds = units.filter((u) => Boolean(TEMPLATES[u.templateId].attack)).map((u) => u.id);
+        if (combatIds.length > 0) {
+          this.world.enqueueCommand({
+            type: 'attack',
+            playerId: this.humanPlayerId,
+            entityIds: combatIds,
+            targetId: picked.id,
+            mode: 'attack',
+          });
+          this.audio.playOrder();
+          this.sceneManager.spawnClickPing(picked.x, picked.z, py, 0xef4444);
+          return;
+        }
+      }
+
       // Natural resource -> Gather
       if (pTpl.resourceType && picked.resourceRemaining > 0) {
         this.world.enqueueCommand({
@@ -584,8 +1153,40 @@ export class InputController {
       }
     }
 
-    // Case 3: Ground click -> Move
+    // Case 3: Ground click -> If workers right-click an active excavation/fill site, assist it! Otherwise Move.
     if (terrainHit) {
+      const landWorkers = units
+        .filter((u) => {
+          const ut = TEMPLATES[u.templateId];
+          return Boolean(ut.gather && !ut.isNaval);
+        })
+        .map((u) => u.id);
+      if (landWorkers.length > 0 && !e.altKey) {
+        const hitTile = this.world.terrain.worldToTile(terrainHit.x, terrainHit.z);
+        const job = this.world.findActiveTerraformJobAt(this.humanPlayerId, hitTile.tx, hitTile.tz);
+        if (job) {
+          const cmdTileX = job.mode === 'raise' ? job.destTileX : job.tileX;
+          const cmdTileZ = job.mode === 'raise' ? job.destTileZ : job.tileZ;
+          const cmdDestX = job.mode === 'raise' ? job.tileX : job.destTileX;
+          const cmdDestZ = job.mode === 'raise' ? job.tileZ : job.destTileZ;
+          this.world.enqueueCommand({
+            type: 'terraform',
+            playerId: this.humanPlayerId,
+            entityIds: landWorkers,
+            tileX: cmdTileX,
+            tileZ: cmdTileZ,
+            destTileX: cmdDestX,
+            destTileZ: cmdDestZ,
+            mode: job.mode,
+            queued: e.shiftKey,
+          });
+          this.audio.playOrder();
+          const c = this.world.terrain.tileToWorldCenter(cmdTileX, cmdTileZ);
+          this.sceneManager.spawnClickPing(c.x, c.z, this.world.terrain.getHeightAt(c.x, c.z), 0xf59e0b);
+          this.callbacks.onStatusToast(t('toastAssistDig'), 'info');
+          return;
+        }
+      }
       this.issueMove(terrainHit.x, terrainHit.z, e.shiftKey, false);
     }
   }
@@ -624,7 +1225,8 @@ export class InputController {
         if (tpl.kind !== 'unit' && !this.world.fog.isExploredBy(this.humanPlayerId, e.x, e.z)) continue;
       }
 
-      const groundY = this.world.terrain.getHeightAt(e.x, e.z);
+      const groundY =
+        tpl.isNaval || tpl.isDock || tpl.isAquatic ? WATER_LEVEL : this.world.terrain.getHeightAt(e.x, e.z);
 
       // Buildings (Civic Center, Fortress, Wonder, Barracks, Temple, etc.):
       // Project full 3D bounding box to exact zoom-accurate screen rectangle AND test 3D terrain footprint!

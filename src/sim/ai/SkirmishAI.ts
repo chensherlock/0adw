@@ -69,9 +69,11 @@ export class SkirmishAI {
 
     if (!cc) return;
 
-    const women = myUnits.filter((u) => TEMPLATES[u.templateId].isWoman && u.garrisonedIn === null);
+    const women = myUnits.filter(
+      (u) => (TEMPLATES[u.templateId].isWoman || u.templateId === 'male_citizen') && u.garrisonedIn === null
+    );
     const soldiers = myUnits.filter(
-      (u) => !TEMPLATES[u.templateId].isWoman && u.garrisonedIn === null
+      (u) => !TEMPLATES[u.templateId].isWoman && u.templateId !== 'male_citizen' && !TEMPLATES[u.templateId].isTrader && u.garrisonedIn === null
     );
     const idleGatherers = myUnits.filter(
       (u) => u.order.type === 'idle' && u.garrisonedIn === null && TEMPLATES[u.templateId].gather
@@ -103,10 +105,11 @@ export class SkirmishAI {
       world.enqueueCommand({ type: 'ungarrison', playerId: this.playerId, buildingId: cc.id });
     }
 
-    // 2. Finish any incomplete foundations first
+    // 2. Finish any incomplete foundations first (only workers build!)
     const foundation = myBuildings.find((b) => b.isFoundation);
     if (foundation) {
-      const builders = idleGatherers.slice(0, 3);
+      const idleWorkers = women.filter((w) => w.order.type === 'idle');
+      const builders = (idleWorkers.length > 0 ? idleWorkers : women).slice(0, 3);
       if (builders.length > 0) {
         world.enqueueCommand({
           type: 'repair',
@@ -117,14 +120,15 @@ export class SkirmishAI {
       }
     }
 
-    // 3. Build Houses proactively before hitting pop cap
+    // 3. Build Houses proactively before hitting pop cap (workers build ALL buildings!)
     if (!pendingHouse && player.popCap - player.popUsed <= 3 && player.popCap < this.params.maxPopTarget) {
-      this.tryBuildNear(world, cc, 'house', idleGatherers.length > 0 ? idleGatherers : myUnits.slice(0, 2));
+      const idleWorkers = women.filter((w) => w.order.type === 'idle');
+      this.tryBuildNear(world, cc, 'house', idleWorkers.length > 0 ? idleWorkers : women.slice(0, 2));
     }
 
-    // 4. Economic infrastructure: Barracks, Farmstead + Fields, Tower, Fortress
+    // 4. Economic & Military infrastructure (all constructed by Workers, never by Soldiers!)
     if (!barracks && !myBuildings.some((b) => b.templateId === 'barracks') && player.resources.wood >= 160 && player.resources.stone >= 100) {
-      this.tryBuildNear(world, cc, 'barracks', soldiers.slice(0, 2), 10, 16);
+      this.tryBuildNear(world, cc, 'barracks', women.slice(0, 2), 10, 16);
     }
 
     if (!farmstead && player.resources.wood >= 140 && world.time > 25) {
@@ -136,19 +140,37 @@ export class SkirmishAI {
     }
 
     if (!storehouse && player.resources.wood >= 150 && world.time > 45) {
-      this.tryBuildNear(world, cc, 'storehouse', soldiers.slice(0, 1), 10, 15);
+      this.tryBuildNear(world, cc, 'storehouse', women.slice(0, 1), 10, 15);
     }
 
     if (towerCount < 2 && barracks && player.resources.stone >= 130 && player.resources.wood >= 100 && world.time > 55) {
-      const dirX = cc.tileX < 64 ? 1 : -1;
-      const dirZ = cc.tileZ < 64 ? 1 : -1;
-      this.tryBuildNearPoint(world, cc.tileX + dirX * 11, cc.tileZ + dirZ * 11, 'defense_tower', soldiers.slice(0, 2));
+      const dirX = cc.tileX < world.terrain.width * 0.5 ? 1 : -1;
+      const dirZ = cc.tileZ < world.terrain.height * 0.5 ? 1 : -1;
+      this.tryBuildNearPoint(world, cc.tileX + dirX * 11, cc.tileZ + dirZ * 11, 'defense_tower', women.slice(0, 2));
     }
 
     if (player.phase >= 2 && fortressCount < 1 && player.resources.stone >= 450 && player.resources.wood >= 200 && player.resources.metal >= 150) {
-      const dirX = cc.tileX < 64 ? 1 : -1;
-      const dirZ = cc.tileZ < 64 ? 1 : -1;
-      this.tryBuildNearPoint(world, cc.tileX + dirX * 13, cc.tileZ + dirZ * 13, 'fortress', soldiers.slice(0, 3));
+      const dirX = cc.tileX < world.terrain.width * 0.5 ? 1 : -1;
+      const dirZ = cc.tileZ < world.terrain.height * 0.5 ? 1 : -1;
+      this.tryBuildNearPoint(world, cc.tileX + dirX * 13, cc.tileZ + dirZ * 13, 'fortress', women.slice(0, 3));
+    }
+
+    // 4b. Construct Civilization-Unique Building (Gymnasium / Army Camp / Syssition / Apadana)
+    const uniqueBId = civ.uniqueBuilding;
+    const uniqueBTpl = TEMPLATES[uniqueBId];
+    const hasUniqueB = myBuildings.some((b) => b.templateId === uniqueBId);
+    if (
+      !hasUniqueB &&
+      uniqueBTpl?.cost &&
+      world.time > 65 &&
+      world.canAfford(player.resources, uniqueBTpl.cost)
+    ) {
+      this.tryBuildNear(world, cc, uniqueBId, women.slice(0, 2), 9, 16);
+    }
+
+    // 4c. Trigger Civilization Active Skill when defending, attacking, or scaling economy
+    if (player.skillCooldown <= 0 && (threat || world.time > 75)) {
+      world.enqueueCommand({ type: 'activate_skill', playerId: this.playerId });
     }
 
     // 5. Assign idle gatherers across balanced 0 A.D. resource ratios
@@ -179,9 +201,23 @@ export class SkirmishAI {
       }
     }
 
-    // 6. Research Town Phase & Upgrades
+    // 6. Research City Phases (Town -> City -> Empire) & Upgrades
     if (cc.queue.length === 0 && player.phase === 1 && world.canAfford(player.resources, TECHS.phase_town.cost)) {
       world.enqueueCommand({ type: 'research', playerId: this.playerId, buildingId: cc.id, techId: 'phase_town' });
+    } else if (
+      cc.queue.length === 0 &&
+      player.phase === 2 &&
+      !player.researchingTechs.has('phase_city') &&
+      world.canAfford(player.resources, TECHS.phase_city.cost)
+    ) {
+      world.enqueueCommand({ type: 'research', playerId: this.playerId, buildingId: cc.id, techId: 'phase_city' });
+    } else if (
+      cc.queue.length === 0 &&
+      player.phase === 3 &&
+      !player.researchingTechs.has('phase_empire') &&
+      world.canAfford(player.resources, TECHS.phase_empire.cost)
+    ) {
+      world.enqueueCommand({ type: 'research', playerId: this.playerId, buildingId: cc.id, techId: 'phase_empire' });
     } else if (
       cc.queue.length === 0 &&
       !player.researchedTechs.has('tech_gather_tools') &&
@@ -232,7 +268,35 @@ export class SkirmishAI {
       world.enqueueCommand({ type: 'train', playerId: this.playerId, buildingId: fortress.id, templateId: civ.units.champion });
     }
 
-    // 8. Launch Military Attack Waves
+    const uniqueBuilding = myBuildings.find((b) => b.templateId === civ.uniqueBuilding && !b.isFoundation);
+    if (uniqueBuilding && uniqueBuilding.queue.length === 0) {
+      let queuedTech = false;
+      for (const tid of civ.uniqueTechs) {
+        const tech = TECHS[tid];
+        if (
+          tech &&
+          tech.phaseRequired <= player.phase &&
+          !player.researchedTechs.has(tid) &&
+          !player.researchingTechs.has(tid) &&
+          world.canAfford(player.resources, tech.cost)
+        ) {
+          world.enqueueCommand({ type: 'research', playerId: this.playerId, buildingId: uniqueBuilding.id, techId: tid });
+          queuedTech = true;
+          break;
+        }
+      }
+      if (!queuedTech && totalPop < Math.min(player.popCap - 1, this.params.maxPopTarget)) {
+        world.enqueueCommand({
+          type: 'train',
+          playerId: this.playerId,
+          buildingId: uniqueBuilding.id,
+          templateId: civ.units.special,
+        });
+      }
+    }
+
+    // 8. Launch Military Attack Waves (disabled in Peaceful Mode so civilizations coexist!)
+    if (world.isPeaceful()) return;
     const waveSize = Math.min(20, this.params.attackWaveBase + this.waveCount * this.params.attackWaveStep);
     const availableFighters = soldiers.filter((s) => s.order.type !== 'attack' && s.order.type !== 'build');
     if (!threat && availableFighters.length >= waveSize && world.time - this.lastAttackTime > 32) {
@@ -253,7 +317,7 @@ export class SkirmishAI {
     }
   }
 
-  private pickNeededResource(counts: Record<ResourceType, number>, isWoman: boolean, phase: 1 | 2): ResourceType {
+  private pickNeededResource(counts: Record<ResourceType, number>, isWoman: boolean, phase: 1 | 2 | 3 | 4): ResourceType {
     if (isWoman) {
       return counts.food <= counts.wood + 2 ? 'food' : 'wood';
     }
@@ -337,6 +401,7 @@ export class SkirmishAI {
     let bestScore = Infinity;
     for (const e of world.entities.values()) {
       if (!e.alive || e.owner === 0 || e.owner === this.playerId || e.garrisonedIn !== null) continue;
+      if (!world.areHostile(this.playerId, e.owner)) continue;
       const tpl = TEMPLATES[e.templateId];
       const d = Math.hypot(e.x - fromX, e.z - fromZ);
       let bias = 0;

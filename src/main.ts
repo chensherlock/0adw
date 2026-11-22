@@ -1,13 +1,26 @@
 import './style.css';
 import { AudioManager } from './audio/AudioManager';
-import { getCivName, getMapLabel, getTechText, getTemplateText, t, toggleLanguage } from './config/i18n';
-import { CivId, Difficulty, MapType, SimEvent } from './config/types';
+import { TEMPLATES } from './config/entities';
+import {
+  formatLocalizedCost,
+  getCivName,
+  getCivSkillText,
+  getMapLabel,
+  getResourceName,
+  getTechText,
+  getTemplateText,
+  t,
+  toggleLanguage,
+} from './config/i18n';
+import { CheatAction, SimEvent } from './config/types';
 import { InputController } from './input/InputController';
 import { SceneManager } from './render/SceneManager';
 import { SkirmishAI } from './sim/ai/SkirmishAI';
-import { SIM_DT, World } from './sim/World';
+import { MatchConfig, SerializedWorldState, SIM_DT, World } from './sim/World';
 import { HUDManager } from './ui/HUDManager';
 import { Minimap } from './ui/Minimap';
+
+const SAVE_STORAGE_KEY = 'web0ad_save_slot_1';
 
 class Web0ADApp {
   private readonly viewportEl = document.getElementById('viewport')!;
@@ -16,14 +29,14 @@ class Web0ADApp {
 
   private readonly audio = new AudioManager();
   private world!: World;
-  private ai!: SkirmishAI;
+  private aiList: SkirmishAI[] = [];
   private sceneManager!: SceneManager;
   private input!: InputController;
   private minimap!: Minimap;
   private hud!: HUDManager;
   private detachCamera: (() => void) | null = null;
 
-  private paused = false;
+  private paused = true;
   private simSpeed = 1;
   private edgeScroll = true;
   private revealAll = false;
@@ -35,12 +48,21 @@ class Web0ADApp {
 
   constructor() {
     this.hud = new HUDManager({
-      onStartMatch: (pCiv, aiCiv, diff, seed, mapType) => this.startNewMatch(pCiv, aiCiv, diff, seed, mapType),
+      onStartMatch: (config) => this.startNewMatch(config, false),
       onQuickRandomMap: () => {
-        const cur = this.world?.config;
-        const freshSeed = Math.floor(Math.random() * 900000) + 100000;
-        this.startNewMatch(cur?.playerCiv ?? 'athenians', cur?.aiCiv ?? 'romans', cur?.difficulty ?? 'medium', freshSeed, 'random');
+        const cfg = this.hud.buildMatchConfigFromSettings(true);
+        cfg.mapType = 'random';
+        this.startNewMatch(cfg, false);
       },
+      onSaveGame: () => this.saveCurrentMatch(),
+      onLoadGame: () => this.loadSavedMatch(),
+      hasSavedGame: () => this.hasSavedGame(),
+      onSetupClosed: () => {
+        this.paused = false;
+        this.syncTopBar();
+      },
+      onActivateSkill: () => this.triggerHumanCivSkill(),
+      onCheat: (action) => this.handleCheatAction(action),
       onTogglePause: () => {
         this.paused = !this.paused;
         this.syncTopBar();
@@ -78,22 +100,154 @@ class Web0ADApp {
       onJumpTo: (x, z) => this.sceneManager.rtsCamera.jumpTo(x, z),
     });
 
-    const initialSeed = Math.floor(Math.random() * 900000) + 100000;
-    this.startNewMatch('athenians', 'romans', 'medium', initialSeed, 'random');
+    // Boot cleanly from saved Skirmish Settings, paused behind Setup Modal so reload NEVER flashes a chaotic screen!
+    const initialCfg = this.hud.buildMatchConfigFromSettings(false);
+    this.startNewMatch(initialCfg, true);
+    this.hud.refreshLoadSaveButtons();
+    // Reveal UI cleanly after all localization, saved settings & initial WebGL scene are ready!
+    document.body.classList.add('app-ready');
 
     window.addEventListener('resize', () => {
       this.sceneManager.resize(this.viewportEl.clientWidth, this.viewportEl.clientHeight);
     });
 
+    window.addEventListener('keydown', (e) => {
+      if (e.code === 'F9') {
+        e.preventDefault();
+        this.hud.toggleCheatModal();
+        return;
+      }
+      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLSelectElement) return;
+      if (e.code === 'KeyF' && !e.ctrlKey && !e.metaKey && !e.altKey) {
+        this.triggerHumanCivSkill();
+      } else if (e.code === 'KeyH' && !e.ctrlKey && !e.metaKey && !e.altKey) {
+        this.hud.toggleDockCompact();
+      }
+    });
+
     requestAnimationFrame((t) => this.loop(t));
   }
 
-  private startNewMatch(
-    playerCiv: CivId,
-    aiCiv: CivId,
-    difficulty: Difficulty,
-    seed: number,
-    mapType: MapType = 'random'
+  private hasSavedGame(): boolean {
+    try {
+      return Boolean(localStorage.getItem(SAVE_STORAGE_KEY));
+    } catch {
+      return false;
+    }
+  }
+
+  private saveCurrentMatch(): void {
+    if (!this.world || !this.sceneManager) return;
+    try {
+      const cam = this.sceneManager.rtsCamera;
+      const snap = this.world.serializeState({
+        x: cam.target.x,
+        z: cam.target.z,
+        distance: cam.distance,
+        yaw: cam.yaw,
+      });
+      localStorage.setItem(SAVE_STORAGE_KEY, JSON.stringify(snap));
+      this.hud.refreshLoadSaveButtons();
+      this.audio.playSelect();
+      this.hud.pushToast(t('toastGameSaved'), 'good');
+    } catch {
+      this.audio.playError();
+      this.hud.pushToast('Save failed (storage full)', 'warn');
+    }
+  }
+
+  private loadSavedMatch(): void {
+    try {
+      const raw = localStorage.getItem(SAVE_STORAGE_KEY);
+      if (!raw) {
+        this.audio.playError();
+        this.hud.pushToast(t('toastNoSave'), 'warn');
+        return;
+      }
+      const data = JSON.parse(raw) as SerializedWorldState;
+      const restored = World.deserializeState(data);
+      this.attachWorld(restored, false, data.camera);
+      this.audio.playSelect();
+      this.hud.pushToast(t('toastGameLoaded'), 'good');
+    } catch {
+      this.audio.playError();
+      this.hud.pushToast(t('toastNoSave'), 'warn');
+    }
+  }
+
+  private handleCheatAction(action: CheatAction | 'reveal_map'): void {
+    this.audio.unlock();
+    if (action === 'reveal_map') {
+      this.revealAll = !this.revealAll;
+      this.sceneManager.terrainRenderer.setRevealAll(this.revealAll);
+      this.syncTopBar();
+      this.hud.pushToast(this.revealAll ? `👁️ ${t('mapBtn')}: ON` : `👁️ ${t('mapBtn')}: OFF`, 'good');
+      return;
+    }
+
+    const p = this.world?.players.get(1);
+    const willFastBeOn = action === 'fast_build' ? !p?.fastBuildCheat : false;
+    this.world.enqueueCommand({ type: 'cheat', playerId: 1, action });
+    this.audio.playSelect();
+
+    switch (action) {
+      case 'resources':
+        this.hud.pushToast(t('cheatToastRes'), 'good');
+        break;
+      case 'fast_build':
+        this.hud.pushToast(willFastBeOn ? t('cheatToastFastOn') : t('cheatToastFastOff'), 'good');
+        break;
+      case 'all_techs':
+        this.hud.pushToast(t('cheatToastTech'), 'good');
+        break;
+      case 'reset_skill':
+        this.hud.pushToast(t('cheatToastSkill'), 'good');
+        break;
+      case 'spawn_army':
+        this.hud.pushToast(t('cheatToastArmy'), 'good');
+        break;
+      case 'heal_all':
+        this.hud.pushToast(t('cheatToastHeal'), 'good');
+        break;
+      case 'instant_win':
+        this.hud.pushToast(t('cheatToastWin'), 'good');
+        break;
+    }
+  }
+
+  private triggerHumanCivSkill(): void {
+    const p = this.world?.players.get(1);
+    if (!p || p.defeated) return;
+    if (p.skillCooldown > 0) {
+      this.audio.playError();
+      this.hud.pushToast(`${t('toastSkillCooldown')} ${Math.ceil(p.skillCooldown)}s`, 'warn');
+      return;
+    }
+    this.audio.unlock();
+    this.world.enqueueCommand({ type: 'activate_skill', playerId: 1 });
+  }
+
+  private startNewMatch(config: MatchConfig, keepPaused = false): void {
+    const world = new World(config);
+    this.attachWorld(world, keepPaused);
+    if (!keepPaused) {
+      const p1 = this.world.players.get(1);
+      const nationCount = this.world.players.size;
+      const vsLabel =
+        nationCount === 2
+          ? `${getCivName(p1?.civ ?? config.playerCiv)} vs ${getCivName(this.world.players.get(2)?.civ ?? config.aiCiv)}`
+          : `${getCivName(p1?.civ ?? config.playerCiv)} • ${nationCount} 國`;
+      this.hud.pushToast(
+        `${getMapLabel(this.world.terrain.resolvedMapType)} (#${config.seed}) • ${vsLabel}`,
+        'good'
+      );
+    }
+  }
+
+  private attachWorld(
+    world: World,
+    keepPaused: boolean,
+    cameraRestore?: { x: number; z: number; distance: number; yaw: number }
   ): void {
     if (this.detachCamera) {
       this.detachCamera();
@@ -103,16 +257,21 @@ class Web0ADApp {
       this.sceneManager.dispose();
     }
 
-    this.world = new World({
-      seed,
-      playerCiv,
-      aiCiv,
-      difficulty,
-      mapType,
-    });
-    this.ai = new SkirmishAI(2, difficulty);
+    this.world = world;
+    this.aiList = [];
+    for (const p of this.world.players.values()) {
+      if (p.isAI) {
+        this.aiList.push(new SkirmishAI(p.id, this.world.config.difficulty));
+      }
+    }
+
     this.sceneManager = new SceneManager(this.viewportEl, this.world);
     this.sceneManager.rtsCamera.edgeScrollEnabled = this.edgeScroll;
+    if (cameraRestore) {
+      this.sceneManager.rtsCamera.distance = cameraRestore.distance;
+      this.sceneManager.rtsCamera.yaw = cameraRestore.yaw;
+      this.sceneManager.rtsCamera.jumpTo(cameraRestore.x, cameraRestore.z);
+    }
     this.sceneManager.terrainRenderer.setRevealAll(this.revealAll);
     this.detachCamera = this.sceneManager.rtsCamera.attachListeners(this.sceneManager.renderer.domElement);
 
@@ -141,16 +300,12 @@ class Web0ADApp {
       this.minimap.rebuildTerrain(this.world.terrain);
     }
 
-    this.paused = false;
+    this.paused = keepPaused;
     this.victoryShown = false;
     this.accumulator = 0;
     this.hud.bind(this.world, this.input);
     this.hud.applyLanguage();
     this.syncTopBar();
-    this.hud.pushToast(
-      `${getMapLabel(this.world.terrain.resolvedMapType)} (#${seed}) • ${getCivName(playerCiv)} vs ${getCivName(aiCiv)}`,
-      'good'
-    );
   }
 
   private syncTopBar(): void {
@@ -177,6 +332,14 @@ class Web0ADApp {
             });
           }
           break;
+        case 'building_demolished':
+          if (ev.playerId === 1) {
+            this.hud.pushToast(
+              `${t('toastDemolished')} ${formatLocalizedCost(ev.refund)}`,
+              'info'
+            );
+          }
+          break;
         case 'building_captured':
           if (ev.newOwner === 1) {
             this.hud.pushToast(
@@ -197,9 +360,62 @@ class Web0ADApp {
             this.hud.pushToast(`${t('toastResearched')} ${tech.name}!`, 'good');
           }
           break;
+        case 'building_upgraded':
+          if (ev.playerId === 1) {
+            const bName = getTemplateText(ev.templateId).name;
+            this.hud.pushToast(`🏢 ${bName} → ${ev.floors} 層!`, 'good', { x: ev.x, z: ev.z });
+          }
+          break;
+        case 'trade_payout':
+          if (ev.playerId === 1) {
+            this.hud.pushToast(`${t('toastTradePayout')} +${ev.amount} 🪙`, 'good', { x: ev.x, z: ev.z });
+          }
+          break;
+        case 'diplomacy_changed':
+          if (ev.playerId === 1) {
+            const targetP = this.world.players.get(ev.targetPlayerId);
+            const stLabel =
+              ev.stance === 'ally' ? t('stanceAlly') : ev.stance === 'neutral' ? t('stanceNeutral') : t('stanceEnemy');
+            this.hud.pushToast(
+              `${t('toastDiplomacyUpdated')} ${targetP ? getCivName(targetP.civ) : `#${ev.targetPlayerId}`} → ${stLabel}`,
+              ev.stance === 'enemy' ? 'warn' : 'good'
+            );
+            this.hud.renderDiplomacyModal();
+          }
+          break;
+        case 'tribute_sent':
+          if (ev.fromPlayerId === 1) {
+            const targetP = this.world.players.get(ev.toPlayerId);
+            this.hud.pushToast(
+              `${t('toastTributeSent')} ${ev.amount} ${getResourceName(ev.resource)} → ${targetP ? getCivName(targetP.civ) : `#${ev.toPlayerId}`}`,
+              'good'
+            );
+          }
+          break;
+        case 'skill_activated':
+          if (ev.playerId === 1) {
+            const p = this.world.players.get(1);
+            if (p) {
+              const skillText = getCivSkillText(p.civ);
+              this.hud.pushToast(`${t('toastSkillActivated')} ${skillText.name}!`, 'good');
+            }
+          }
+          break;
         case 'under_attack':
           if (ev.playerId === 1) {
-            this.hud.pushToast(t('toastUnderAttack'), 'warn', { x: ev.x, z: ev.z });
+            let msg = t('toastUnderAttack');
+            if (ev.attackerTemplateId && ev.victimTemplateId) {
+              const victimName = getTemplateText(ev.victimTemplateId).name;
+              const attackerName = getTemplateText(ev.attackerTemplateId).name;
+              const isMonster = Boolean(ev.attackerTemplateId && TEMPLATES[ev.attackerTemplateId]?.isSeaMonster);
+              const templateStr = isMonster
+                ? t('toastAttackedByMonster')
+                : ev.isWildlife
+                  ? t('toastAttackedByBeast')
+                  : t('toastAttackedByEnemy');
+              msg = templateStr.replace('{victim}', victimName).replace('{attacker}', attackerName);
+            }
+            this.hud.pushToast(msg, 'warn', { x: ev.x, z: ev.z });
           }
           break;
         case 'unit_promoted':
@@ -229,7 +445,9 @@ class Web0ADApp {
       this.accumulator += frameDt * this.simSpeed;
       let maxSteps = 5;
       while (this.accumulator >= SIM_DT && maxSteps > 0) {
-        this.ai.update(this.world);
+        for (const ai of this.aiList) {
+          ai.update(this.world);
+        }
         this.world.step();
         const events = this.world.drainEvents();
         if (events.length > 0) this.handleSimEvents(events);

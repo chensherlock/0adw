@@ -5,6 +5,14 @@ export class SeededRNG {
     this.state = seed >>> 0 || 0x12345678;
   }
 
+  getState(): number {
+    return this.state;
+  }
+
+  setState(state: number): void {
+    this.state = state >>> 0 || 0x12345678;
+  }
+
   next(): number {
     let t = (this.state += 0x6d2b79f5);
     t = Math.imul(t ^ (t >>> 15), t | 1);
