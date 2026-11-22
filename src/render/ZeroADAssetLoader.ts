@@ -2854,9 +2854,15 @@ class ZeroADAssetCache {
       }
 
       inner.scale.setScalar(scale);
+      // Official 0 A.D. building DAEs place their architectural ground floor at y = 0 and extend
+      // deep underground foundation walls into y < 0 (e.g. -5..-15) for slope anchoring.
+      // Lifting by -box.min.y would float Civic Centers & Fortresses meters above the ground!
+      const hasUndergroundFoundation =
+        Boolean(spec.targetFootprint) && box.min.y < -0.2 && box.max.y > size.y * 0.35;
+      const baseY = hasUndergroundFoundation ? 0 : -box.min.y * scale;
       inner.position.set(
         -center.x * scale,
-        -box.min.y * scale + (spec.sinkY ?? 0),
+        baseY + (spec.sinkY ?? 0),
         -center.z * scale
       );
     }

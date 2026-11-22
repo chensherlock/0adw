@@ -1573,4 +1573,77 @@ describe('Web 0 A.D. Headless Simulation', () => {
     expect(restored.entities.size).toBe(w8.entities.size);
     expect(restored.computeStateHash()).toBe(w8.computeStateHash());
   });
+
+  it('starts newly trained Civic Center workers gathering immediately and never gathers empty air', () => {
+    const world = new World({
+      seed: 4455,
+      playerCiv: 'athenians',
+      aiCiv: 'romans',
+      difficulty: 'easy',
+      mapType: 'open_plains',
+      mapSize: 'small',
+    });
+
+    const p1 = world.players.get(1)!;
+    p1.resources = { food: 1000, wood: 1000, stone: 1000, metal: 1000 };
+    const cc = Array.from(world.entities.values()).find(
+      (e) => e.alive && e.owner === 1 && e.templateId === 'civic_center'
+    )!;
+    expect(cc).toBeDefined();
+
+    const existingIds = new Set(world.entities.keys());
+    world.enqueueCommand({ type: 'train', playerId: 1, buildingId: cc.id, templateId: 'female_citizen' });
+    world.enqueueCommand({ type: 'train', playerId: 1, buildingId: cc.id, templateId: 'male_citizen' });
+
+    // Step tick-by-tick and check the exact tick each newly trained citizen spawns:
+    const newlyTrained: number[] = [];
+    for (let t = 0; t < SIM_HZ * 25 && newlyTrained.length < 2; t++) {
+      world.step();
+      for (const e of world.entities.values()) {
+        if (!existingIds.has(e.id) && e.owner === 1 && (e.templateId === 'female_citizen' || e.templateId === 'male_citizen')) {
+          existingIds.add(e.id);
+          newlyTrained.push(e.id);
+          // Immediately on the spawn tick — zero delay — the worker must already have a gather order!
+          expect(e.order.type).toBe('gather');
+        }
+      }
+    }
+    expect(newlyTrained.length).toBe(2);
+
+    // Worker ordered to gather a far-away tree must NEVER enter animState === 'gather' while far away or if tree is depleted!
+    const worker = world.entities.get(newlyTrained[0])!;
+    const farTree = Array.from(world.entities.values()).find(
+      (e) => e.alive && e.owner === 0 && TEMPLATES[e.templateId].resourceType === 'wood' && Math.hypot(e.x - worker.x, e.z - worker.z) > 12
+    )!;
+    expect(farTree).toBeDefined();
+
+    // Force a gather order on a far-away tree — on EVERY tick, if worker is playing 'gather',
+    // its actual target MUST exist, be alive, have remaining resources, and be physically adjacent!
+    worker.order = { type: 'gather', targetId: farTree.id, resourceType: 'wood', returning: false };
+    worker.path = [];
+    for (let t = 0; t < 40; t++) {
+      world.step();
+      if (worker.animState === 'gather') {
+        expect(worker.order.type).toBe('gather');
+        if (worker.order.type === 'gather') {
+          const curTarget = world.entities.get(worker.order.targetId);
+          expect(curTarget).toBeDefined();
+          expect(curTarget!.alive).toBe(true);
+          expect(curTarget!.resourceRemaining).toBeGreaterThan(0);
+          const distToActual = Math.hypot(curTarget!.x - worker.x, curTarget!.z - worker.z);
+          expect(distToActual).toBeLessThanOrEqual(
+            TEMPLATES[worker.templateId].radius + TEMPLATES[curTarget!.templateId].radius + 1.0
+          );
+        }
+      }
+    }
+
+    // Also if resource is depleted (0 remaining), worker must NOT harvest empty air
+    farTree.resourceRemaining = 0;
+    worker.x = farTree.x + 1.0;
+    worker.z = farTree.z;
+    worker.order = { type: 'gather', targetId: farTree.id, resourceType: 'wood', returning: false };
+    world.step();
+    expect(worker.animState).not.toBe('gather');
+  });
 });

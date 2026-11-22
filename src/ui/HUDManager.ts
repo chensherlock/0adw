@@ -28,6 +28,7 @@ import {
   MapSize,
   MapType,
   PlayerSlotConfig,
+  PlayerState,
   ResourceBag,
   ResourceType,
   UnitStance,
@@ -1240,28 +1241,26 @@ export class HUDManager {
     const first = owned[0];
     const firstTpl = TEMPLATES[first.templateId];
 
-    // Signature to avoid re-rendering DOM buttons unnecessarily every 100ms while still updating affordability & language
+    // Structural signature ONLY — never nuke innerHTML when resources/active state change so clicks on build buttons are NEVER dropped!
+    const uniqueTplIds = Array.from(new Set(owned.map((e) => e.templateId))).sort();
     const sig = JSON.stringify({
       lang: getLanguage(),
-      ids: owned.slice(0, 4).map((e) => e.templateId),
+      tpls: uniqueTplIds,
+      bId: units.length === 0 ? first.id : 0,
+      bCnt: units.length === 0 ? owned.length : 0,
       isF: first.isFoundation,
+      bProg: first.isFoundation ? Math.round(first.buildProgress * 100) : -1,
       floors: first.floors ?? 1,
       upProg: first.upgradeTargetTemplateId ? Math.floor((first.upgradeProgress ?? 0) * 20) : -1,
       garr: first.garrisonedIds.length,
       phase: p.phase,
       techs: Array.from(p.researchedTechs),
       rTechs: Array.from(p.researchingTechs),
-      stance: units[0]?.stance,
-      place: this.input.placementTemplateId,
-      tf: this.input.terraformMode,
-      rBucket: [
-        Math.floor(p.resources.food / 25),
-        Math.floor(p.resources.wood / 25),
-        Math.floor(p.resources.stone / 25),
-        Math.floor(p.resources.metal / 25),
-      ],
     });
-    if (sig === this.lastCommandSig) return;
+    if (sig === this.lastCommandSig) {
+      this.syncCommandPanelLiveStates(p, units, first);
+      return;
+    }
     this.lastCommandSig = sig;
 
     // 1. Units selected -> Build menu + Stances + Actions
@@ -1338,7 +1337,11 @@ export class HUDManager {
       `;
 
       this.elCommandPanel.querySelectorAll<HTMLButtonElement>('[data-build-id]').forEach((btn) => {
-        btn.addEventListener('click', () => {
+        btn.addEventListener('mousedown', (ev) => {
+          ev.stopPropagation();
+        });
+        btn.addEventListener('click', (ev) => {
+          ev.stopPropagation();
           const bId = btn.dataset.buildId!;
           const bTpl = TEMPLATES[bId];
           if ((bTpl.phaseRequired ?? 1) > p.phase) {
@@ -1351,45 +1354,56 @@ export class HUDManager {
           }
           this.input.setPlacementMode(this.input.placementTemplateId === bId ? null : bId);
           btn.blur();
-          this.lastCommandSig = '';
-          this.renderSelectionAndCommands();
+          this.syncCommandPanelLiveStates(p, units, first);
         });
       });
 
       this.elCommandPanel.querySelectorAll<HTMLButtonElement>('[data-stance]').forEach((btn) => {
-        btn.addEventListener('click', () => {
+        btn.addEventListener('click', (ev) => {
+          ev.stopPropagation();
           const st = btn.dataset.stance as UnitStance;
-          this.world.enqueueCommand({
-            type: 'set_stance',
-            playerId: this.humanPlayerId,
-            entityIds: units.map((u) => u.id),
-            stance: st,
-          });
-          this.lastCommandSig = '';
+          const liveUnitIds: number[] = [];
+          for (const id of this.input.selectedIds) {
+            const e = this.world.entities.get(id);
+            if (e && e.alive && e.owner === this.humanPlayerId && TEMPLATES[e.templateId].kind === 'unit') {
+              liveUnitIds.push(id);
+            }
+          }
+          if (liveUnitIds.length > 0) {
+            this.world.enqueueCommand({
+              type: 'set_stance',
+              playerId: this.humanPlayerId,
+              entityIds: liveUnitIds,
+              stance: st,
+            });
+          }
+          this.syncCommandPanelLiveStates(p, units, first);
         });
       });
 
-      document.getElementById('cmd-dig')?.addEventListener('click', () => {
+      document.getElementById('cmd-dig')?.addEventListener('click', (ev) => {
+        ev.stopPropagation();
         this.input.setTerraformMode(this.input.terraformMode === 'dig' ? null : 'dig');
-        this.lastCommandSig = '';
-        this.renderSelectionAndCommands();
+        this.syncCommandPanelLiveStates(p, units, first);
       });
-      document.getElementById('cmd-raise')?.addEventListener('click', () => {
+      document.getElementById('cmd-raise')?.addEventListener('click', (ev) => {
+        ev.stopPropagation();
         this.input.setTerraformMode(this.input.terraformMode === 'raise' ? null : 'raise');
-        this.lastCommandSig = '';
-        this.renderSelectionAndCommands();
+        this.syncCommandPanelLiveStates(p, units, first);
       });
-      document.getElementById('cmd-level')?.addEventListener('click', () => {
+      document.getElementById('cmd-level')?.addEventListener('click', (ev) => {
+        ev.stopPropagation();
         this.input.setTerraformMode(this.input.terraformMode === 'level' ? null : 'level');
-        this.lastCommandSig = '';
-        this.renderSelectionAndCommands();
+        this.syncCommandPanelLiveStates(p, units, first);
       });
-      document.getElementById('cmd-attack-move')?.addEventListener('click', () => {
+      document.getElementById('cmd-attack-move')?.addEventListener('click', (ev) => {
+        ev.stopPropagation();
         this.input.setTerraformMode(null);
         this.input.attackMoveMode = true;
         this.pushToast(t('toastAttackMove'), 'info');
       });
-      document.getElementById('cmd-garrison')?.addEventListener('click', () => {
+      document.getElementById('cmd-garrison')?.addEventListener('click', (ev) => {
+        ev.stopPropagation();
         this.input.setTerraformMode(null);
         this.input.garrisonTargetMode = true;
         this.pushToast(t('toastGarrison'), 'info');
@@ -1612,7 +1626,7 @@ export class HUDManager {
           buildingId: first.id,
           templateId: uId,
         });
-        this.lastCommandSig = '';
+        this.syncCommandPanelLiveStates(p, units, first);
       });
     });
 
@@ -1642,6 +1656,61 @@ export class HUDManager {
       });
       this.lastCommandSig = '';
     });
+  }
+
+  /**
+   * In-place class updates for build/train/tech/stance/terraform buttons so clicking
+   * a build option NEVER loses its DOM node or scroll position during periodic resource ticks.
+   */
+  private syncCommandPanelLiveStates(p: PlayerState, units: Entity[], first: Entity): void {
+    this.elCommandPanel.querySelectorAll<HTMLButtonElement>('[data-build-id]').forEach((btn) => {
+      const bId = btn.dataset.buildId!;
+      const bTpl = TEMPLATES[bId];
+      if (!bTpl) return;
+      const locked = (bTpl.phaseRequired ?? 1) > p.phase;
+      const afford = !bTpl.cost || this.world.canAfford(p.resources, bTpl.cost);
+      btn.classList.toggle('disabled', locked || !afford);
+      btn.classList.toggle('active', this.input.placementTemplateId === bId);
+    });
+
+    if (units.length > 0) {
+      const curStance = units[0].stance;
+      this.elCommandPanel.querySelectorAll<HTMLButtonElement>('[data-stance]').forEach((btn) => {
+        btn.classList.toggle('active', btn.dataset.stance === curStance);
+      });
+      document.getElementById('cmd-dig')?.classList.toggle('active', this.input.terraformMode === 'dig');
+      document.getElementById('cmd-raise')?.classList.toggle('active', this.input.terraformMode === 'raise');
+      document.getElementById('cmd-level')?.classList.toggle('active', this.input.terraformMode === 'level');
+      return;
+    }
+
+    this.elCommandPanel.querySelectorAll<HTMLButtonElement>('[data-train-id]').forEach((btn) => {
+      const uId = btn.dataset.trainId!;
+      const uTpl = TEMPLATES[uId];
+      if (!uTpl) return;
+      const locked = (uTpl.phaseRequired ?? 1) > p.phase;
+      const afford = !uTpl.cost || this.world.canAfford(p.resources, uTpl.cost);
+      btn.classList.toggle('disabled', locked || !afford);
+    });
+
+    this.elCommandPanel.querySelectorAll<HTMLButtonElement>('[data-tech-id]').forEach((btn) => {
+      const tId = btn.dataset.techId!;
+      const tech = TECHS[tId];
+      if (!tech) return;
+      const inProg = p.researchingTechs.has(tId);
+      const locked = tech.phaseRequired > p.phase;
+      const afford = this.world.canAfford(p.resources, tech.cost);
+      btn.classList.toggle('disabled', locked || !afford || inProg);
+    });
+
+    const upgradeBtn = document.getElementById('cmd-upgrade-building');
+    if (upgradeBtn && !first.upgradeTargetTemplateId) {
+      const firstTpl = TEMPLATES[first.templateId];
+      const lockedCity = Boolean(firstTpl?.isApartment) && p.phase < 3;
+      const upCost = first.templateId === 'house' ? World.UPGRADE_HOUSE_COST : World.UPGRADE_FLOOR3_COST;
+      const canAffordUp = this.world.canAfford(p.resources, upCost);
+      upgradeBtn.classList.toggle('disabled', lockedCity || !canAffordUp);
+    }
   }
 }
 

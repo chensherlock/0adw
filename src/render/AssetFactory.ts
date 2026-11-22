@@ -15,6 +15,7 @@ export interface EntityVisualParts {
   soilMesh?: THREE.Mesh;
   fenceGroup?: THREE.Group;
   foundationPlinth?: THREE.Group;
+  wallShearGroup?: THREE.Group;
   floor2Roof?: THREE.Object3D;
   floor3Group?: THREE.Object3D;
   fishGroup?: THREE.Group;
@@ -1290,29 +1291,32 @@ export function createEntityVisual(templateId: string, civId: CivId, teamColor: 
     }
 
     case 'stone_wall': {
-      // Rugged 0 A.D. Ashlar Stone City Wall (official 0 A.D. stone_aegean_01 + rome_struct_2 + normal maps!)
+      // Rugged 0 A.D. Ashlar Stone City Wall wrapped in a shearable group so sloped walls stay vertical & connect seamlessly without stair-steps!
       const wallStone = getTexMat('textures/stone_aegean_01.png', 'textures/stone_india_01_norm.png', 0xdcd5c5, 1.4, 1.2, 0.92, 0.04);
       const wallTrim = getTexMat('textures/rome_struct_2.png', 'textures/rome_struct_2_norm.png', 0xc9c0af, 1.2, 1.0, 0.93, 0.05);
       const pavingMat = getTexMat('textures/decal_stone_medit_01.png', 'textures/decal_stone_medit_01_norm.png', 0xcbc2b0, 1.5, 1.0, 0.94, 0.03);
 
-      // Thick battered stone foundation & extended 2.88m ashlar curtain wall body so straight, diagonal & mountain walls fuse seamlessly!
-      addBox(bodyGroup, 2.88, 3.6, 1.26, 0, -1.65, 0, darkStoneMat); // Deep mountain anchor skirt (invisible on flat ground)
-      addBox(bodyGroup, 2.88, 0.42, 1.22, 0, 0.21, 0, darkStoneMat);
-      addBox(bodyGroup, 2.86, 2.02, 0.92, 0, 1.26, 0, wallStone);
+      const wallShearGroup = new THREE.Group();
+      // Deep mountain anchor skirt + extended 2.98m ashlar curtain wall body so straight, diagonal & sloped mountain walls fuse seamlessly!
+      addBox(wallShearGroup, 2.98, 4.8, 1.26, 0, -2.25, 0, darkStoneMat);
+      addBox(wallShearGroup, 2.98, 0.42, 1.22, 0, 0.21, 0, darkStoneMat);
+      addBox(wallShearGroup, 2.96, 2.02, 0.92, 0, 1.26, 0, wallStone);
       // Moulded stone cornice & timber-and-flagstone archer walkway
-      addBox(bodyGroup, 2.9, 0.18, 1.06, 0, 2.3, 0, wallTrim);
-      addBox(bodyGroup, 2.84, 0.08, 0.68, 0, 2.41, -0.06, pavingMat);
+      addBox(wallShearGroup, 3.0, 0.18, 1.06, 0, 2.3, 0, wallTrim);
+      addBox(wallShearGroup, 2.94, 0.08, 0.68, 0, 2.41, -0.06, pavingMat);
       // Crenellated stone merlons with beveled capstones along outer parapet
-      for (const mx of [-0.98, -0.32, 0.32, 0.98]) {
-        addBox(bodyGroup, 0.44, 0.46, 0.24, mx, 2.6, 0.39, wallStone);
-        addBox(bodyGroup, 0.48, 0.07, 0.28, mx, 2.86, 0.39, wallTrim);
+      for (const mx of [-1.02, -0.34, 0.34, 1.02]) {
+        addBox(wallShearGroup, 0.44, 0.46, 0.24, mx, 2.6, 0.39, wallStone);
+        addBox(wallShearGroup, 0.48, 0.07, 0.28, mx, 2.86, 0.39, wallTrim);
       }
-      // Heavy protruding ashlar buttress pilasters on both ends so diagonal & angled corners fuse cleanly
-      addBox(bodyGroup, 0.44, 2.48, 1.12, -1.26, 1.24, 0, wallTrim);
-      addBox(bodyGroup, 0.44, 2.48, 1.12, 1.26, 1.24, 0, wallTrim);
+      // Heavy protruding ashlar buttress pilasters on both ends so diagonal & sloped joints fuse cleanly
+      addBox(wallShearGroup, 0.46, 2.48, 1.12, -1.36, 1.24, 0, wallTrim);
+      addBox(wallShearGroup, 0.46, 2.48, 1.12, 1.36, 1.24, 0, wallTrim);
       // Team heraldic shield crest on outer face
-      const crest = addBox(bodyGroup, 0.46, 0.56, 0.08, 0, 1.48, 0.49, teamMat);
+      const crest = addBox(wallShearGroup, 0.46, 0.56, 0.08, 0, 1.48, 0.49, teamMat);
       teamMeshes.push(crest);
+      bodyGroup.add(wallShearGroup);
+      parts.wallShearGroup = wallShearGroup;
       break;
     }
 

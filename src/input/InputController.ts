@@ -673,10 +673,20 @@ export class InputController {
     this.sceneManager.updateWallLinePreview(
       segs.map((s) => {
         const c = this.world.terrain.tileToWorldCenter(s.tx, s.tz);
-        const y = this.world.terrain.getHeightAt(c.x, c.z);
+        let y = this.world.terrain.getHeightAt(c.x, c.z);
+        let slopeYX = 0;
+        if (!isBridge) {
+          const halfSpan = 1.44;
+          const cosF = Math.cos(s.facing);
+          const sinF = Math.sin(s.facing);
+          const hPlus = this.world.terrain.getHeightAt(c.x + cosF * halfSpan, c.z - sinF * halfSpan);
+          const hMinus = this.world.terrain.getHeightAt(c.x - cosF * halfSpan, c.z + sinF * halfSpan);
+          y = (hPlus + hMinus) * 0.5;
+          slopeYX = Math.max(-1.35, Math.min(1.35, (hPlus - hMinus) / (halfSpan * 2)));
+        }
         const check = this.world.canPlaceBuilding(this.humanPlayerId, dragTplId, s.tx, s.tz);
         const bridgeSpanOk = isBridge && !this.world.terrain.isTileDryLand(s.tx, s.tz);
-        return { x: c.x, y, z: c.z, facing: s.facing, valid: check.ok || bridgeSpanOk };
+        return { x: c.x, y, z: c.z, facing: s.facing, valid: check.ok || bridgeSpanOk, slopeYX };
       }),
       isBridge
     );

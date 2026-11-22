@@ -2639,6 +2639,12 @@ export class World {
         return;
       }
     }
+    // Newly trained human Citizens (Female & Male) immediately start gathering the scarcest resource with ZERO wait!
+    if (!player.isAI && uTpl?.gather && !uTpl.isNaval && (uTpl.isWoman || unitTemplateId === 'male_citizen')) {
+      if (this.tryAutoWorkForIdleUnit(unit, false)) {
+        return;
+      }
+    }
     this.enqueueCommand({ type: 'move', playerId: building.owner, entityIds: [unit.id], x: building.rallyX, z: building.rallyZ });
   }
 
@@ -2769,7 +2775,10 @@ export class World {
               break;
             }
           }
-          if (player && !player.isAI && tpl.gather && idleCount >= (tpl.isWoman || u.templateId === 'male_citizen' ? 26 : 42) && idleCount % 15 === 0) {
+          const isCitizenWorker = Boolean(tpl.isWoman || u.templateId === 'male_citizen');
+          const idleThreshold = isCitizenWorker ? 4 : 36;
+          const pollStride = isCitizenWorker ? 4 : 15;
+          if (player && !player.isAI && tpl.gather && idleCount >= idleThreshold && idleCount % pollStride === 0) {
             if (this.tryAutoWorkForIdleUnit(u, false)) {
               this.idleTicks.set(u.id, 0);
             }
@@ -3086,12 +3095,38 @@ export class World {
         u.pathIndex = 0;
         u.repathTimer = 0.6;
       } else if (st >= 30) {
-        // Unreachable cliff/obstacle directly blocking move destination: arrive cleanly at closest foothold
+        // Unreachable cliff/obstacle directly blocking move destination: arrive cleanly at closest foothold.
+        // NEVER fake arrival for gather/build/attack orders (prevents workers swinging at empty air!).
         this.stuckTicks.set(u.id, 0);
-        if (u.order.type === 'move' || distGoal <= stopDist + 2.5) {
+        if (u.order.type === 'move') {
           u.path = [];
           u.pathIndex = 0;
           return true;
+        }
+        if (u.order.type === 'gather' && !u.order.returning && distGoal > stopDist + 0.5) {
+          // Blocked from reaching this exact resource (e.g. crowded forest interior): switch to another reachable resource!
+          const curTargetId = u.order.targetId;
+          let alt: Entity | null = null;
+          let bestD = 32;
+          for (const e of this.entities.values()) {
+            if (!e.alive || e.id === curTargetId || e.resourceRemaining <= 0) continue;
+            const eTpl = TEMPLATES[e.templateId];
+            if (eTpl.resourceType !== u.order.resourceType || Boolean(eTpl.isAquatic) !== isNaval) continue;
+            if (eTpl.kind === 'building' && e.owner !== u.owner) continue;
+            const d = Math.hypot(e.x - u.x, e.z - u.z);
+            if (d < bestD) {
+              bestD = d;
+              alt = e;
+            }
+          }
+          if (alt) {
+            u.order.targetId = alt.id;
+            u.path = findUnitPath(u.x, u.z, alt.x, alt.z);
+            u.pathIndex = 0;
+            u.repathTimer = 0.8;
+            u.animState = 'walk';
+            return false;
+          }
         }
         u.path = findUnitPath(u.x, u.z, goalX, goalZ);
         u.pathIndex = 0;
@@ -3299,6 +3334,13 @@ export class World {
       }
     }
     if (!arrived) return;
+
+    // Strict physical proximity & validity guard: NEVER harvest empty air!
+    const actualDist = Math.hypot(target.x - u.x, target.z - u.z);
+    if (!target.alive || target.resourceRemaining <= 0 || actualDist > stopDist + 0.55) {
+      u.animState = 'idle';
+      return;
+    }
 
     u.facing = Math.atan2(target.x - u.x, target.z - u.z);
 

@@ -272,16 +272,24 @@ export class SceneManager {
   }
 
   updateWallLinePreview(
-    segments: Array<{ x: number; y: number; z: number; facing: number; valid: boolean }>,
+    segments: Array<{ x: number; y: number; z: number; facing: number; valid: boolean; slopeYX?: number }>,
     isBridge = false
   ): void {
     this.wallDragGroup.clear();
     const geom = isBridge ? this.bridgePreviewGeom : this.wallPreviewGeom;
     for (const seg of segments) {
+      const holder = new THREE.Group();
+      holder.position.set(seg.x, isBridge ? WATER_LEVEL + 0.48 : seg.y + 1.18, seg.z);
+      holder.rotation.y = seg.facing;
       const m = new THREE.Mesh(geom, seg.valid ? this.ghostValidMat : this.ghostInvalidMat);
-      m.position.set(seg.x, isBridge ? WATER_LEVEL + 0.48 : seg.y + 1.18, seg.z);
-      m.rotation.y = seg.facing;
-      this.wallDragGroup.add(m);
+      if (!isBridge && seg.slopeYX) {
+        m.matrixAutoUpdate = false;
+        m.matrix.identity();
+        m.matrix.elements[1] = seg.slopeYX;
+        m.matrixWorldNeedsUpdate = true;
+      }
+      holder.add(m);
+      this.wallDragGroup.add(holder);
     }
   }
 
@@ -452,18 +460,23 @@ export class SceneManager {
         iy = WATER_LEVEL + 0.14;
       } else if (tpl.isAquatic) {
         iy = WATER_LEVEL - 0.12;
+      } else if (tpl.isWall && mv.parts.wallShearGroup) {
+        // Connect sloped mountain walls seamlessly by shearing vertically along the wall's exact terrain grade (zero stair-stepping!)
+        const halfSpan = 1.44;
+        const cosF = Math.cos(e.facing);
+        const sinF = Math.sin(e.facing);
+        const hPlus = world.terrain.getHeightAt(ix + cosF * halfSpan, iz - sinF * halfSpan);
+        const hMinus = world.terrain.getHeightAt(ix - cosF * halfSpan, iz + sinF * halfSpan);
+        iy = (hPlus + hMinus) * 0.5;
+        const slopeYX = THREE.MathUtils.clamp((hPlus - hMinus) / (halfSpan * 2), -1.35, 1.35);
+        const sg = mv.parts.wallShearGroup;
+        sg.matrixAutoUpdate = false;
+        sg.matrix.identity();
+        sg.matrix.elements[1] = slopeYX; // y' = y + slopeYX * x (plumb vertical walls matching slope!)
+        sg.matrixWorldNeedsUpdate = true;
       } else if (tpl.kind === 'building' && !tpl.isFarmField) {
-        // Seat land buildings flush on the ground at centerY (only minimal micro-lift on steep hillsides)
-        const centerY = world.terrain.getHeightAt(ix, iz);
-        const halfFp = Math.max(1.0, (tpl.footprintTiles ?? 2) * 0.72);
-        const maxCornerY = Math.max(
-          world.terrain.getHeightAt(ix - halfFp, iz - halfFp),
-          world.terrain.getHeightAt(ix + halfFp, iz - halfFp),
-          world.terrain.getHeightAt(ix - halfFp, iz + halfFp),
-          world.terrain.getHeightAt(ix + halfFp, iz + halfFp)
-        );
-        const slopeLift = Math.min(0.08, Math.max(0, (maxCornerY - centerY - 0.18) * 0.25));
-        iy = centerY + slopeLift;
+        // Seat land buildings flush on the ground at centerY (0 A.D. buildings already have real underground foundations!)
+        iy = world.terrain.getHeightAt(ix, iz);
       } else {
         const groundY = world.terrain.getHeightAt(ix, iz);
         const uTile = world.terrain.worldToTile(ix, iz);
