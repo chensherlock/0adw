@@ -30,6 +30,9 @@ class Web0ADApp {
   private readonly audio = new AudioManager();
   private world!: World;
   private aiList: SkirmishAI[] = [];
+  private aiProxyEnabled = false;
+  private playerProxyAI: SkirmishAI | null = null;
+  private readonly aiProxyBtn = document.getElementById('btn-ai-proxy') as HTMLButtonElement | null;
   private sceneManager!: SceneManager;
   private input!: InputController;
   private minimap!: Minimap;
@@ -96,6 +99,7 @@ class Web0ADApp {
         toggleLanguage();
         this.hud.applyLanguage();
         this.syncTopBar();
+        this.syncAiProxyButton();
       },
       onJumpTo: (x, z) => {
         this.sceneManager.rtsCamera.jumpTo(x, z);
@@ -104,6 +108,11 @@ class Web0ADApp {
           this.sceneManager.spawnClickPing(x, z, y, 0xef4444);
         }
       },
+    });
+
+    this.aiProxyBtn?.addEventListener('click', (e) => {
+      e.stopPropagation();
+      this.toggleAiProxy();
     });
 
     // Boot cleanly from saved Skirmish Settings, paused behind Setup Modal so reload NEVER flashes a chaotic screen!
@@ -270,6 +279,9 @@ class Web0ADApp {
         this.aiList.push(new SkirmishAI(p.id, this.world.config.difficulty));
       }
     }
+    this.aiProxyEnabled = false;
+    this.playerProxyAI = new SkirmishAI(1, this.world.config.difficulty);
+    this.syncAiProxyButton();
 
     this.sceneManager = new SceneManager(this.viewportEl, this.world);
     this.sceneManager.rtsCamera.edgeScrollEnabled = this.edgeScroll;
@@ -312,6 +324,29 @@ class Web0ADApp {
     this.hud.bind(this.world, this.input);
     this.hud.applyLanguage();
     this.syncTopBar();
+  }
+
+  private toggleAiProxy(): void {
+    this.audio.unlock();
+    this.aiProxyEnabled = !this.aiProxyEnabled;
+    if (this.aiProxyEnabled && !this.playerProxyAI && this.world) {
+      this.playerProxyAI = new SkirmishAI(1, this.world.config.difficulty);
+    }
+    this.syncAiProxyButton();
+    if (this.aiProxyEnabled) {
+      this.audio.playOrder();
+      this.hud.pushToast(t('toastAiProxyOn'), 'good');
+    } else {
+      this.audio.playSelect();
+      this.hud.pushToast(t('toastAiProxyOff'), 'info');
+    }
+  }
+
+  private syncAiProxyButton(): void {
+    if (!this.aiProxyBtn) return;
+    this.aiProxyBtn.classList.toggle('ai-proxy-active', this.aiProxyEnabled);
+    this.aiProxyBtn.textContent = this.aiProxyEnabled ? t('aiProxyOnBtn') : t('aiProxyOffBtn');
+    this.aiProxyBtn.title = t('aiProxyTip');
   }
 
   private syncTopBar(): void {
@@ -393,6 +428,64 @@ class Web0ADApp {
             this.hud.pushToast(`${t('toastTradePayout')} +${ev.amount} 🪙`, 'good', { x: ev.x, z: ev.z });
           }
           break;
+        case 'treasure_claimed':
+          if (ev.playerId === 1) {
+            this.audio.playOrder();
+            const y = this.world.terrain.getHeightAt(ev.x, ev.z);
+            this.sceneManager.spawnClickPing(ev.x, ev.z, y, 0xfacc15);
+            this.hud.pushToast(
+              `${t('toastTreasureClaimed')} ${formatLocalizedCost(ev.reward)}`,
+              'good',
+              { x: ev.x, z: ev.z }
+            );
+          }
+          break;
+        case 'tree_planted':
+          if (ev.playerId === 1) {
+            const y = this.world.terrain.getHeightAt(ev.x, ev.z);
+            this.sceneManager.spawnClickPing(ev.x, ev.z, y, 0x22c55e);
+            this.hud.pushToast(
+              `${t('toastTreePlanted')} (${getTemplateText(ev.templateId).name})`,
+              'good',
+              { x: ev.x, z: ev.z }
+            );
+          }
+          break;
+        case 'tree_hybridized':
+          if (ev.playerId === 1) {
+            this.audio.playOrder();
+            const y = this.world.terrain.getHeightAt(ev.x, ev.z);
+            this.sceneManager.spawnClickPing(ev.x, ev.z, y, 0xfacc15);
+            this.hud.pushToast(
+              `${t('toastHybridPlanted')} (${getTemplateText(ev.templateId).name})`,
+              'good',
+              { x: ev.x, z: ev.z }
+            );
+          }
+          break;
+        case 'animal_captured':
+          if (ev.playerId === 1) {
+            this.audio.playOrder();
+            const y = this.world.terrain.getHeightAt(ev.x, ev.z);
+            this.sceneManager.spawnClickPing(ev.x, ev.z, y, 0x34d399);
+            this.hud.pushToast(
+              `${t('toastAnimalCaptured')} (${getTemplateText(ev.templateId).name})`,
+              'good',
+              { x: ev.x, z: ev.z }
+            );
+          }
+          break;
+        case 'animal_born':
+          if (ev.playerId === 1) {
+            const y = this.world.terrain.getHeightAt(ev.x, ev.z);
+            this.sceneManager.spawnClickPing(ev.x, ev.z, y, 0xfde047);
+            this.hud.pushToast(
+              `${t('toastAnimalBorn')} (${getTemplateText(ev.templateId).name})`,
+              'good',
+              { x: ev.x, z: ev.z }
+            );
+          }
+          break;
         case 'diplomacy_changed':
           if (ev.playerId === 1) {
             const targetP = this.world.players.get(ev.targetPlayerId);
@@ -467,6 +560,9 @@ class Web0ADApp {
       this.accumulator += frameDt * this.simSpeed;
       let maxSteps = 5;
       while (this.accumulator >= SIM_DT && maxSteps > 0) {
+        if (this.aiProxyEnabled && this.playerProxyAI && !this.world.config.aiVsAi) {
+          this.playerProxyAI.update(this.world);
+        }
         for (const ai of this.aiList) {
           ai.update(this.world);
         }

@@ -1,5 +1,5 @@
 import { MapSize, MapType, ResolvedMapType } from '../../config/types';
-import { fbm2D, SeededRNG } from '../rng';
+import { domainWarp2D, fbm2D, ridgedMultifractal2D, SeededRNG, smoothstep } from '../rng';
 
 export const MAP_TILES = 128;
 export const TILE_SIZE = 2.0;
@@ -112,6 +112,10 @@ export class TerrainMap {
   readonly tileFillUnits: Uint8Array;
   /** Per-tile completed terraform generation counter (so multiple workers assisting a tile accelerate 1 layer instead of digging deeper!) */
   readonly tileTerraformEpoch: Uint16Array;
+  /** Locked 3x3 average target elevation (meters) while a tile is being leveled (NaN when idle) */
+  readonly tileLevelTarget: Float32Array;
+  /** Initial maximum height deviation (meters) from targetH when a 3x3 leveling job started */
+  readonly tileLevelInitDiff: Float32Array;
   /** Incremented whenever any tile's partial excavation/fill unit progress changes (for live 3D progress bars) */
   soilProgressVersion = 0;
   private readonly activeSoilIndices = new Set<number>();
@@ -157,6 +161,9 @@ export class TerrainMap {
     this.tileSoilUnits.fill(SOIL_UNITS_PER_TILE);
     this.tileFillUnits = new Uint8Array(this.width * this.height);
     this.tileTerraformEpoch = new Uint16Array(this.width * this.height);
+    this.tileLevelTarget = new Float32Array(this.width * this.height);
+    this.tileLevelTarget.fill(Number.NaN);
+    this.tileLevelInitDiff = new Float32Array(this.width * this.height);
 
     // Randomize opposing symmetrical spawn positions around map center for 2..8 nations!
     const playerCount = Math.max(2, Math.min(8, Math.round(numPlayers)));
@@ -464,39 +471,74 @@ export class TerrainMap {
     const seedB = this.seed + 521;
     const seedC = this.seed + 911;
 
-    // Pre-generate Archipelago islands (each spawn gets a home island + 14 scattered resource islets!)
-    const archipelagoIslands: Array<{ x: number; z: number; r: number; peak: number }> = [];
+    // Pre-generate organic home-island silhouettes for Archipelago spawns:
+    // Each player gets an anisotropic, rotated, domain-warped landmass (NEVER a circle!),
+    // while continuous 2-stage Domain-Warped Fractal Continents + Ridged Multifractal noise
+    // freely sculpt the rest of the archipelago with ZERO stained-glass Voronoi seams!
+    interface SpawnHomeRegion {
+      x: number;
+      z: number;
+      cos: number;
+      sin: number;
+      rx: number;
+      rz: number;
+      penX: number;
+      penZ: number;
+      penR: number;
+    }
+    const spawnHomeRegions: SpawnHomeRegion[] = [];
     if (this.resolvedMapType === 'archipelago') {
       for (const s of this.spawns) {
-        archipelagoIslands.push({
-          x: s.tileX,
-          z: s.tileZ,
-          r: rng.range(16.5, 20.5) * sizeScale,
-          peak: rng.range(2.8, 3.8),
-        });
-      }
-      // Central hub island
-      archipelagoIslands.push({
-        x: midX + rng.range(-5, 5) * sizeScale,
-        z: midZ + rng.range(-5, 5) * sizeScale,
-        r: rng.range(11.5, 14.5) * sizeScale,
-        peak: rng.range(3.6, 5.2),
-      });
-      // Ring of scattered small islets across the sea
-      const isletCount = 14;
-      for (let i = 0; i < isletCount; i++) {
-        const ang = (i / isletCount) * Math.PI * 2 + rng.range(-0.22, 0.22);
-        const dist = rng.range(20, 48) * sizeScale;
-        const ix = Math.max(12, Math.min(this.width - 12, midX + Math.cos(ang) * dist));
-        const iz = Math.max(12, Math.min(this.height - 12, midZ + Math.sin(ang) * dist));
-        archipelagoIslands.push({
-          x: ix,
-          z: iz,
-          r: rng.range(7.0, 12.5) * sizeScale,
-          peak: rng.range(2.2, 4.6),
+        const rot = rng.range(0, Math.PI * 2);
+        const asp = rng.range(1.28, 1.72);
+        const baseR = rng.range(16.5, 20.5) * sizeScale;
+        const pAng = rot + rng.range(0.6, 2.4) * (rng.next() < 0.5 ? 1 : -1);
+        const pDist = baseR * rng.range(0.45, 0.72);
+        spawnHomeRegions.push({
+          x: s.tileX + Math.cos(rot) * rng.range(-3.0, 3.0) * sizeScale,
+          z: s.tileZ + Math.sin(rot) * rng.range(-3.0, 3.0) * sizeScale,
+          cos: Math.cos(rot),
+          sin: Math.sin(rot),
+          rx: baseR * Math.sqrt(asp),
+          rz: baseR / Math.sqrt(asp),
+          penX: s.tileX + Math.cos(pAng) * pDist,
+          penZ: s.tileZ + Math.sin(pAng) * pDist,
+          penR: baseR * rng.range(0.48, 0.68),
         });
       }
     }
+
+    // Randomized tectonic parameters for single-island ('island') archetype:
+    // Domain-warped anisotropic continent + deep coastal fjords/bays + off-center ridged mountain spine!
+    const islandRot = rng.range(0, Math.PI * 2);
+    const islandCos = Math.cos(islandRot);
+    const islandSin = Math.sin(islandRot);
+    const islandAspect = rng.range(1.25, 1.62);
+    const islandCenterX = midX + rng.range(-5, 5) * sizeScale;
+    const islandCenterZ = midZ + rng.range(-5, 5) * sizeScale;
+    const islandPenAng = islandRot + rng.range(0.7, 2.2) * (rng.next() < 0.5 ? 1 : -1);
+    const islandPenX = islandCenterX + Math.cos(islandPenAng) * rng.range(18, 28) * sizeScale;
+    const islandPenZ = islandCenterZ + Math.sin(islandPenAng) * rng.range(18, 28) * sizeScale;
+    const islandPenR = rng.range(22, 30) * sizeScale;
+    const islandBays: Array<{ x: number; z: number; r: number }> = [];
+    if (this.resolvedMapType === 'island') {
+      const bayCount = rng.int(2, 3);
+      for (let b = 0; b < bayCount; b++) {
+        for (let tries = 0; tries < 24; tries++) {
+          const bAng = rng.range(0, Math.PI * 2);
+          const bDist = rng.range(34, 46) * sizeScale;
+          const bx = midX + Math.cos(bAng) * bDist;
+          const bz = midZ + Math.sin(bAng) * bDist;
+          if (this.isFarFromSpawns(bx, bz, 20 * sizeScale)) {
+            islandBays.push({ x: bx, z: bz, r: rng.range(15, 23) * sizeScale });
+            break;
+          }
+        }
+      }
+    }
+    const islandTiltAng = rng.range(0, Math.PI * 2);
+    const islandTiltX = Math.cos(islandTiltAng) * rng.range(0.035, 0.075);
+    const islandTiltZ = Math.sin(islandTiltAng) * rng.range(0.035, 0.075);
 
     for (let vz = 0; vz < vh; vz++) {
       for (let vx = 0; vx < vw; vx++) {
@@ -545,26 +587,194 @@ export class TerrainMap {
         // Archetype-specific macro landform sculpting for the 9 new terrains!
         const distCenter = Math.hypot(vx - midX, vz - midZ);
         if (this.resolvedMapType === 'island') {
-          // Lush central Sea Island ringed by deep navigable ocean + sandy beaches
-          const islandRad = 49 * sizeScale + (nBroad - 0.5) * 14 + (nMed - 0.5) * 6;
-          if (distCenter > islandRad - 10 * sizeScale) {
-            const drop = Math.max(0, (distCenter - (islandRad - 10 * sizeScale)) / (18 * sizeScale));
-            h -= drop * drop * 11.5;
-          }
-        } else if (this.resolvedMapType === 'archipelago') {
-          // Multi-island Archipelago: deep sea dotted with many lush islands & scenic islets!
-          let seaH = -2.75 + (nBroad - 0.5) * 0.65;
-          for (const isl of archipelagoIslands) {
-            const coastJitter = (nMed - 0.5) * 3.2 + (nDetail - 0.5) * 1.4;
-            const dIsl = Math.hypot(vx - isl.x, vz - isl.z) + coastJitter;
-            if (dIsl < isl.r) {
-              const t = 1 - dIsl / isl.r;
-              const dome = Math.pow(Math.min(1, t * 1.35), 1.25);
-              const islH = -2.4 + dome * (isl.peak + 2.4) + (nDetail - 0.5) * 0.45;
-              if (islH > seaH) seaH = islH;
+          // Domain-Warped Tectonic Sea Island + Ridged Multifractal Mountain Relief + Organic Bays & Peninsulas!
+          // Zero circular outline: two-stage Inigo Quilez domain warp twists the shoreline into fjords, coves & headlands.
+          const warp = domainWarp2D(vx, vz, this.seed + 701, 0.021 / sizeScale, 28 * sizeScale, 12.5 * sizeScale);
+          const dx = warp.wx - islandCenterX;
+          const dz = warp.wz - islandCenterZ;
+          const rx = dx * islandCos + dz * islandSin;
+          const rz = -dx * islandSin + dz * islandCos;
+          const mainR = 45.5 * sizeScale;
+          const mainMask = 1 - Math.hypot(rx / (mainR * Math.sqrt(islandAspect)), rz / (mainR / Math.sqrt(islandAspect)));
+          const penMask = 1 - Math.hypot(warp.wx - islandPenX, warp.wz - islandPenZ) / islandPenR;
+          const nCont = fbm2D(warp.wx * (0.032 / sizeScale), warp.wz * (0.032 / sizeScale), this.seed + 787, 4) - 0.48;
+          let continent = Math.max(mainMask, penMask * 0.92) + nCont * 0.48;
+
+          // Carve deep randomized coastal bays / fjords away from spawns
+          for (const bay of islandBays) {
+            const bd = Math.hypot(warp.wx - bay.x, warp.wz - bay.z);
+            if (bd < bay.r) {
+              const bt = 1 - bd / bay.r;
+              continent -= bt * bt * 0.62;
             }
           }
-          h = seaH;
+
+          // Gently guarantee each spawn stays anchored on organic dry land (NO sharp distance cutoff!)
+          let spawnSafety = 0;
+          let spawnCoastBoost = 0;
+          for (const s of this.spawns) {
+            const sd = Math.hypot(vx - s.tileX, vz - s.tileZ);
+            if (sd < 26 * sizeScale) {
+              spawnSafety = Math.max(spawnSafety, smoothstep(16 * sizeScale, 4.5 * sizeScale, sd));
+              const wsd = sd + (nBroad - 0.5) * 8.0 * sizeScale + (nMed - 0.5) * 4.0 * sizeScale;
+              spawnCoastBoost = Math.max(spawnCoastBoost, smoothstep(16.5 * sizeScale, 5.0 * sizeScale, wsd));
+            }
+          }
+          continent = Math.max(continent, spawnCoastBoost * 0.38);
+
+          // Organic ocean border falloff (noise-modulated so there's zero square underwater shelf!)
+          const edgeDist = Math.min(vx, vz, this.width - vx, this.height - vz) + (nBroad - 0.5) * 6.5 * sizeScale;
+          const rimFade = smoothstep(4.5 * sizeScale, 16.5 * sizeScale, edgeDist);
+          continent = continent * rimFade - (1 - rimFade) * 0.55;
+
+          if (continent <= 0) {
+            // Deep navigable sea floor with subtle continental shelf slope
+            const shelf = smoothstep(-0.32, 0, continent);
+            h = -3.3 + shelf * 2.55 + (nMed - 0.5) * 0.45;
+          } else {
+            // Dramatic inland elevation: coastal beaches -> rolling terraced hills -> Ridged Multifractal highlands!
+            const coastalRise = smoothstep(0, 0.24, continent);
+            const inlandFactor = smoothstep(0.14, 0.66, continent);
+            const ridged = ridgedMultifractal2D(
+              warp.wx * (0.042 / sizeScale),
+              warp.wz * (0.042 / sizeScale),
+              this.seed + 887,
+              4
+            );
+            const macroZone = fbm2D(vx * (0.022 / sizeScale), vz * (0.022 / sizeScale), this.seed + 953, 3);
+            const hills = fbm2D(warp.wx * (0.068 / sizeScale), warp.wz * (0.068 / sizeScale), seedA, 3);
+            const tilt = (vx - midX) * islandTiltX + (vz - midZ) * islandTiltZ;
+
+            // Keep spawn immediate surroundings buildable while surrounding ridges & hills stay dramatic
+            const spawnDamp = 1 - spawnSafety * 0.72;
+            const highlandBoost = smoothstep(0.36, 0.76, macroZone);
+            let landH =
+              0.22 +
+              coastalRise * 1.55 +
+              inlandFactor * (1.2 + hills * 3.1 + Math.max(-0.8, Math.min(2.2, tilt))) +
+              inlandFactor * spawnDamp * (Math.pow(ridged, 1.35) * (3.8 + highlandBoost * 8.2));
+
+            // Natural hillside terracing on mid-elevation slopes
+            if (landH > 2.2 && landH < 7.8) {
+              landH += Math.sin(landH * 1.55) * 0.22;
+            }
+            landH += (nDetail - 0.5) * 0.65;
+            h = landH;
+          }
+        } else if (this.resolvedMapType === 'archipelago') {
+          // Pure Continuous 2-Stage Domain-Warped Fractal Archipelago + Ridged Multifractal Topography!
+          // Produces authentic Aegean / volcanic island chains of wildly varying sizes, coves, fjords, hills & peaks —
+          // ZERO circles AND ZERO straight Voronoi seams!
+          let spawnProximity = 0;
+          for (const s of this.spawns) {
+            const sd = Math.hypot(vx - s.tileX, vz - s.tileZ);
+            if (sd < 20 * sizeScale) {
+              spawnProximity = Math.max(spawnProximity, smoothstep(15.5 * sizeScale, 4.0 * sizeScale, sd));
+            }
+          }
+
+          // Two-stage Domain Warping twists coordinates organically into curved spits, bays, fjords & island arcs
+          const warp = domainWarp2D(
+            vx,
+            vz,
+            this.seed + 1301,
+            0.025 / sizeScale,
+            23.0 * sizeScale,
+            10.5 * sizeScale
+          );
+
+          // Continuous multi-scale fractal landmass field across the open sea
+          const fCont = fbm2D(warp.wx * (0.043 / sizeScale), warp.wz * (0.043 / sizeScale), this.seed + 1409, 4);
+          const fRidge = ridgedMultifractal2D(
+            warp.wx * (0.036 / sizeScale),
+            warp.wz * (0.036 / sizeScale),
+            this.seed + 1511,
+            4
+          );
+          const fSmall = fbm2D(warp.wx * (0.092 / sizeScale), warp.wz * (0.092 / sizeScale), this.seed + 1609, 3);
+          const seaBasin = fbm2D(vx * (0.017 / sizeScale), vz * (0.017 / sizeScale), this.seed + 1721, 3) - 0.5;
+
+          let ambientField = (fCont - 0.50) * 1.12 + (fRidge - 0.45) * 0.44 + (fSmall - 0.5) * 0.22 + seaBasin * 0.24;
+
+          // Evaluate domain-warped organic home island for each player + its surrounding natural deep-sea strait!
+          let bestHomeField = -10;
+          let spawnStraitSuppress = 0;
+          for (let i = 0; i < spawnHomeRegions.length; i++) {
+            const hr = spawnHomeRegions[i];
+            const s = this.spawns[i];
+            // Softly attenuate warp only inside the tight Civic Center core so the coastline stays wildly organic!
+            const sd = Math.hypot(vx - s.tileX, vz - s.tileZ);
+            const coreHold = smoothstep(10.5 * sizeScale, 3.0 * sizeScale, sd);
+            const ex = vx * coreHold + warp.wx * (1 - coreHold);
+            const ez = vz * coreHold + warp.wz * (1 - coreHold);
+
+            const dx = ex - hr.x;
+            const dz = ez - hr.z;
+            const lx = dx * hr.cos + dz * hr.sin;
+            const lz = -dx * hr.sin + dz * hr.cos;
+            const mainF = 1 - Math.hypot(lx / hr.rx, lz / hr.rz);
+            const penF = 1 - Math.hypot(ex - hr.penX, ez - hr.penZ) / hr.penR;
+            const homeF = Math.max(mainF, penF * 0.92) + (fCont - 0.5) * 0.34 + (fSmall - 0.5) * 0.22;
+
+            if (homeF > bestHomeField) {
+              bestHomeField = homeF;
+            }
+            // Carve a natural winding sea channel in the halo (-0.46 .. 0.02) outside each home island so spawns NEVER connect!
+            if (homeF < 0.02 && homeF > -0.46) {
+              const haloT = 1 - Math.abs(homeF - -0.20) / 0.26;
+              if (haloT > 0) {
+                spawnStraitSuppress = Math.max(spawnStraitSuppress, haloT * haloT * (3 - 2 * haloT));
+              }
+            }
+          }
+
+          // Suppress ambient archipelago islands inside the winding strait halo around each player's home island,
+          // then union with the player's own organic home island!
+          ambientField -= spawnStraitSuppress * 0.85;
+          let landField = Math.max(ambientField, bestHomeField * 0.44);
+
+          // Smooth organic ocean rim around outer map border so ships can circumnavigate freely
+          const borderD = Math.min(vx, vz, this.width - vx, this.height - vz) + (nBroad - 0.5) * 5.0 * sizeScale;
+          const borderFade = smoothstep(2.8 * sizeScale, 10.5 * sizeScale, borderD);
+          landField = landField * borderFade - (1 - borderFade) * 0.48;
+
+          if (landField <= 0) {
+            // Deep navigable ocean with smooth continental shelf
+            const shelf = smoothstep(-0.28, 0, landField);
+            h = -3.15 + shelf * 2.45 + (nMed - 0.5) * 0.35;
+          } else {
+            // Rich continuous multi-biome island elevation:
+            // beaches -> coastal lowlands -> terraced hills -> dramatic rocky Ridged Multifractal peaks!
+            const coastT = smoothstep(0, 0.12, landField);
+            const interiorT = smoothstep(0.05, 0.34, landField);
+            const localRidge = ridgedMultifractal2D(
+              warp.wx * (0.052 / sizeScale),
+              warp.wz * (0.052 / sizeScale),
+              this.seed + 1847,
+              4
+            );
+            const localHills = fbm2D(
+              warp.wx * (0.078 / sizeScale),
+              warp.wz * (0.078 / sizeScale),
+              this.seed + 1931,
+              3
+            );
+            // Smooth continuous geological zone (varies seamlessly across the sea: volcanic peaks, terraced bluffs, rolling hills!)
+            const geoZone = fbm2D(vx * (0.022 / sizeScale), vz * (0.022 / sizeScale), this.seed + 2017, 3);
+            const peakIntensity = smoothstep(0.34, 0.76, geoZone);
+            const spawnDamp = 1 - spawnProximity * 0.72;
+
+            let landH =
+              0.16 +
+              coastT * (1.2 + landField * 2.4) +
+              interiorT * (localHills * 3.0 + spawnDamp * Math.pow(localRidge, 1.32) * (3.6 + peakIntensity * 7.8));
+
+            if (landH > 2.2 && landH < 7.6) {
+              landH += Math.sin(landH * 1.5) * 0.22;
+            }
+            landH += (nDetail - 0.5) * 0.48 * coastT;
+            h = landH;
+          }
         } else if (this.resolvedMapType === 'plateau') {
           // High flat-topped central Highland Plateau with sheer cliff rim dropping to outer ring
           const platRad = 48 * sizeScale + (nBroad - 0.5) * 10;
@@ -681,6 +891,12 @@ export class TerrainMap {
       }
     }
 
+    // 5b. Fast deterministic Thermal Talus Erosion for Island & Archipelago:
+    // Smooths jagged micro-spikes into natural climbable hillsides, valleys & ridges without ever filling sea straits!
+    if (this.resolvedMapType === 'island' || this.resolvedMapType === 'archipelago') {
+      this.applyIslandErosionPass();
+    }
+
     // 6. Gently level each Civic Center pad AT or slightly ABOVE its natural surrounding elevation (NEVER carving a sunken basin!)
     for (const s of this.spawns) {
       let ringSum = 0;
@@ -708,11 +924,76 @@ export class TerrainMap {
         for (let vx = minVx; vx <= maxVx; vx++) {
           const d = Math.hypot(vx - s.tileX, vz - s.tileZ);
           if (d >= 10.5) continue;
+          const idx = vz * vw + vx;
+          const curH = this.heights[idx];
+          // On island/archipelago coastlines, never lift outer submerged ocean vertices (d > 5.5) into an artificial circular bulge!
+          if ((this.resolvedMapType === 'island' || this.resolvedMapType === 'archipelago') && d > 5.5 && curH <= WATER_LEVEL + 0.08) {
+            continue;
+          }
           const blend = d < 5.0 ? 1.0 : 1 - (d - 5.0) / 5.5;
           const smooth = blend * blend * (3 - 2 * blend);
-          const idx = vz * vw + vx;
-          this.heights[idx] = this.heights[idx] * (1 - smooth) + padBaseH * smooth;
+          this.heights[idx] = curH * (1 - smooth) + padBaseH * smooth;
         }
+      }
+    }
+  }
+
+  /**
+   * Fast deterministic Thermal Talus Erosion + Coastal Slope Relaxation (6 passes, <2ms).
+   * Transfers excess height from over-steep slopes downhill onto neighboring land vertices,
+   * carving organic valleys, saddle passes, and walkable hillsides while keeping sea straits untouched.
+   */
+  private applyIslandErosionPass(): void {
+    const vw = this.width + 1;
+    const vh = this.height + 1;
+    const talus = 0.72; // Maximum natural slope per tile before talus slides downhill
+    const strength = 0.32;
+    const delta = new Float32Array(vw * vh);
+    const nOff = [-1, 1, -vw, vw, -vw - 1, -vw + 1, vw - 1, vw + 1];
+    const nDist = [1, 1, 1, 1, 1.414, 1.414, 1.414, 1.414];
+
+    for (let iter = 0; iter < 6; iter++) {
+      delta.fill(0);
+      for (let vz = 1; vz < vh - 1; vz++) {
+        const row = vz * vw;
+        for (let vx = 1; vx < vw - 1; vx++) {
+          const idx = row + vx;
+          const cur = this.heights[idx];
+          if (cur <= WATER_LEVEL + 0.15) continue;
+
+          let maxExcess = 0;
+          let sumExcess = 0;
+          for (let k = 0; k < 8; k++) {
+            const nbIdx = idx + nOff[k];
+            const nbH = this.heights[nbIdx];
+            const diff = cur - nbH;
+            const limit = talus * nDist[k];
+            if (diff > limit) {
+              const ex = diff - limit;
+              sumExcess += ex;
+              if (ex > maxExcess) maxExcess = ex;
+            }
+          }
+          if (sumExcess <= 1e-4) continue;
+
+          const moveTotal = maxExcess * strength;
+          delta[idx] -= moveTotal;
+          for (let k = 0; k < 8; k++) {
+            const nbIdx = idx + nOff[k];
+            const nbH = this.heights[nbIdx];
+            const diff = cur - nbH;
+            const limit = talus * nDist[k];
+            if (diff > limit) {
+              // Never deposit sediment into deep navigable sea channels!
+              if (nbH > WATER_LEVEL - 0.35) {
+                delta[nbIdx] += moveTotal * ((diff - limit) / sumExcess);
+              }
+            }
+          }
+        }
+      }
+      for (let i = 0; i < delta.length; i++) {
+        this.heights[i] += delta[i];
       }
     }
   }
@@ -790,6 +1071,8 @@ export class TerrainMap {
 
   /** Guarantees a walkable land/ford connection exists between Player 1 and EVERY other spawn (2..8 nations) */
   private ensureSpawnConnectivity(): void {
+    // Archipelago islands MUST remain completely disconnected by open navigable sea!
+    if (this.resolvedMapType === 'archipelago') return;
     if (this.areSpawnsConnected()) return;
 
     const s1 = this.spawns[0];
@@ -804,8 +1087,8 @@ export class TerrainMap {
         const t = i / steps;
         const cx = s1.tileX + (s2.tileX - s1.tileX) * t;
         const cz = s1.tileZ + (s2.tileZ - s1.tileZ) * t;
-        const rad = this.resolvedMapType === 'archipelago' ? 3.8 : 7.5;
-        const passTargetH = this.resolvedMapType === 'archipelago' ? 0.85 : 2.0;
+        const rad = 7.5;
+        const passTargetH = 2.0;
         const minX = Math.max(2, Math.floor(cx - rad));
         const maxX = Math.min(this.width - 2, Math.ceil(cx + rad));
         const minZ = Math.max(2, Math.floor(cz - rad));
@@ -818,7 +1101,7 @@ export class TerrainMap {
               const smooth = blend * blend * (3 - 2 * blend);
               const cur = this.heights[vz * vw + vx];
               const nextH = cur * (1 - smooth) + passTargetH * smooth;
-              this.heights[vz * vw + vx] = this.resolvedMapType === 'archipelago' ? Math.max(cur, nextH) : nextH;
+              this.heights[vz * vw + vx] = nextH;
             }
           }
         }
@@ -1177,119 +1460,162 @@ export class TerrainMap {
   }
 
   /**
-   * Grades and flattens an uneven hillside/slope around (tileX, tileZ) continuously (0.01m per unit)
-   * until all 100 units complete into a level buildable terrace!
+   * Computes the arithmetic average elevation of the selected tile (tileX, tileZ)
+   * PLUS its surrounding 1-tile ring (all 9 tiles in the 3x3 neighborhood).
    */
-  levelSoilUnit(tileX: number, tileZ: number, units = 1): { leveled: boolean; remaining: number } {
+  computeLevelAverageHeight(tileX: number, tileZ: number): number {
+    let sum = 0;
+    let count = 0;
+    for (let dz = -1; dz <= 1; dz++) {
+      for (let dx = -1; dx <= 1; dx++) {
+        const tx = tileX + dx;
+        const tz = tileZ + dz;
+        if (tx < 0 || tz < 0 || tx >= this.width || tz >= this.height) continue;
+        const tileAvg =
+          (this.getVertexHeight(tx, tz) +
+            this.getVertexHeight(tx + 1, tz) +
+            this.getVertexHeight(tx, tz + 1) +
+            this.getVertexHeight(tx + 1, tz + 1)) *
+          0.25;
+        sum += tileAvg;
+        count++;
+      }
+    }
+    return count > 0 ? sum / count : 0;
+  }
+
+  /** Returns live progress metrics for an active 3x3 leveling job on (tileX, tileZ) */
+  getLevelProgress(
+    tileX: number,
+    tileZ: number
+  ): { active: boolean; targetH: number; doneMeters: number; totalMeters: number; remainingMeters: number; pct: number } {
     if (tileX < 3 || tileZ < 3 || tileX > this.width - 4 || tileZ > this.height - 4) {
-      return { leveled: false, remaining: 0 };
+      return { active: false, targetH: 0, doneMeters: 0, totalMeters: 0, remainingMeters: 0, pct: 0 };
     }
     const idx = tileZ * this.width + tileX;
-    const prev = this.tileSoilUnits[idx];
-    const actualUnits = Math.min(prev, Math.max(0, units));
-    const next = prev - actualUnits;
-    if (next <= 0) {
-      this.flattenTerrace(tileX, tileZ);
+    const locked = this.tileLevelTarget[idx];
+    const active = !Number.isNaN(locked);
+    const targetH = active ? locked : Math.max(-3.0, Math.min(11.5, this.computeLevelAverageHeight(tileX, tileZ)));
+    const vw = this.width + 1;
+    let maxRem = 0;
+    for (let vz = tileZ - 1; vz <= tileZ + 2; vz++) {
+      for (let vx = tileX - 1; vx <= tileX + 2; vx++) {
+        const d = Math.abs(targetH - this.heights[vz * vw + vx]);
+        if (d > maxRem) maxRem = d;
+      }
+    }
+    const totalMeters = active ? Math.max(maxRem, this.tileLevelInitDiff[idx]) : maxRem;
+    const doneMeters = Math.max(0, totalMeters - maxRem);
+    const pct = totalMeters > 1e-4 ? Math.max(0, Math.min(1, doneMeters / totalMeters)) : 1;
+    return { active, targetH, doneMeters, totalMeters, remainingMeters: maxRem, pct };
+  }
+
+  /**
+   * Grades the selected tile (tileX, tileZ) PLUS its surrounding 1-tile ring (3x3 tiles = 4x4 vertices)
+   * toward their locked 3x3 average elevation at the exact digging rate of 0.01m per worker per cycle!
+   */
+  levelSoilUnit(tileX: number, tileZ: number, units = 1): { leveled: boolean; remaining: number; targetH: number } {
+    if (tileX < 3 || tileZ < 3 || tileX > this.width - 4 || tileZ > this.height - 4) {
+      return { leveled: false, remaining: 0, targetH: 0 };
+    }
+    const idx = tileZ * this.width + tileX;
+    const vw = this.width + 1;
+    let targetH = this.tileLevelTarget[idx];
+    if (Number.isNaN(targetH)) {
+      targetH = Math.max(-3.0, Math.min(11.5, this.computeLevelAverageHeight(tileX, tileZ)));
+      let initMaxDiff = 0;
+      for (let vz = tileZ - 1; vz <= tileZ + 2; vz++) {
+        for (let vx = tileX - 1; vx <= tileX + 2; vx++) {
+          const d = Math.abs(targetH - this.heights[vz * vw + vx]);
+          if (d > initMaxDiff) initMaxDiff = d;
+        }
+      }
+      if (initMaxDiff <= 1e-4) {
+        this.tileLevelTarget[idx] = Number.NaN;
+        this.tileLevelInitDiff[idx] = 0;
+        this.tileSoilUnits[idx] = SOIL_UNITS_PER_TILE;
+        this.tileTerraformEpoch[idx]++;
+        this.syncActiveSoilIndex(idx);
+        return { leveled: true, remaining: SOIL_UNITS_PER_TILE, targetH };
+      }
+      this.tileLevelTarget[idx] = targetH;
+      this.tileLevelInitDiff[idx] = initMaxDiff;
+    }
+
+    const maxStep = DIG_STEP_METERS * Math.max(0, units);
+    let changed = false;
+    let maxRemAfter = 0;
+    for (let vz = tileZ - 1; vz <= tileZ + 2; vz++) {
+      for (let vx = tileX - 1; vx <= tileX + 2; vx++) {
+        const vIdx = vz * vw + vx;
+        const prev = this.heights[vIdx];
+        const diff = targetH - prev;
+        let next = prev;
+        if (Math.abs(diff) <= maxStep) {
+          next = targetH;
+        } else if (maxStep > 0) {
+          next = prev + Math.sign(diff) * maxStep;
+        }
+        if (Math.abs(next - prev) > 1e-6) {
+          this.heights[vIdx] = next;
+          this.dugMask[vIdx] = Math.min(1, this.dugMask[vIdx] + Math.min(0.15, maxStep * 2.5));
+          changed = true;
+        }
+        const rem = Math.abs(targetH - next);
+        if (rem > maxRemAfter) maxRemAfter = rem;
+      }
+    }
+
+    if (changed) {
+      this.computeStaticPassability();
+      this.version++;
+    }
+
+    if (maxRemAfter <= 1e-4) {
+      this.tileLevelTarget[idx] = Number.NaN;
+      this.tileLevelInitDiff[idx] = 0;
       this.tileSoilUnits[idx] = SOIL_UNITS_PER_TILE;
       this.tileTerraformEpoch[idx]++;
       this.syncActiveSoilIndex(idx);
-      return { leveled: true, remaining: SOIL_UNITS_PER_TILE };
+      return { leveled: true, remaining: SOIL_UNITS_PER_TILE, targetH };
     }
-    if (actualUnits > 0) {
-      this.flattenTerraceStep(tileX, tileZ, Math.min(1, actualUnits / Math.max(1, prev)));
-    }
-    this.tileSoilUnits[idx] = next;
+
+    const initD = Math.max(DIG_STEP_METERS, this.tileLevelInitDiff[idx]);
+    const fracRem = Math.max(0, Math.min(1, maxRemAfter / initD));
+    const remUnits = Math.max(1, Math.min(SOIL_UNITS_PER_TILE - 1, Math.ceil(fracRem * SOIL_UNITS_PER_TILE)));
+    this.tileSoilUnits[idx] = remUnits;
     this.syncActiveSoilIndex(idx);
-    return { leveled: false, remaining: next };
+    return { leveled: false, remaining: remUnits, targetH };
   }
 
-  /** Cancels in-progress excavation on a tile while PRESERVING its exact current terrain height (never reverts!) */
+  /** Cancels in-progress excavation or leveling on a tile while PRESERVING its exact current terrain height (never reverts!) */
   cancelSoilWork(tileX: number, tileZ: number): void {
     if (tileX < 0 || tileZ < 0 || tileX >= this.width || tileZ >= this.height) return;
     const idx = tileZ * this.width + tileX;
     this.tileSoilUnits[idx] = SOIL_UNITS_PER_TILE;
     this.tileFillUnits[idx] = 0;
+    this.tileLevelTarget[idx] = Number.NaN;
+    this.tileLevelInitDiff[idx] = 0;
     this.tileTerraformEpoch[idx]++;
     this.activeSoilIndices.delete(idx);
     this.soilProgressVersion++;
   }
 
-  /** Incrementally grades vertices a fraction toward a level terrace so ground reshapes visibly on every scoop */
-  private flattenTerraceStep(tileX: number, tileZ: number, stepFrac: number): void {
-    if (tileX < 3 || tileZ < 3 || tileX > this.width - 4 || tileZ > this.height - 4) return;
-    const vw = this.width + 1;
-    const cx = tileX + 0.5;
-    const cz = tileZ + 0.5;
-    const avgH =
-      (this.getVertexHeight(tileX, tileZ) +
-        this.getVertexHeight(tileX + 1, tileZ) +
-        this.getVertexHeight(tileX, tileZ + 1) +
-        this.getVertexHeight(tileX + 1, tileZ + 1)) *
-      0.25;
-    const targetH = Math.max(WATER_LEVEL + 0.9, Math.min(9.5, avgH));
-    const flatRad = 2.6;
-    const blendRad = 4.5;
-    const minVx = Math.max(2, Math.floor(cx - blendRad));
-    const maxVx = Math.min(this.width - 2, Math.ceil(cx + blendRad));
-    const minVz = Math.max(2, Math.floor(cz - blendRad));
-    const maxVz = Math.min(this.height - 2, Math.ceil(cz + blendRad));
-    let changed = false;
-    for (let vz = minVz; vz <= maxVz; vz++) {
-      for (let vx = minVx; vx <= maxVx; vx++) {
-        const d = Math.hypot(vx - cx, vz - cz);
-        if (d >= blendRad) continue;
-        const t = d <= flatRad ? 1 : 1 - (d - flatRad) / (blendRad - flatRad);
-        const smooth = t * t * (3 - 2 * t) * stepFrac;
-        const vIdx = vz * vw + vx;
-        const prev = this.heights[vIdx];
-        const next = prev + (targetH - prev) * smooth;
-        if (Math.abs(next - prev) > 1e-5) {
-          this.heights[vIdx] = next;
-          changed = true;
-        }
-        this.dugMask[vIdx] = Math.min(1, this.dugMask[vIdx] + smooth * 0.65);
-      }
-    }
-    if (changed) {
-      this.computeStaticPassability();
-      this.version++;
-    }
-  }
-
-  /** Smoothly flattens a 4x4 tile area around (tileX, tileZ) so buildings can be constructed on formerly uneven slopes */
+  /** Instantly flattens the selected tile (tileX, tileZ) + surrounding 1-tile ring (3x3 tiles) to their average elevation */
   flattenTerrace(tileX: number, tileZ: number): boolean {
     if (tileX < 3 || tileZ < 3 || tileX > this.width - 4 || tileZ > this.height - 4) return false;
     const vw = this.width + 1;
-    const cx = tileX + 0.5;
-    const cz = tileZ + 0.5;
-
-    // Target height = average height of immediate center, clamped to dry buildable land
-    const avgH =
-      (this.getVertexHeight(tileX, tileZ) +
-        this.getVertexHeight(tileX + 1, tileZ) +
-        this.getVertexHeight(tileX, tileZ + 1) +
-        this.getVertexHeight(tileX + 1, tileZ + 1)) *
-      0.25;
-    const targetH = Math.max(WATER_LEVEL + 0.9, Math.min(9.5, avgH));
-
-    const flatRad = 2.6;
-    const blendRad = 4.5;
-    const minVx = Math.max(2, Math.floor(cx - blendRad));
-    const maxVx = Math.min(this.width - 2, Math.ceil(cx + blendRad));
-    const minVz = Math.max(2, Math.floor(cz - blendRad));
-    const maxVz = Math.min(this.height - 2, Math.ceil(cz + blendRad));
-
-    for (let vz = minVz; vz <= maxVz; vz++) {
-      for (let vx = minVx; vx <= maxVx; vx++) {
-        const d = Math.hypot(vx - cx, vz - cz);
-        if (d >= blendRad) continue;
-        const t = d <= flatRad ? 1 : 1 - (d - flatRad) / (blendRad - flatRad);
-        const smooth = t * t * (3 - 2 * t);
+    const targetH = Math.max(-3.0, Math.min(11.5, this.computeLevelAverageHeight(tileX, tileZ)));
+    for (let vz = tileZ - 1; vz <= tileZ + 2; vz++) {
+      for (let vx = tileX - 1; vx <= tileX + 2; vx++) {
         const vIdx = vz * vw + vx;
-        this.heights[vIdx] = this.heights[vIdx] * (1 - smooth) + targetH * smooth;
-        this.dugMask[vIdx] = Math.min(1, this.dugMask[vIdx] + smooth * 0.75);
+        this.heights[vIdx] = targetH;
+        this.dugMask[vIdx] = Math.min(1, this.dugMask[vIdx] + 0.75);
       }
     }
+    const idx = tileZ * this.width + tileX;
+    this.tileLevelTarget[idx] = Number.NaN;
+    this.tileLevelInitDiff[idx] = 0;
     this.computeStaticPassability();
     this.version++;
     return true;

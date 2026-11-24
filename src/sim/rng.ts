@@ -68,3 +68,60 @@ export function fbm2D(x: number, z: number, seed: number, octaves = 4): number {
   }
   return value / norm;
 }
+
+/**
+ * Ken Musgrave-style Ridged Multifractal noise (0..1):
+ * Produces sharp alpine ridges, terraced foothills, and carved drainage valleys.
+ */
+export function ridgedMultifractal2D(x: number, z: number, seed: number, octaves = 4): number {
+  let sum = 0;
+  let amp = 0.5;
+  let freq = 1.0;
+  let weight = 1.0;
+  let norm = 0;
+  for (let i = 0; i < octaves; i++) {
+    const n = valueNoise2D(x * freq, z * freq, seed + i * 131);
+    let signal = 1.0 - Math.abs(n * 2.0 - 1.0);
+    signal = signal * signal * weight;
+    weight = Math.max(0.15, Math.min(1.0, signal * 1.9));
+    sum += signal * amp;
+    norm += amp;
+    amp *= 0.5;
+    freq *= 2.07;
+  }
+  return sum / Math.max(1e-6, norm);
+}
+
+/**
+ * Two-stage Inigo Quilez Domain Warping:
+ * Organically twists and folds 2D coordinates to eliminate circular/grid artifacts
+ * and produce authentic bays, fjords, peninsulas, and curved coastlines.
+ */
+export function domainWarp2D(
+  x: number,
+  z: number,
+  seed: number,
+  scale: number,
+  amp1: number,
+  amp2: number
+): { wx: number; wz: number; qx: number; qz: number } {
+  const sx = x * scale;
+  const sz = z * scale;
+  const qx = fbm2D(sx, sz, seed + 17, 3) - 0.5;
+  const qz = fbm2D(sx + 5.2, sz + 1.3, seed + 53, 3) - 0.5;
+  const rx = fbm2D(sx * 1.7 + qx * 2.6 + 1.7, sz * 1.7 + qz * 2.6 + 9.2, seed + 109, 3) - 0.5;
+  const rz = fbm2D(sx * 1.7 + qx * 2.6 + 8.3, sz * 1.7 + qz * 2.6 + 2.8, seed + 173, 3) - 0.5;
+  return {
+    wx: x + qx * amp1 + rx * amp2,
+    wz: z + qz * amp1 + rz * amp2,
+    qx,
+    qz,
+  };
+}
+
+export function smoothstep(edge0: number, edge1: number, x: number): number {
+  const denom = edge1 - edge0;
+  if (Math.abs(denom) < 1e-6) return x >= edge1 ? 1 : 0;
+  const t = Math.max(0, Math.min(1, (x - edge0) / denom));
+  return t * t * (3 - 2 * t);
+}

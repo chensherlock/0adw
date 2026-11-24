@@ -1,6 +1,6 @@
 import { AudioManager } from '../audio/AudioManager';
 import { TEMPLATES } from '../config/entities';
-import { t, translateBuildReason } from '../config/i18n';
+import { getTemplateText, t, translateBuildReason } from '../config/i18n';
 import { BuildingOrderMode, Entity, TerraformMode } from '../config/types';
 import { SceneManager } from '../render/SceneManager';
 import { WATER_LEVEL } from '../sim/map/TerrainMap';
@@ -22,6 +22,13 @@ export class InputController {
   pendingDigSource: { tx: number; tz: number; x: number; y: number; z: number } | null = null;
   attackMoveMode = false;
   garrisonTargetMode = false;
+  rallyTargetMode = false;
+  plantTreeMode = false;
+  plantSourceTreeId: number | null = null;
+  hybridTreeMode = false;
+  hybridTreeAId: number | null = null;
+  hybridTreeBId: number | null = null;
+  captureAnimalMode = false;
   buildingOrderMode: BuildingOrderMode = 'capture';
 
   private readonly humanPlayerId = 1;
@@ -70,7 +77,146 @@ export class InputController {
     this.pendingDigSource = null;
     this.attackMoveMode = false;
     this.garrisonTargetMode = false;
+    this.rallyTargetMode = false;
+    this.plantTreeMode = false;
+    this.plantSourceTreeId = null;
+    this.hybridTreeMode = false;
+    this.hybridTreeAId = null;
+    this.hybridTreeBId = null;
+    this.captureAnimalMode = false;
     this.attach();
+  }
+
+  startRallyTargetMode(): void {
+    this.setPlacementMode(null);
+    this.terraformMode = null;
+    this.attackMoveMode = false;
+    this.garrisonTargetMode = false;
+    this.plantTreeMode = false;
+    this.plantSourceTreeId = null;
+    this.hybridTreeMode = false;
+    this.hybridTreeAId = null;
+    this.hybridTreeBId = null;
+    this.captureAnimalMode = false;
+    this.rallyTargetMode = true;
+    this.callbacks.onStatusToast(t('toastRallyModeHint'), 'info');
+  }
+
+  startPlantTreeMode(): void {
+    const workers = Array.from(this.selectedIds).filter((id) => {
+      const e = this.world.entities.get(id);
+      if (!e || !e.alive || e.owner !== this.humanPlayerId || e.garrisonedIn !== null) return false;
+      const tpl = TEMPLATES[e.templateId];
+      return Boolean(tpl.gather && !tpl.isNaval);
+    });
+    if (workers.length === 0) {
+      this.audio.playError();
+      this.callbacks.onStatusToast(t('toastNeedWorkers'), 'warn');
+      return;
+    }
+    this.setPlacementMode(null);
+    this.terraformMode = null;
+    this.attackMoveMode = false;
+    this.garrisonTargetMode = false;
+    this.rallyTargetMode = false;
+    this.hybridTreeMode = false;
+    this.hybridTreeAId = null;
+    this.hybridTreeBId = null;
+    this.captureAnimalMode = false;
+    this.plantTreeMode = true;
+    this.plantSourceTreeId = null;
+    this.callbacks.onStatusToast(t('toastPlantSelectTree'), 'info');
+    this.callbacks.onSelectionChanged();
+  }
+
+  cancelPlantTreeMode(): void {
+    this.plantTreeMode = false;
+    this.plantSourceTreeId = null;
+    this.callbacks.onSelectionChanged();
+  }
+
+  startHybridTreeMode(): void {
+    const workers = Array.from(this.selectedIds).filter((id) => {
+      const e = this.world.entities.get(id);
+      if (!e || !e.alive || e.owner !== this.humanPlayerId || e.garrisonedIn !== null) return false;
+      const tpl = TEMPLATES[e.templateId];
+      return Boolean(tpl.gather && !tpl.isNaval);
+    });
+    if (workers.length === 0) {
+      this.audio.playError();
+      this.callbacks.onStatusToast(t('toastNeedWorkers'), 'warn');
+      return;
+    }
+    this.setPlacementMode(null);
+    this.terraformMode = null;
+    this.attackMoveMode = false;
+    this.garrisonTargetMode = false;
+    this.rallyTargetMode = false;
+    this.plantTreeMode = false;
+    this.plantSourceTreeId = null;
+    this.captureAnimalMode = false;
+    this.hybridTreeMode = true;
+    this.hybridTreeAId = null;
+    this.hybridTreeBId = null;
+    this.callbacks.onStatusToast(t('toastHybridStep1'), 'info');
+    this.callbacks.onSelectionChanged();
+  }
+
+  cancelHybridTreeMode(): void {
+    this.hybridTreeMode = false;
+    this.hybridTreeAId = null;
+    this.hybridTreeBId = null;
+    this.callbacks.onSelectionChanged();
+  }
+
+  startCaptureAnimalMode(): void {
+    const workers = Array.from(this.selectedIds).filter((id) => {
+      const e = this.world.entities.get(id);
+      if (!e || !e.alive || e.owner !== this.humanPlayerId || e.garrisonedIn !== null) return false;
+      const tpl = TEMPLATES[e.templateId];
+      return Boolean(tpl.gather && !tpl.isNaval);
+    });
+    if (workers.length === 0) {
+      this.audio.playError();
+      this.callbacks.onStatusToast(t('toastNeedWorkers'), 'warn');
+      return;
+    }
+    let hasPasture = false;
+    for (const ent of this.world.entities.values()) {
+      if (ent.alive && ent.owner === this.humanPlayerId && !ent.isFoundation && TEMPLATES[ent.templateId]?.isPasture) {
+        hasPasture = true;
+        break;
+      }
+    }
+    if (!hasPasture) {
+      this.audio.playError();
+      this.callbacks.onStatusToast(t('toastCaptureNeedPasture'), 'warn');
+      return;
+    }
+    const firstW = this.world.entities.get(workers[0])!;
+    if (!this.world.findNearestAvailablePasture(this.humanPlayerId, firstW.x, firstW.z)) {
+      this.audio.playError();
+      this.callbacks.onStatusToast(t('toastCapturePastureFull'), 'warn');
+      return;
+    }
+    this.setPlacementMode(null);
+    this.terraformMode = null;
+    this.attackMoveMode = false;
+    this.garrisonTargetMode = false;
+    this.rallyTargetMode = false;
+    this.plantTreeMode = false;
+    this.plantSourceTreeId = null;
+    this.hybridTreeMode = false;
+    this.hybridTreeAId = null;
+    this.hybridTreeBId = null;
+    this.captureAnimalMode = true;
+    this.callbacks.onStatusToast(t('toastCaptureSelectAnimal'), 'info');
+    this.callbacks.onSelectionChanged();
+  }
+
+  cancelCaptureAnimalMode(): void {
+    this.captureAnimalMode = false;
+    this.callbacks.onSelectionChanged();
   }
 
   setPlacementMode(templateId: string | null): void {
@@ -86,6 +232,12 @@ export class InputController {
     this.tunnelDragEndTile = null;
     this.attackMoveMode = false;
     this.garrisonTargetMode = false;
+    this.plantTreeMode = false;
+    this.plantSourceTreeId = null;
+    this.hybridTreeMode = false;
+    this.hybridTreeAId = null;
+    this.hybridTreeBId = null;
+    this.captureAnimalMode = false;
     this.sceneManager.updateWallLinePreview([]);
     this.sceneManager.updateTunnelDragPreview(null, null, false);
     this.sceneManager.updateTerraformPreview(0, 0, 0, null, false);
@@ -106,6 +258,12 @@ export class InputController {
     this.pendingDigSource = null;
     this.attackMoveMode = false;
     this.garrisonTargetMode = false;
+    this.plantTreeMode = false;
+    this.plantSourceTreeId = null;
+    this.hybridTreeMode = false;
+    this.hybridTreeAId = null;
+    this.hybridTreeBId = null;
+    this.captureAnimalMode = false;
     if (!mode) {
       this.sceneManager.updateTerraformPreview(0, 0, 0, null, false);
     } else {
@@ -235,18 +393,327 @@ export class InputController {
           this.attackMoveMode = false;
           return;
         }
-        // Garrison target click
-        if (this.garrisonTargetMode) {
+        // Rally Point target click (for Civic Center & all production buildings!)
+        if (this.rallyTargetMode) {
           const picked = this.pickEntityAtScreen(e.clientX, e.clientY);
-          if (picked && picked.owner === this.humanPlayerId && TEMPLATES[picked.templateId].garrisonCapacity) {
+          const terrainHit = this.sceneManager.raycastTerrain(e.clientX, e.clientY);
+          const targetPos = picked
+            ? { x: picked.x, z: picked.z }
+            : terrainHit
+              ? { x: terrainHit.x, z: terrainHit.z }
+              : null;
+          if (targetPos) {
+            const prodBuildings = Array.from(this.selectedIds)
+              .map((id) => this.world.entities.get(id))
+              .filter(
+                (ent): ent is Entity =>
+                  !!ent && ent.alive && ent.owner === this.humanPlayerId && TEMPLATES[ent.templateId].kind === 'building' && Boolean(TEMPLATES[ent.templateId].trains)
+              );
+            for (const b of prodBuildings) {
+              this.world.enqueueCommand({
+                type: 'set_rally',
+                playerId: this.humanPlayerId,
+                buildingId: b.id,
+                x: targetPos.x,
+                z: targetPos.z,
+                targetId: picked && TEMPLATES[picked.templateId].resourceType ? picked.id : undefined,
+              });
+            }
+            if (prodBuildings.length > 0) {
+              this.audio.playOrder();
+              this.sceneManager.spawnClickPing(
+                targetPos.x,
+                targetPos.z,
+                this.world.terrain.getHeightAt(targetPos.x, targetPos.z),
+                0xfacc15
+              );
+              this.callbacks.onStatusToast(t('toastRallyUpdated'), 'good');
+            }
+          }
+          this.rallyTargetMode = false;
+          return;
+        }
+        // Tree Branch Planting 2-step mode: Step 1 click existing tree -> Step 2 click empty dry land!
+        if (this.plantTreeMode) {
+          if (this.plantSourceTreeId === null) {
+            let picked = this.pickEntityAtScreen(e.clientX, e.clientY);
+            if (!picked || !World.isTreeTemplate(picked.templateId)) {
+              const hit = this.sceneManager.raycastTerrain(e.clientX, e.clientY);
+              if (hit) {
+                let bestTree: Entity | null = null;
+                let bestD2 = 3.6 * 3.6;
+                for (const ent of this.world.entities.values()) {
+                  if (!ent.alive || !World.isTreeTemplate(ent.templateId)) continue;
+                  const dx = ent.x - hit.x;
+                  const dz = ent.z - hit.z;
+                  const d2 = dx * dx + dz * dz;
+                  if (d2 < bestD2) {
+                    bestD2 = d2;
+                    bestTree = ent;
+                  }
+                }
+                picked = bestTree;
+              }
+            }
+            if (picked && picked.alive && World.isTreeTemplate(picked.templateId)) {
+              this.plantSourceTreeId = picked.id;
+              this.audio.playOrder();
+              this.sceneManager.spawnClickPing(
+                picked.x,
+                picked.z,
+                this.world.terrain.getHeightAt(picked.x, picked.z),
+                0x22c55e
+              );
+              this.callbacks.onStatusToast(`${t('toastPlantSelectSpot')} (${getTemplateText(picked.templateId).name})`, 'info');
+              this.callbacks.onSelectionChanged();
+            } else {
+              this.audio.playError();
+              this.callbacks.onStatusToast(t('toastPlantSelectTree'), 'warn');
+            }
+            return;
+          } else {
+            const hit = this.sceneManager.raycastTerrain(e.clientX, e.clientY);
+            const spot = hit ? this.world.findNearestPlantableSpot(hit.x, hit.z, 3.8) : null;
+            if (!hit || !spot) {
+              this.audio.playError();
+              this.callbacks.onStatusToast(t('toastPlantInvalidSpot'), 'warn');
+              return;
+            }
+            const workers = Array.from(this.selectedIds).filter((id) => {
+              const ent = this.world.entities.get(id);
+              if (!ent || !ent.alive || ent.owner !== this.humanPlayerId || ent.garrisonedIn !== null) return false;
+              const tpl = TEMPLATES[ent.templateId];
+              return Boolean(tpl.gather && !tpl.isNaval);
+            });
+            if (workers.length === 0) {
+              this.cancelPlantTreeMode();
+              return;
+            }
             this.world.enqueueCommand({
-              type: 'garrison',
+              type: 'plant_tree',
               playerId: this.humanPlayerId,
-              entityIds: Array.from(this.selectedIds),
-              buildingId: picked.id,
+              entityIds: workers,
+              sourceTreeId: this.plantSourceTreeId,
+              x: spot.x,
+              z: spot.z,
+              queued: e.shiftKey,
             });
             this.audio.playOrder();
-            this.sceneManager.spawnClickPing(picked.x, picked.z, this.world.terrain.getHeightAt(picked.x, picked.z), 0x38bdf8);
+            this.sceneManager.spawnClickPing(spot.x, spot.z, this.world.terrain.getHeightAt(spot.x, spot.z), 0x22c55e);
+            if (!e.shiftKey) {
+              this.cancelPlantTreeMode();
+            }
+            return;
+          }
+        }
+        // Tree Hybridization 3-step mode: Step 1 click tree A -> Step 2 click DIFFERENT species tree B -> Step 3 click dry ground!
+        if (this.hybridTreeMode) {
+          const pickNearbyTree = (): Entity | null => {
+            let picked = this.pickEntityAtScreen(e.clientX, e.clientY);
+            if (!picked || !World.isTreeTemplate(picked.templateId)) {
+              const hit = this.sceneManager.raycastTerrain(e.clientX, e.clientY);
+              if (hit) {
+                let bestTree: Entity | null = null;
+                let bestD2 = 3.6 * 3.6;
+                for (const ent of this.world.entities.values()) {
+                  if (!ent.alive || !World.isTreeTemplate(ent.templateId)) continue;
+                  const dx = ent.x - hit.x;
+                  const dz = ent.z - hit.z;
+                  const d2 = dx * dx + dz * dz;
+                  if (d2 < bestD2) {
+                    bestD2 = d2;
+                    bestTree = ent;
+                  }
+                }
+                picked = bestTree;
+              }
+            }
+            return picked && picked.alive && World.isTreeTemplate(picked.templateId) ? picked : null;
+          };
+
+          if (this.hybridTreeAId === null) {
+            const treeA = pickNearbyTree();
+            if (treeA) {
+              this.hybridTreeAId = treeA.id;
+              this.audio.playOrder();
+              this.sceneManager.spawnClickPing(
+                treeA.x,
+                treeA.z,
+                this.world.terrain.getHeightAt(treeA.x, treeA.z),
+                0x22c55e
+              );
+              this.callbacks.onStatusToast(`${t('toastHybridStep2')} (${getTemplateText(treeA.templateId).name})`, 'info');
+              this.callbacks.onSelectionChanged();
+            } else {
+              this.audio.playError();
+              this.callbacks.onStatusToast(t('toastHybridStep1'), 'warn');
+            }
+            return;
+          } else if (this.hybridTreeBId === null) {
+            const treeA = this.world.entities.get(this.hybridTreeAId);
+            const treeB = pickNearbyTree();
+            if (!treeA || !treeA.alive) {
+              this.hybridTreeAId = null;
+              this.audio.playError();
+              this.callbacks.onStatusToast(t('toastHybridStep1'), 'warn');
+              return;
+            }
+            if (!treeB) {
+              this.audio.playError();
+              this.callbacks.onStatusToast(t('toastHybridStep2'), 'warn');
+              return;
+            }
+            const resultTpl = World.resolveHybridTreeTemplate(treeA.templateId, treeB.templateId);
+            if (!resultTpl) {
+              this.audio.playError();
+              this.callbacks.onStatusToast(t('toastHybridNeedDifferent'), 'warn');
+              return;
+            }
+            this.hybridTreeBId = treeB.id;
+            this.audio.playOrder();
+            this.sceneManager.spawnClickPing(
+              treeB.x,
+              treeB.z,
+              this.world.terrain.getHeightAt(treeB.x, treeB.z),
+              0xfacc15
+            );
+            this.callbacks.onStatusToast(
+              `${t('toastHybridStep3')} (${getTemplateText(treeA.templateId).shortName} × ${getTemplateText(treeB.templateId).shortName} → ${getTemplateText(resultTpl).name})`,
+              'good'
+            );
+            this.callbacks.onSelectionChanged();
+            return;
+          } else {
+            const hit = this.sceneManager.raycastTerrain(e.clientX, e.clientY);
+            const spot = hit ? this.world.findNearestPlantableSpot(hit.x, hit.z, 3.8) : null;
+            if (!hit || !spot) {
+              this.audio.playError();
+              this.callbacks.onStatusToast(t('toastPlantInvalidSpot'), 'warn');
+              return;
+            }
+            const workers = Array.from(this.selectedIds).filter((id) => {
+              const ent = this.world.entities.get(id);
+              if (!ent || !ent.alive || ent.owner !== this.humanPlayerId || ent.garrisonedIn !== null) return false;
+              const tpl = TEMPLATES[ent.templateId];
+              return Boolean(tpl.gather && !tpl.isNaval);
+            });
+            if (workers.length === 0) {
+              this.cancelHybridTreeMode();
+              return;
+            }
+            this.world.enqueueCommand({
+              type: 'hybridize_tree',
+              playerId: this.humanPlayerId,
+              entityIds: workers,
+              treeAId: this.hybridTreeAId,
+              treeBId: this.hybridTreeBId,
+              x: spot.x,
+              z: spot.z,
+              queued: e.shiftKey,
+            });
+            this.audio.playOrder();
+            this.sceneManager.spawnClickPing(spot.x, spot.z, this.world.terrain.getHeightAt(spot.x, spot.z), 0xfacc15);
+            if (!e.shiftKey) {
+              this.cancelHybridTreeMode();
+            }
+            return;
+          }
+        }
+        // Capture Wild Animal to Pasture mode: click any live wild huntable land animal!
+        if (this.captureAnimalMode) {
+          let picked = this.pickEntityAtScreen(e.clientX, e.clientY);
+          if (!picked || !World.isDomesticableAnimal(picked)) {
+            const hit = this.sceneManager.raycastTerrain(e.clientX, e.clientY);
+            if (hit) {
+              let bestAnimal: Entity | null = null;
+              let bestD2 = 3.8 * 3.8;
+              for (const ent of this.world.entities.values()) {
+                if (!World.isDomesticableAnimal(ent)) continue;
+                const dx = ent.x - hit.x;
+                const dz = ent.z - hit.z;
+                const d2 = dx * dx + dz * dz;
+                if (d2 < bestD2) {
+                  bestD2 = d2;
+                  bestAnimal = ent;
+                }
+              }
+              picked = bestAnimal;
+            }
+          }
+          if (!picked || !World.isDomesticableAnimal(picked)) {
+            this.audio.playError();
+            this.callbacks.onStatusToast(t('toastCaptureSelectAnimal'), 'warn');
+            return;
+          }
+          const pasture = this.world.findNearestAvailablePasture(this.humanPlayerId, picked.x, picked.z);
+          if (!pasture) {
+            this.audio.playError();
+            this.callbacks.onStatusToast(t('toastCapturePastureFull'), 'warn');
+            this.cancelCaptureAnimalMode();
+            return;
+          }
+          const workers = Array.from(this.selectedIds).filter((id) => {
+            const ent = this.world.entities.get(id);
+            if (!ent || !ent.alive || ent.owner !== this.humanPlayerId || ent.garrisonedIn !== null) return false;
+            const tpl = TEMPLATES[ent.templateId];
+            return Boolean(tpl.gather && !tpl.isNaval);
+          });
+          if (workers.length === 0) {
+            this.cancelCaptureAnimalMode();
+            return;
+          }
+          this.world.enqueueCommand({
+            type: 'capture_animal',
+            playerId: this.humanPlayerId,
+            entityIds: workers,
+            animalId: picked.id,
+            pastureId: pasture.id,
+          });
+          this.audio.playOrder();
+          this.sceneManager.spawnClickPing(
+            picked.x,
+            picked.z,
+            this.world.terrain.getHeightAt(picked.x, picked.z),
+            0x34d399
+          );
+          if (!e.shiftKey) {
+            this.cancelCaptureAnimalMode();
+          }
+          return;
+        }
+        // Garrison target click (Buildings, Beacon Towers, AND Warships!)
+        if (this.garrisonTargetMode) {
+          const picked = this.pickEntityAtScreen(e.clientX, e.clientY);
+          const cap = picked ? this.world.getMaxGarrisonCapacity(picked) : 0;
+          if (picked && picked.owner === this.humanPlayerId && !picked.isFoundation && cap > 0) {
+            const pickedTpl = TEMPLATES[picked.templateId];
+            const landIds = Array.from(this.selectedIds).filter((id) => {
+              const u = this.world.entities.get(id);
+              return Boolean(u && u.alive && u.owner === this.humanPlayerId && u.id !== picked.id && TEMPLATES[u.templateId].kind === 'unit' && !TEMPLATES[u.templateId].isNaval);
+            });
+            if (landIds.length === 0) {
+              this.audio.playError();
+              this.callbacks.onStatusToast(t('toastShipsCantGarrison'), 'warn');
+            } else if (picked.garrisonedIds.length >= cap) {
+              this.audio.playError();
+              const fullKey = pickedTpl?.isNaval ? 'toastShipFull' : 'toastBeaconGarrisonFull';
+              this.callbacks.onStatusToast(`${t(fullKey)} (${picked.garrisonedIds.length}/${cap})`, 'warn');
+            } else {
+              this.world.enqueueCommand({
+                type: 'garrison',
+                playerId: this.humanPlayerId,
+                entityIds: landIds,
+                buildingId: picked.id,
+              });
+              this.audio.playOrder();
+              const pingY = pickedTpl?.isNaval ? WATER_LEVEL : this.world.terrain.getHeightAt(picked.x, picked.z);
+              this.sceneManager.spawnClickPing(picked.x, picked.z, pingY, 0x38bdf8);
+              if (pickedTpl?.isNaval) {
+                this.callbacks.onStatusToast(`${t('toastShipBoardStart')} (${picked.garrisonedIds.length}/${cap})`, 'good');
+              } else if (pickedTpl?.isBeaconTower) {
+                this.callbacks.onStatusToast(`${t('toastBeaconGarrisonStart')} (${picked.garrisonedIds.length}/${cap})`, 'good');
+              }
+            }
           }
           this.garrisonTargetMode = false;
           return;
@@ -311,7 +778,8 @@ export class InputController {
           const center = this.world.terrain.tileToWorldCenter(tx, tz);
           const y = this.world.terrain.getHeightAt(center.x, center.z);
           const valid = this.world.canTerraformTile(tx, tz);
-          this.sceneManager.updateTerraformPreview(center.x, y, center.z, this.terraformMode, valid, this.pendingDigSource);
+          const avgH = this.terraformMode === 'level' ? this.world.terrain.computeLevelAverageHeight(tx, tz) : undefined;
+          this.sceneManager.updateTerraformPreview(center.x, y, center.z, this.terraformMode, valid, this.pendingDigSource, avgH);
         }
       }
 
@@ -341,6 +809,22 @@ export class InputController {
           }
           if (this.terraformMode) {
             this.setTerraformMode(null);
+            return;
+          }
+          if (this.plantTreeMode) {
+            this.cancelPlantTreeMode();
+            return;
+          }
+          if (this.hybridTreeMode) {
+            this.cancelHybridTreeMode();
+            return;
+          }
+          if (this.captureAnimalMode) {
+            this.cancelCaptureAnimalMode();
+            return;
+          }
+          if (this.rallyTargetMode) {
+            this.rallyTargetMode = false;
             return;
           }
           this.attackMoveMode = false;
@@ -390,6 +874,14 @@ export class InputController {
           this.setPlacementMode(null);
         } else if (this.terraformMode) {
           this.setTerraformMode(null);
+        } else if (this.plantTreeMode) {
+          this.cancelPlantTreeMode();
+        } else if (this.hybridTreeMode) {
+          this.cancelHybridTreeMode();
+        } else if (this.captureAnimalMode) {
+          this.cancelCaptureAnimalMode();
+        } else if (this.rallyTargetMode) {
+          this.rallyTargetMode = false;
         } else {
           this.attackMoveMode = false;
           this.garrisonTargetMode = false;
@@ -670,9 +1162,10 @@ export class InputController {
     }
 
     this.wallDragSegments = segs;
+    const existingBridgeLen = isBridge && segs.length > 0 ? this.world.countConnectedBridgeTiles(segs[0].tx, segs[0].tz) : 0;
     this.sceneManager.updateGhostPreview(null, this.world.config.playerCiv, 0, 0, 0, false);
     this.sceneManager.updateWallLinePreview(
-      segs.map((s) => {
+      segs.map((s, idx) => {
         const c = this.world.terrain.tileToWorldCenter(s.tx, s.tz);
         let y = this.world.terrain.getHeightAt(c.x, c.z);
         let slopeYX = 0;
@@ -686,8 +1179,12 @@ export class InputController {
           slopeYX = Math.max(-1.35, Math.min(1.35, (hPlus - hMinus) / (halfSpan * 2)));
         }
         const check = this.world.canPlaceBuilding(this.humanPlayerId, dragTplId, s.tx, s.tz);
-        const bridgeSpanOk = isBridge && !this.world.terrain.isTileDryLand(s.tx, s.tz);
-        const validSeg = check.ok || bridgeSpanOk;
+        const overBridgeMax = isBridge && existingBridgeLen + idx + 1 > World.MAX_BRIDGE_LENGTH_TILES;
+        const bridgeSpanOk = isBridge && !overBridgeMax && !this.world.terrain.isTileDryLand(s.tx, s.tz);
+        const validSeg = !overBridgeMax && (check.ok || bridgeSpanOk);
+        const failReason = overBridgeMax
+          ? `Bridge exceeds maximum length (${World.MAX_BRIDGE_LENGTH_TILES} tiles)`
+          : check.reason;
         return {
           x: c.x,
           y,
@@ -695,7 +1192,7 @@ export class InputController {
           facing: s.facing,
           valid: validSeg,
           slopeYX,
-          reason: validSeg ? undefined : translateBuildReason(check.reason),
+          reason: validSeg ? undefined : translateBuildReason(failReason),
         };
       }),
       isBridge
@@ -723,8 +1220,13 @@ export class InputController {
     let remMetal = p?.resources.metal ?? 0;
     let placed = 0;
     let lastReason: string | undefined;
+    const existingBridgeLen = isBridge ? this.world.countConnectedBridgeTiles(segs[0].tx, segs[0].tz) : 0;
 
     for (const seg of segs) {
+      if (isBridge && existingBridgeLen + placed + 1 > World.MAX_BRIDGE_LENGTH_TILES) {
+        lastReason = `Bridge exceeds maximum length (${World.MAX_BRIDGE_LENGTH_TILES} tiles)`;
+        break;
+      }
       if (remWood < segCost.wood || remStone < segCost.stone || remMetal < segCost.metal) {
         lastReason = 'Not enough resources';
         break;
@@ -847,6 +1349,28 @@ export class InputController {
         this.selectedIds.clear();
         this.callbacks.onSelectionChanged();
       }
+      return;
+    }
+
+    // Quick Tree Protection: when NOTHING is selected, directly left-clicking a tree toggles its Protection (圍籬) on/off!
+    if (this.selectedIds.size === 0 && !additive && World.isTreeTemplate(picked.templateId)) {
+      const willProtect = !picked.protectedByPlayer;
+      this.world.enqueueCommand({
+        type: 'toggle_protect_tree',
+        playerId: this.humanPlayerId,
+        entityId: picked.id,
+      });
+      this.audio.playOrder();
+      this.sceneManager.spawnClickPing(
+        picked.x,
+        picked.z,
+        this.world.terrain.getHeightAt(picked.x, picked.z),
+        willProtect ? 0x22c55e : 0xf59e0b
+      );
+      this.callbacks.onStatusToast(
+        `${willProtect ? t('toastTreeProtectedSet') : t('toastTreeProtectedRemoved')} (${getTemplateText(picked.templateId).name})`,
+        willProtect ? 'good' : 'info'
+      );
       return;
     }
 
@@ -974,6 +1498,7 @@ export class InputController {
           this.world.terrain.getHeightAt(targetPos.x, targetPos.z),
           0xfacc15
         );
+        this.callbacks.onStatusToast(t('toastRallyUpdated'), 'good');
       }
       return;
     }
@@ -985,6 +1510,46 @@ export class InputController {
     if (picked) {
       const pTpl = TEMPLATES[picked.templateId];
       const py = this.world.terrain.getHeightAt(picked.x, picked.z);
+
+      // Friendly Warship right-click -> land units (citizens, soldiers, doctors, scouts, cavalry) board the vessel!
+      if (picked.owner === this.humanPlayerId && pTpl.kind === 'unit' && pTpl.isNaval && pTpl.garrisonCapacity) {
+        const landUnits = units.filter((u) => u.id !== picked.id && !TEMPLATES[u.templateId]?.isNaval);
+        if (landUnits.length > 0) {
+          const cap = this.world.getMaxGarrisonCapacity(picked);
+          if (picked.garrisonedIds.length >= cap) {
+            this.audio.playError();
+            this.callbacks.onStatusToast(`${t('toastShipFull')} (${picked.garrisonedIds.length}/${cap})`, 'warn');
+            return;
+          }
+          this.world.enqueueCommand({
+            type: 'garrison',
+            playerId: this.humanPlayerId,
+            entityIds: landUnits.map((u) => u.id),
+            buildingId: picked.id,
+          });
+          this.audio.playOrder();
+          this.sceneManager.spawnClickPing(picked.x, picked.z, WATER_LEVEL, 0x38bdf8);
+          this.callbacks.onStatusToast(`${t('toastShipBoardStart')} (${picked.garrisonedIds.length}/${cap})`, 'good');
+          return;
+        }
+      }
+
+      // Doctor / Healer right-click on a friendly or allied unit -> heal target directly!
+      if (picked.owner !== 0 && this.world.isAlliedOrOwn(this.humanPlayerId, picked.owner) && pTpl.kind === 'unit') {
+        const healerIds = units.filter((u) => TEMPLATES[u.templateId]?.isHealer && u.id !== picked.id).map((u) => u.id);
+        if (healerIds.length > 0) {
+          this.world.enqueueCommand({
+            type: 'heal',
+            playerId: this.humanPlayerId,
+            entityIds: healerIds,
+            targetId: picked.id,
+          });
+          this.audio.playOrder();
+          this.sceneManager.spawnClickPing(picked.x, picked.z, py, 0x10b981);
+          this.callbacks.onStatusToast(t('toastDoctorHealing'), 'good');
+          return;
+        }
+      }
 
       // Allied or Friendly Market / Tunnel right-click support (0 A.D. Alliance trade & passage!)
       if (picked.owner !== 0 && this.world.isAlliedOrOwn(this.humanPlayerId, picked.owner) && pTpl.kind === 'building') {
@@ -1034,12 +1599,16 @@ export class InputController {
           );
           return;
         }
+        const attackerIds = units.filter((u) => Boolean(TEMPLATES[u.templateId]?.attack)).map((u) => u.id);
+        if (attackerIds.length === 0) {
+          return;
+        }
         const mode: BuildingOrderMode =
           pTpl.kind === 'building' ? (e.altKey ? 'attack' : this.buildingOrderMode) : 'attack';
         this.world.enqueueCommand({
           type: 'attack',
           playerId: this.humanPlayerId,
-          entityIds: unitIds,
+          entityIds: attackerIds,
           targetId: picked.id,
           mode,
         });
@@ -1048,8 +1617,36 @@ export class InputController {
         return;
       }
 
-      // Friendly building -> Garrison (Alt+RightClick), Repair/Build, or Farm Field
+      // Friendly building -> Beacon Tower Garrison (always prioritized for soldiers!), Repair/Build, Tunnel, Market, Farm Field, or Alt+RightClick Garrison
       if (picked.owner === this.humanPlayerId && pTpl.kind === 'building') {
+        if (pTpl.isBeaconTower && !picked.isFoundation) {
+          const landUnits = units.filter((u) => !TEMPLATES[u.templateId]?.isNaval);
+          const hasAnyMilitary = landUnits.some((u) => this.world.isMilitaryUnit(u.templateId));
+          const shouldRepair = !e.altKey && !hasAnyMilitary && picked.hp < picked.maxHp && landUnits.some((u) => Boolean(TEMPLATES[u.templateId]?.gather));
+          if (!shouldRepair) {
+            const cap = this.world.getMaxGarrisonCapacity(picked);
+            if (landUnits.length === 0) {
+              this.audio.playError();
+              this.callbacks.onStatusToast(t('toastShipsCantGarrison'), 'warn');
+              return;
+            }
+            if (picked.garrisonedIds.length >= cap) {
+              this.audio.playError();
+              this.callbacks.onStatusToast(`${t('toastBeaconGarrisonFull')} (${picked.garrisonedIds.length}/${cap})`, 'warn');
+              return;
+            }
+            this.world.enqueueCommand({
+              type: 'garrison',
+              playerId: this.humanPlayerId,
+              entityIds: landUnits.map((u) => u.id),
+              buildingId: picked.id,
+            });
+            this.audio.playOrder();
+            this.sceneManager.spawnClickPing(picked.x, picked.z, py, 0x38bdf8);
+            this.callbacks.onStatusToast(`${t('toastBeaconGarrisonStart')} (${picked.garrisonedIds.length}/${cap})`, 'good');
+            return;
+          }
+        }
         if (picked.isFoundation || picked.hp < picked.maxHp) {
           this.world.enqueueCommand({
             type: 'repair',
@@ -1151,6 +1748,24 @@ export class InputController {
         }
       }
 
+      // Random Wilderness Treasure -> ANY land unit (Worker, Scout, Soldier, Doctor) walks over to claim it!
+      if (picked.owner === 0 && pTpl.isTreasure && picked.resourceRemaining > 0) {
+        const landIds = units.filter((u) => !TEMPLATES[u.templateId]?.isNaval).map((u) => u.id);
+        if (landIds.length > 0) {
+          this.world.enqueueCommand({
+            type: 'move',
+            playerId: this.humanPlayerId,
+            entityIds: landIds,
+            x: picked.x,
+            z: picked.z,
+            queued: e.shiftKey,
+          });
+          this.audio.playOrder();
+          this.sceneManager.spawnClickPing(picked.x, picked.z, py, 0xfacc15);
+          return;
+        }
+      }
+
       // Live wild predator, sea/lake monster, OR docile wildlife clicked by non-gathering combat soldiers -> Attack!
       if (picked.owner === 0 && picked.hp > 0 && !pTpl.isFlying) {
         const isMonsterOrPredator = Boolean(pTpl.isPredator || pTpl.isSeaMonster);
@@ -1193,8 +1808,24 @@ export class InputController {
         }
       }
 
-      // Natural resource -> Gather (including shoreline rod/cast-net fishing for land workers!)
-      if (pTpl.resourceType && picked.resourceRemaining > 0) {
+      // Natural resource -> Gather (including shoreline rod/cast-net/spear fishing for land workers!)
+      if (pTpl.resourceType) {
+        if (World.isProtectedTree(picked)) {
+          this.audio.playError();
+          this.callbacks.onStatusToast(t('toastTreeProtected'), 'warn');
+          return;
+        }
+        if (World.isSapling(picked)) {
+          this.audio.playError();
+          this.callbacks.onStatusToast(t('toastSaplingNotMature'), 'warn');
+          return;
+        }
+        if (World.isFruitNotRipe(picked)) {
+          this.audio.playError();
+          this.callbacks.onStatusToast(t('toastFruitNotRipe'), 'warn');
+          return;
+        }
+        if (picked.resourceRemaining <= 0) return;
         if (pTpl.isAquatic) {
           const hasNavalGatherer = units.some((u) => Boolean(TEMPLATES[u.templateId].isNaval && TEMPLATES[u.templateId].gather));
           const hasLandGatherer = units.some((u) => Boolean(!TEMPLATES[u.templateId].isNaval && TEMPLATES[u.templateId].gather));
@@ -1307,7 +1938,17 @@ export class InputController {
       // Project full 3D bounding box to exact zoom-accurate screen rectangle AND test 3D terrain footprint!
       if (tpl.kind === 'building') {
         const halfW = Math.max(tpl.radius * 0.95, (tpl.footprintTiles ?? 2) * 0.95);
-        const topH = tpl.isCivicCenter || tpl.isFortress || tpl.isWonder ? 6.2 : tpl.isFarmField ? 1.1 : 4.2;
+        const topH = tpl.isBeaconTower
+          ? (e.beaconLevel ?? 1) >= 3
+            ? 9.8
+            : (e.beaconLevel ?? 1) === 2
+              ? 7.2
+              : 5.4
+          : tpl.isCivicCenter || tpl.isFortress || tpl.isWonder
+            ? 6.2
+            : tpl.isFarmField
+              ? 1.1
+              : 4.2;
 
         // 1. Direct 3D footprint hit on terrain
         let hit = false;
@@ -1350,8 +1991,10 @@ export class InputController {
         const midX = (minSx + maxSx) * 0.5;
         const midY = (minSy + maxSy) * 0.5;
         centerDistPx = Math.hypot(clientX - midX, clientY - midY);
-        // Normalize score so clicking anywhere inside a large Civic Center beats distant units
-        const score = Math.min(centerDistPx * 0.25, 22) + 10;
+        // Normalize score so clicking anywhere inside a large Civic Center beats distant units;
+        // give Beacon Towers priority over flanking wall segments so clicking them is effortless!
+        const rawScore = Math.min(centerDistPx * 0.25, 22) + 10;
+        const score = tpl.isBeaconTower ? rawScore * 0.65 : rawScore;
         if (score < bestScore) {
           bestScore = score;
           best = e;

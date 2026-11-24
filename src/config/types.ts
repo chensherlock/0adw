@@ -75,7 +75,7 @@ export interface ArmorProfile {
   crush: number;
 }
 
-export type ProjectileKind = 'arrow' | 'javelin' | 'fire_arrow' | 'bolt' | 'boulder' | 'flaming_boulder';
+export type ProjectileKind = 'arrow' | 'javelin' | 'fire_arrow' | 'bolt' | 'boulder' | 'flaming_boulder' | 'cannonball';
 
 export interface AttackProfile {
   hack: number;
@@ -99,6 +99,8 @@ export interface GatherProfile {
   capacity: number;
   buildRate: number; // HP/sec built on foundations
 }
+
+export type FishingMethod = 'rod' | 'net' | 'spear';
 
 export interface EntityTemplate {
   id: string;
@@ -132,6 +134,7 @@ export interface EntityTemplate {
   isCavalry?: boolean;
   isChampion?: boolean;
   isHealer?: boolean;
+  isScout?: boolean;
   healRate?: number;
   healRange?: number;
   isSiege?: boolean;
@@ -153,6 +156,8 @@ export interface EntityTemplate {
   isCivicCenter?: boolean;
   isFortress?: boolean;
   isFarmField?: boolean;
+  isPasture?: boolean;
+  pastureCapacity?: number;
   isMarket?: boolean;
   isWonder?: boolean;
   isDock?: boolean;
@@ -173,8 +178,13 @@ export interface EntityTemplate {
   maxGatherers?: number;
   isAquatic?: boolean;
   isRuinPillar?: boolean;
+  isFruitTree?: boolean;
+  isHybridTree?: boolean;
+  isTreasure?: boolean;
+  treasureReward?: Partial<ResourceBag>;
   isPredator?: boolean;
   isPassiveFauna?: boolean;
+  isDomesticable?: boolean;
   isFlying?: boolean;
   flightAltitude?: number;
   isSeaMonster?: boolean;
@@ -251,12 +261,18 @@ export interface CivConfig {
 
 export type GameCommand =
   | { type: 'move'; playerId: number; entityIds: number[]; x: number; z: number; queued?: boolean; attackMove?: boolean }
+  | { type: 'explore'; playerId: number; entityIds: number[] }
+  | { type: 'heal'; playerId: number; entityIds: number[]; targetId: number }
   | { type: 'attack'; playerId: number; entityIds: number[]; targetId: number; mode?: BuildingOrderMode }
   | { type: 'gather'; playerId: number; entityIds: number[]; targetId: number }
   | { type: 'build'; playerId: number; entityIds: number[]; templateId: string; tileX: number; tileZ: number; facing?: number }
   | { type: 'build_tunnel'; playerId: number; entityIds: number[]; startTileX: number; startTileZ: number; endTileX: number; endTileZ: number }
   | { type: 'terraform'; playerId: number; entityIds: number[]; tileX: number; tileZ: number; destTileX?: number; destTileZ?: number; mode: TerraformMode; queued?: boolean }
   | { type: 'cancel_terraform'; playerId: number; entityIds: number[] }
+  | { type: 'plant_tree'; playerId: number; entityIds: number[]; sourceTreeId: number; x: number; z: number; queued?: boolean }
+  | { type: 'hybridize_tree'; playerId: number; entityIds: number[]; treeAId: number; treeBId: number; x: number; z: number; queued?: boolean }
+  | { type: 'toggle_protect_tree'; playerId: number; entityId: number }
+  | { type: 'capture_animal'; playerId: number; entityIds: number[]; animalId: number; pastureId?: number }
   | { type: 'demolish'; playerId: number; entityIds: number[] }
   | { type: 'use_tunnel'; playerId: number; entityIds: number[]; portalId: number }
   | { type: 'trade'; playerId: number; entityIds: number[]; targetMarketId: number; homeMarketId?: number }
@@ -287,6 +303,11 @@ export type SimEvent =
   | { type: 'building_upgraded'; playerId: number; x: number; z: number; templateId: string; floors: number }
   | { type: 'beacon_lit'; playerId: number; x: number; z: number; level: number; autoDetected: boolean }
   | { type: 'trade_payout'; playerId: number; x: number; z: number; amount: number }
+  | { type: 'treasure_claimed'; playerId: number; x: number; z: number; templateId: string; reward: ResourceBag }
+  | { type: 'tree_planted'; playerId: number; entityId: number; x: number; z: number; templateId: string }
+  | { type: 'tree_hybridized'; playerId: number; entityId: number; x: number; z: number; templateId: string }
+  | { type: 'animal_captured'; playerId: number; animalId: number; pastureId: number; x: number; z: number; templateId: string }
+  | { type: 'animal_born'; playerId: number; entityId: number; pastureId: number; x: number; z: number; templateId: string }
   | { type: 'building_demolished'; playerId: number; x: number; z: number; templateId: string; refund: ResourceBag }
   | { type: 'building_captured'; newOwner: number; oldOwner: number; x: number; z: number; templateId: string }
   | { type: 'unit_trained'; playerId: number; x: number; z: number; templateId: string }
@@ -346,7 +367,9 @@ export interface ProductionItem {
 export type UnitOrder =
   | { type: 'idle' }
   | { type: 'move'; x: number; z: number; attackMove?: boolean }
-  | { type: 'gather'; targetId: number; resourceType: ResourceType; returning: boolean; dropOffId?: number }
+  | { type: 'explore'; targetX?: number; targetZ?: number }
+  | { type: 'heal'; targetId: number }
+  | { type: 'gather'; targetId: number; resourceType: ResourceType; returning: boolean; dropOffId?: number; fishingMethod?: FishingMethod }
   | { type: 'build'; targetId: number; inShaft?: boolean }
   | {
       type: 'terraform';
@@ -359,7 +382,29 @@ export type UnitOrder =
       progress: number;
       startEpoch: number;
     }
+  | {
+      type: 'plant_tree';
+      sourceTreeId: number;
+      treeTemplateId: string;
+      x: number;
+      z: number;
+      stage: 'cut' | 'plant';
+      progress: number;
+    }
+  | {
+      type: 'hybridize_tree';
+      treeAId: number;
+      treeBId: number;
+      treeATemplateId: string;
+      treeBTemplateId: string;
+      resultTemplateId: string;
+      x: number;
+      z: number;
+      stage: 'cutA' | 'cutB' | 'plant';
+      progress: number;
+    }
   | { type: 'enter_tunnel'; portalId: number; transitRemaining?: number; transitTotal?: number; exitPortalId?: number }
+  | { type: 'capture_animal'; animalId: number; pastureId: number; stage: 'approach' | 'herd'; progress: number }
   | { type: 'trade'; homeMarketId: number; targetMarketId: number; leg: 'toTarget' | 'toHome'; cargoGold: number }
   | { type: 'attack'; targetId: number; mode: BuildingOrderMode }
   | { type: 'garrison'; targetId: number };
@@ -399,6 +444,10 @@ export interface Entity {
   tunnelCooldown?: number;
   /** Seconds remaining before a newly spawned Civic Center worker auto-assigns to work (0 = ready) */
   autoWorkDelay?: number;
+  /** Entity ID currently being healed by this Doctor/Healer (for 3D beam & sparkle visuals) */
+  healingTargetId?: number | null;
+  /** Seconds remaining while a Scout is actively fleeing from spotted danger */
+  scoutFleeTimer?: number;
 
   // Building fields
   tileX: number;
@@ -415,8 +464,11 @@ export interface Entity {
   gateOpenAmount?: number; // 0 = shut, 1 = wide open
   gateSpanTiles?: Array<{ tx: number; tz: number }>; // Exact tiles spanned by a 3-segment upgraded gate
   beaconLevel?: 1 | 2 | 3; // Great Wall Beacon Tower upgrade tier
+  beaconState?: 'idle' | 'igniting' | 'burning' | 'smoking' | 'extinguishing'; // Staged ignition -> burning -> rising smoke -> extinguishing
+  beaconStageProgress?: number; // 0..1 progress within current ignition, smoke-buildup, or extinguishing stage
   beaconLitTimer?: number; // Seconds remaining while beacon fire & smoke are burning
   beaconSuppressTimer?: number; // Cooldown after manual extinguish before auto-reignite
+  beaconRelayCooldown?: number; // Cooldown after natural burn-out so leftover neighbor smoke doesn't ping-pong re-ignite
   beaconRallyCooldown?: number; // Cooldown between automatic army rally pulses
   queue: ProductionItem[];
   rallyX: number;
@@ -434,6 +486,20 @@ export interface Entity {
 
   // Resource fields
   resourceRemaining: number;
+  /** Growth progress for newly planted saplings (0.28 -> 1.0 mature tree); undefined/1 = full-grown */
+  treeGrowth?: number;
+  /** Fruit ripening progress on mature Fruit Trees (0 -> 1.0 ripe & harvestable for Food; resets to 0 after harvest to regrow!) */
+  fruitProgress?: number;
+  /** True when the player has marked this tree as Protected (forbidden from harvesting!) */
+  protectedByPlayer?: boolean;
+  /** Pasture building ID if this animal has been captured & housed inside a Pasture (grazes & breeds babies!) */
+  pastureId?: number;
+  /** Worker ID currently herding this captured animal back to a Pasture */
+  capturedByWorkerId?: number | null;
+  /** Growth progress for baby animals born inside a Pasture (0.42 -> 1.0 adult) */
+  animalGrowth?: number;
+  /** Breeding progress (0 -> 1.0) for adult animals inside a Pasture to birth a baby animal */
+  breedProgress?: number;
 }
 
 export interface Projectile {

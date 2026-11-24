@@ -43,6 +43,8 @@ export interface ModelPartSpec {
   roughness?: number;
   metalness?: number;
   emissive?: number;
+  /** Optional subtle multiplicative color tint (e.g. for distinct botanical hybrid tree foliage) */
+  tint?: number;
   doubleSide?: boolean;
   /** Attach inside parent's named prop bone (e.g. 'prop-head', 'prop-weapon_R', 'prop_rider') */
   attachPoint?: string;
@@ -254,6 +256,229 @@ export function getZeroADModelSpec(templateId: string, civId: CivId): EntityMode
         ],
       };
 
+    case 'tree_cedar':
+      return {
+        targetHeight: 7.0,
+        parts: [
+          { mesh: m('cedar_atlas_1.dae'), texture: t('cedar_atlas_1.png'), mode: 'alpha', roughness: 0.9, doubleSide: true },
+        ],
+      };
+
+    case 'tree_willow':
+      return {
+        targetHeight: 5.8,
+        parts: [
+          { mesh: m('willow_a.dae'), texture: t('willow_green.png'), mode: 'alpha', roughness: 0.88, doubleSide: true },
+        ],
+      };
+
+    case 'tree_apple':
+      return {
+        targetHeight: 4.5,
+        parts: [
+          { mesh: m('tree_apple_trunk_a.dae'), texture: t('trunk_deciduous_a.png'), mode: 'opaque', roughness: 0.94 },
+          { mesh: m('tree_apple_top_a.dae'), texture: t('orchard_apple_a.png'), mode: 'alpha', roughness: 0.88, doubleSide: true },
+        ],
+      };
+
+    case 'tree_orange':
+      return {
+        targetHeight: 4.3,
+        parts: [
+          { mesh: m('tree_apple_trunk_b.dae'), texture: t('trunk_deciduous_a.png'), mode: 'opaque', roughness: 0.94 },
+          { mesh: m('tree_apple_top_b.dae'), texture: t('orchard_orange_a.png'), mode: 'alpha', roughness: 0.88, doubleSide: true },
+        ],
+      };
+
+    case 'tree_fig':
+      return {
+        targetHeight: 4.6,
+        parts: [
+          { mesh: m('tree_fig_trunk_a.dae'), texture: t('trunk_baobab.png'), mode: 'opaque', roughness: 0.94 },
+          { mesh: m('tree_fig_top_a.dae'), texture: t('tree_carob_a.png'), mode: 'alpha', roughness: 0.88, doubleSide: true },
+        ],
+      };
+
+    case 'tree_date_palm':
+      return {
+        targetHeight: 6.2,
+        parts: [
+          { mesh: m('palm_date_new_fruit_1.dae'), texture: t('palm_date_new_3_fruiting.png'), mode: 'alpha', roughness: 0.9, doubleSide: true },
+        ],
+      };
+
+    case 'tree_cherry':
+      return {
+        targetHeight: 4.8,
+        parts: [
+          { mesh: m('tree_apple_trunk_a.dae'), texture: t('trunk_deciduous_a.png'), mode: 'opaque', roughness: 0.92 },
+          { mesh: m('tree_apple_top_a.dae'), texture: t('foliage_cherry.png'), mode: 'alpha', roughness: 0.84, doubleSide: true },
+        ],
+      };
+
+    case 'tree_kapok':
+      return {
+        targetHeight: 6.2,
+        parts: [
+          { mesh: m('tree_apple_trunk_b.dae'), texture: t('trunk_deciduous_a.png'), mode: 'opaque', roughness: 0.92 },
+          { mesh: m('tree_apple_top_b.dae'), texture: t('foliage_kapok.png'), mode: 'alpha', roughness: 0.85, doubleSide: true },
+        ],
+      };
+
+    case 'tree_maple':
+      return {
+        targetHeight: 5.2,
+        parts: [
+          { mesh: m('tree_apple_trunk_a.dae'), texture: t('trunk_deciduous_a.png'), mode: 'opaque', roughness: 0.92 },
+          { mesh: m('tree_apple_top_a.dae'), texture: t('foliage_maple.png'), mode: 'alpha', roughness: 0.86, doubleSide: true },
+        ],
+      };
+
+    case 'tree_jacaranda':
+      return {
+        targetHeight: 5.8,
+        parts: [
+          { mesh: m('willow_a.dae'), texture: t('foliage_jacaranda.png'), mode: 'alpha', roughness: 0.85, doubleSide: true },
+        ],
+      };
+
+    case 'tree_flamboyant':
+      return {
+        targetHeight: 5.5,
+        parts: [
+          { mesh: m('tree_fig_trunk_a.dae'), texture: t('trunk_baobab.png'), mode: 'opaque', roughness: 0.92 },
+          { mesh: m('tree_fig_top_a.dae'), texture: t('foliage_flamboyant.png'), mode: 'alpha', roughness: 0.84, doubleSide: true },
+        ],
+      };
+
+    case 'tree_golden_shower':
+      return {
+        targetHeight: 5.6,
+        parts: [
+          { mesh: m('willow_a.dae'), texture: t('foliage_golden_shower.png'), mode: 'alpha', roughness: 0.84, doubleSide: true },
+        ],
+      };
+
+    case 'tree_trumpet':
+      return {
+        targetHeight: 4.9,
+        parts: [
+          { mesh: m('tree_apple_trunk_b.dae'), texture: t('trunk_deciduous_a.png'), mode: 'opaque', roughness: 0.92 },
+          { mesh: m('tree_apple_top_b.dae'), texture: t('foliage_trumpet.png'), mode: 'alpha', roughness: 0.84, doubleSide: true },
+        ],
+      };
+
+    case 'tree_ginkgo':
+      return {
+        targetHeight: 5.8,
+        parts: [
+          { mesh: m('tree_apple_trunk_a.dae'), texture: t('trunk_deciduous_a.png'), mode: 'opaque', roughness: 0.92 },
+          { mesh: m('tree_apple_top_a.dae'), texture: t('foliage_ginkgo.png'), mode: 'alpha', roughness: 0.85, doubleSide: true },
+        ],
+      };
+
+    case 'tree_birch':
+      return {
+        targetHeight: 5.9,
+        parts: [
+          { mesh: m('tree_apple_trunk_a.dae'), texture: t('trunk_birch_white.png'), mode: 'opaque', roughness: 0.88 },
+          { mesh: m('tree_apple_top_a.dae'), texture: t('foliage_birch.png'), mode: 'alpha', roughness: 0.86, doubleSide: true },
+        ],
+      };
+
+    case 'tree_blue_spruce':
+      return {
+        targetHeight: 6.8,
+        parts: [
+          { mesh: m('cedar_atlas_1.dae'), texture: t('foliage_blue_spruce.png'), mode: 'alpha', roughness: 0.88, doubleSide: true },
+        ],
+      };
+
+    case 'tree_coconut':
+      return {
+        targetHeight: 6.4,
+        parts: [
+          { mesh: m('palm_date_new_fruit_1.dae'), texture: t('foliage_coconut_palm.png'), mode: 'alpha', roughness: 0.88, doubleSide: true },
+        ],
+      };
+
+    case 'tree_hybrid_golden_citrus':
+      return {
+        targetHeight: 5.1,
+        parts: [
+          { mesh: m('tree_apple_trunk_b.dae'), texture: t('trunk_deciduous_a.png'), mode: 'opaque', roughness: 0.92 },
+          { mesh: m('tree_apple_top_b.dae'), texture: t('orchard_orange_a.png'), tint: 0xffeb99, mode: 'alpha', roughness: 0.84, doubleSide: true },
+        ],
+      };
+
+    case 'tree_hybrid_honey_fig':
+      return {
+        targetHeight: 5.4,
+        parts: [
+          { mesh: m('tree_fig_trunk_a.dae'), texture: t('trunk_baobab.png'), mode: 'opaque', roughness: 0.92 },
+          { mesh: m('tree_fig_top_a.dae'), texture: t('tree_carob_a.png'), tint: 0xffe484, mode: 'alpha', roughness: 0.85, doubleSide: true },
+        ],
+      };
+
+    case 'tree_hybrid_cedar_oak':
+      return {
+        targetHeight: 8.2,
+        parts: [
+          { mesh: m('cedar_atlas_1.dae'), texture: t('cedar_atlas_1.png'), tint: 0xc2f0c2, mode: 'alpha', roughness: 0.88, doubleSide: true },
+        ],
+      };
+
+    case 'tree_hybrid_iron_bamboo':
+      return {
+        targetHeight: 7.4,
+        parts: [
+          { mesh: m('bamboo_1.dae'), texture: t('bamboo_1.png'), normTex: t('bamboo_1_norm.png'), tint: 0xa7f3d0, mode: 'alpha', roughness: 0.82, doubleSide: true },
+          { mesh: m('bamboo_2.dae'), texture: t('bamboo_1.png'), normTex: t('bamboo_1_norm.png'), tint: 0x99f6e4, mode: 'alpha', roughness: 0.82, doubleSide: true },
+        ],
+      };
+
+    case 'tree_hybrid_olive_citrus':
+      return {
+        targetHeight: 4.9,
+        parts: [
+          { mesh: m('tree_apple_trunk_a.dae'), texture: t('trunk_deciduous_a.png'), mode: 'opaque', roughness: 0.92 },
+          { mesh: m('tree_apple_top_a.dae'), texture: t('orchard_apple_a.png'), tint: 0xd9f99d, mode: 'alpha', roughness: 0.85, doubleSide: true },
+        ],
+      };
+
+    case 'tree_hybrid_royal_orchard':
+      return {
+        targetHeight: 6.2,
+        parts: [
+          { mesh: m('tree_apple_trunk_b.dae'), texture: t('trunk_deciduous_a.png'), mode: 'opaque', roughness: 0.9 },
+          { mesh: m('tree_apple_top_b.dae'), texture: t('orchard_miracle_gold.png'), emissive: 0x1e1600, mode: 'alpha', roughness: 0.78, doubleSide: true },
+        ],
+      };
+
+    case 'treasure_chest':
+      return {
+        targetHeight: 1.55,
+        parts: [
+          { mesh: m('treasure_pers_2.dae'), texture: t('pers_struct_treasure.png'), mode: 'opaque', roughness: 0.72 },
+        ],
+      };
+
+    case 'treasure_amphora':
+      return {
+        targetHeight: 1.35,
+        parts: [
+          { mesh: m('amphorae_treasure.dae'), texture: t('hele_props_a.png'), mode: 'opaque', roughness: 0.78 },
+        ],
+      };
+
+    case 'treasure_relic':
+      return {
+        targetHeight: 1.6,
+        parts: [
+          { mesh: m('treasure_pers_4.dae'), texture: t('pers_struct_treasure.png'), mode: 'opaque', roughness: 0.72 },
+        ],
+      };
+
     case 'berry_bush':
       return {
         targetHeight: 1.45,
@@ -264,7 +489,7 @@ export function getZeroADModelSpec(templateId: string, civId: CivId): EntityMode
 
     case 'grape_vine':
       return {
-        targetHeight: 1.55,
+        targetHeight: 1.18,
         parts: [
           { mesh: m('grape_bush.dae'), texture: t('grape_bushes.png'), mode: 'alpha', roughness: 0.86, doubleSide: true },
         ],
@@ -398,6 +623,149 @@ export function getZeroADModelSpec(templateId: string, civId: CivId): EntityMode
         ],
       };
 
+    case 'predator_polar_bear':
+      return {
+        targetHeight: 1.78,
+        parts: [
+          {
+            mesh: m('bear_polar.dae'),
+            texture: t('animal_bear_white.png'),
+            mode: 'opaque',
+            roughness: 0.88,
+            animations: {
+              idle: ANIMATION_ASSETS.bearIdle,
+              walk: ANIMATION_ASSETS.bearWalk,
+              attack: ANIMATION_ASSETS.bearAttack,
+            },
+          },
+        ],
+      };
+
+    case 'predator_tiger':
+      return {
+        targetHeight: 1.32,
+        parts: [
+          {
+            mesh: m('tiger.dae'),
+            texture: t('animal_tiger.png'),
+            mode: 'opaque',
+            roughness: 0.84,
+            animations: {
+              idle: ANIMATION_ASSETS.lionIdle,
+              walk: ANIMATION_ASSETS.lionWalk,
+              attack: ANIMATION_ASSETS.lionWalk,
+            },
+          },
+        ],
+      };
+
+    case 'predator_hippo':
+      return {
+        targetHeight: 1.85,
+        parts: [
+          {
+            mesh: m('fauna_hippopotamus.dae'),
+            texture: t('fauna_hippopotamus_01.png'),
+            mode: 'opaque',
+            roughness: 0.78,
+          },
+        ],
+      };
+
+    case 'wild_sheep':
+      return {
+        targetHeight: 0.92,
+        parts: [
+          {
+            mesh: m('sheep.dae'),
+            texture: t('animal_sheep.png'),
+            mode: 'opaque',
+            roughness: 0.92,
+          },
+        ],
+      };
+
+    case 'wild_goat':
+      return {
+        targetHeight: 0.96,
+        parts: [
+          {
+            mesh: m('goat.dae'),
+            texture: t('animal_goat.png'),
+            mode: 'opaque',
+            roughness: 0.9,
+          },
+        ],
+      };
+
+    case 'wild_chicken':
+      return {
+        targetHeight: 0.56,
+        parts: [
+          {
+            mesh: m('chicken.dae'),
+            texture: t('animal_chicken.png'),
+            mode: 'alpha',
+            roughness: 0.85,
+            doubleSide: true,
+          },
+        ],
+      };
+
+    case 'wild_camel':
+      return {
+        targetHeight: 2.05,
+        parts: [
+          {
+            mesh: m('camel_1.dae'),
+            texture: t('animal_camel_a.png'),
+            mode: 'opaque',
+            roughness: 0.88,
+          },
+        ],
+      };
+
+    case 'wild_aurochs':
+      return {
+        targetHeight: 1.65,
+        parts: [
+          {
+            mesh: m('auroch_a.dae'),
+            texture: t('animal_cattle_black.png'),
+            mode: 'opaque',
+            roughness: 0.88,
+          },
+        ],
+      };
+
+    case 'sea_walrus':
+      return {
+        targetHeight: 1.25,
+        sinkY: -0.15,
+        parts: [
+          {
+            mesh: m('walrus.dae'),
+            texture: t('animal_walrus.png'),
+            mode: 'opaque',
+            roughness: 0.65,
+          },
+        ],
+      };
+
+    case 'sea_whale':
+      return {
+        targetFootprint: 5.8,
+        sinkY: -0.35,
+        parts: [
+          {
+            mesh: m('whale.dae'),
+            texture: t('animal_whale.png'),
+            mode: 'opaque',
+            roughness: 0.55,
+          },
+        ],
+      };
+
     case 'wild_eagle':
       return {
         targetHeight: 1.05,
@@ -477,6 +845,64 @@ export function getZeroADModelSpec(templateId: string, civId: CivId): EntityMode
           },
         ],
       };
+
+    case 'warship_trireme': {
+      if (isRome) {
+        return {
+          targetFootprint: 7.4,
+          sinkY: -0.18,
+          parts: [
+            {
+              mesh: m('rome_ship_trireme.dae'),
+              texture: t('rome_trireme.png'),
+              mode: 'player',
+              roughness: 0.8,
+              children: [
+                {
+                  mesh: m('rome_trireme_main_sail.dae'),
+                  texture: t('rome_sail_1.png'),
+                  mode: 'player',
+                  doubleSide: true,
+                  attachPoint: 'prop_main_sail',
+                },
+              ],
+            },
+          ],
+        };
+      }
+      return {
+        targetFootprint: 7.4,
+        sinkY: -0.18,
+        parts: [
+          {
+            mesh: m('hele_ship_trireme.dae'),
+            texture: t('hele_trireme_big.png'),
+            mode: 'player',
+            roughness: 0.8,
+            animations: {
+              idle: ANIMATION_ASSETS.triremeIdle,
+              walk: ANIMATION_ASSETS.triremeMove,
+            },
+            children: [
+              {
+                mesh: m('hele_trireme_mainsail.dae'),
+                texture: t('hele_sail_eye_war.png'),
+                mode: 'player',
+                doubleSide: true,
+                attachPoint: 'prop_sail',
+              },
+              {
+                mesh: m('hele_trireme_foresail.dae'),
+                texture: t('sail_blank_netting.png'),
+                mode: 'player',
+                doubleSide: true,
+                attachPoint: 'prop_sail',
+              },
+            ],
+          },
+        ],
+      };
+    }
 
     case 'stone_quarry':
       return {
@@ -743,6 +1169,33 @@ export function getZeroADModelSpec(templateId: string, civId: CivId): EntityMode
         ],
       };
 
+    case 'pasture':
+      if (civId === 'han') {
+        return {
+          targetFootprint: 5.5,
+          sinkY: -0.08,
+          parts: [
+            { mesh: m('han_corral.dae'), texture: t('han_struct_02.png'), normTex: t('han_struct_02_norm.png'), mode: 'player' },
+          ],
+        };
+      }
+      if (isRome) {
+        return {
+          targetFootprint: 5.5,
+          sinkY: -0.08,
+          parts: [
+            { mesh: m('rome_corral.dae'), texture: t('rome_struct_2.png'), normTex: t('rome_struct_2_norm.png'), mode: 'player' },
+          ],
+        };
+      }
+      return {
+        targetFootprint: 5.5,
+        sinkY: -0.08,
+        parts: [
+          { mesh: m('hele_corral.dae'), texture: t('hele_struct_b.png'), normTex: t('hele_struct_b_norm.png'), mode: 'player' },
+        ],
+      };
+
     case 'barracks':
       if (civId === 'han') {
         return { targetFootprint: 5.4, sinkY: -0.08, parts: [{ mesh: m('han_barracks.dae'), texture: t('han_struct_02.png'), normTex: t('han_struct_02_norm.png'), mode: 'player' }] };
@@ -936,6 +1389,51 @@ export function getZeroADModelSpec(templateId: string, civId: CivId): EntityMode
         ],
       };
 
+    case 'apartment_house':
+      return {
+        targetFootprint: 4.5,
+        sinkY: -0.08,
+        parts: [
+          {
+            mesh: m('kart_house_02.dae'),
+            texture: t('kart_struct.png'),
+            normTex: t('kart_struct_norm.png'),
+            mode: 'player',
+            roughness: 0.82,
+          },
+          {
+            mesh: m('kart_house_b_1.dae'),
+            texture: t('kart_struct.png'),
+            mode: 'player',
+            roughness: 0.84,
+          },
+        ],
+      };
+
+    case 'dock':
+      if (isRome) {
+        return {
+          targetFootprint: 7.4,
+          rotateY: -Math.PI / 2,
+          sinkY: -0.06,
+          parts: [
+            { mesh: m('rome_dock.dae'), texture: t('rome_struct_2.png'), normTex: t('rome_struct_2_norm.png'), mode: 'player', roughness: 0.78 },
+            { mesh: m('rome_dock_1.dae'), texture: t('wood_c.png'), mode: 'player', roughness: 0.86 },
+          ],
+        };
+      }
+      return {
+        targetFootprint: 7.4,
+        sinkY: -0.06,
+        parts: [
+          { mesh: m('athen_dock_struct.dae'), texture: t('hele_struct.png'), normTex: t('hele_struct_norm.png'), mode: 'player', roughness: 0.78 },
+          { mesh: m('athen_dock_struct_b.dae'), texture: t('hele_struct_b.png'), normTex: t('hele_struct_b_norm.png'), mode: 'opaque', roughness: 0.82 },
+          { mesh: m('athen_dock_tiles.dae'), texture: t('hele_tile_c.png'), normTex: t('hele_tile_c_norm.png'), mode: 'player', roughness: 0.76 },
+          { mesh: m('athen_dock_props.dae'), texture: t('hele_props_a.png'), normTex: t('hele_props_a_norm.png'), mode: 'player', roughness: 0.82 },
+          { mesh: m('athen_dock_decor.dae'), texture: t('hele_decor.png'), mode: 'player', roughness: 0.74 },
+        ],
+      };
+
     case 'market':
       if (isRome) {
         return {
@@ -1078,6 +1576,7 @@ export function getZeroADModelSpec(templateId: string, civId: CivId): EntityMode
       };
 
     // ======================== UNITS ========================
+    case 'doctor':
     case 'healer': {
       const healerTex =
         civId === 'han'
@@ -1158,6 +1657,34 @@ export function getZeroADModelSpec(templateId: string, civId: CivId): EntityMode
             children: [
               { mesh: m('dudette_head_b.dae'), texture: t('head_fem_a.png'), mode: 'opaque', attachPoint: 'prop-head' },
               ...WORKER_TOOLS,
+            ],
+          },
+        ],
+      };
+    }
+
+    case 'scout': {
+      const scoutTunicTex =
+        civId === 'han'
+          ? t('han_tunic_01.png')
+          : civId === 'britons' || civId === 'gauls'
+            ? t('celt_tunic_01.png')
+            : civId === 'persians'
+              ? t('pers_tunic_01.png')
+              : civId === 'romans'
+                ? t('rome_tunic_basic_01.png')
+                : t('hele_tunic_01_01.png');
+      return {
+        targetHeight: 1.78,
+        parts: [
+          {
+            mesh: m('m_tunic_short.dae'),
+            texture: scoutTunicTex,
+            mode: 'player',
+            animations: HOPLITE_ANIMS,
+            children: [
+              { mesh: m('dude_head.dae'), texture: t('head_hele_a.png'), mode: 'opaque', attachPoint: 'prop-head' },
+              { mesh: m('m_staff.dae'), texture: t('palisade_main.png'), mode: 'opaque', attachPoint: 'prop-weapon_R' },
             ],
           },
         ],
@@ -2547,9 +3074,10 @@ class ZeroADAssetCache {
     const rough = part.roughness ?? 0.82;
     const metal = part.metalness ?? 0.08;
     const emis = part.emissive ?? 0;
+    const tint = part.tint ?? 0;
     const ds = part.doubleSide || part.mode === 'alpha' ? 1 : 0;
     const tc = part.mode === 'player' ? teamColor : 0;
-    const key = `${part.texture}|${part.normTex ?? ''}|${part.mode}|${tc}|${rough}|${metal}|${emis}|${ds}`;
+    const key = `${part.texture}|${part.normTex ?? ''}|${part.mode}|${tc}|${rough}|${metal}|${emis}|${tint}|${ds}`;
     let mat = this.matCache.get(key);
     if (mat) return mat;
 
@@ -2559,6 +3087,7 @@ class ZeroADAssetCache {
     mat = new THREE.MeshStandardMaterial({
       map,
       normalMap,
+      color: tint ? new THREE.Color(tint) : undefined,
       roughness: rough,
       metalness: metal,
       emissive: emis ? new THREE.Color(emis) : undefined,
@@ -2884,8 +3413,10 @@ export function preloadZeroADModels(civs: CivId[]): void {
   const templates = [
     'civic_center',
     'house',
+    'apartment_house',
     'storehouse',
     'farmstead',
+    'pasture',
     'barracks',
     'defense_tower',
     'outpost',
@@ -2896,6 +3427,7 @@ export function preloadZeroADModels(civs: CivId[]): void {
     'stable',
     'workshop',
     'wonder',
+    'dock',
     'gymnasium',
     'army_camp',
     'syssition',
@@ -2907,6 +3439,32 @@ export function preloadZeroADModels(civs: CivId[]): void {
     'tree_pine',
     'tree_palm',
     'tree_oak',
+    'tree_cedar',
+    'tree_willow',
+    'tree_apple',
+    'tree_orange',
+    'tree_fig',
+    'tree_date_palm',
+    'tree_cherry',
+    'tree_kapok',
+    'tree_maple',
+    'tree_jacaranda',
+    'tree_flamboyant',
+    'tree_golden_shower',
+    'tree_trumpet',
+    'tree_ginkgo',
+    'tree_birch',
+    'tree_blue_spruce',
+    'tree_coconut',
+    'tree_hybrid_golden_citrus',
+    'tree_hybrid_honey_fig',
+    'tree_hybrid_cedar_oak',
+    'tree_hybrid_iron_bamboo',
+    'tree_hybrid_olive_citrus',
+    'tree_hybrid_royal_orchard',
+    'treasure_chest',
+    'treasure_amphora',
+    'treasure_relic',
     'berry_bush',
     'grape_vine',
     'deer_herd',
@@ -2918,6 +3476,8 @@ export function preloadZeroADModels(civs: CivId[]): void {
     'rally_flag',
     'female_citizen',
     'male_citizen',
+    'scout',
+    'doctor',
     'healer',
     'siege_ram',
     'athen_hoplite',
@@ -2987,13 +3547,24 @@ export function preloadZeroADModels(civs: CivId[]): void {
     'sele_champion',
     'tree_bamboo',
     'wild_gazelle',
+    'wild_sheep',
+    'wild_goat',
+    'wild_chicken',
+    'wild_camel',
+    'wild_aurochs',
     'wild_elephant',
+    'sea_walrus',
+    'sea_whale',
     'predator_wolf',
     'predator_lion',
+    'predator_tiger',
     'predator_bear',
+    'predator_polar_bear',
+    'predator_hippo',
     'wild_eagle',
     'wild_seagull',
     'fishing_boat',
+    'warship_trireme',
     'war_dog',
     'camel_rider',
     'gastraphetes_crossbow',

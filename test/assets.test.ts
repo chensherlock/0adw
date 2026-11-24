@@ -89,12 +89,10 @@ describe('0 A.D. Asset Catalog & Model Specs', () => {
     const files = new Set<string>();
     const custom3D = new Set([
       'field',
-      'dock',
       'stone_wall',
       'stone_gate',
       'stone_bridge',
       'tunnel_portal',
-      'apartment_house',
       'trader',
       'ancient_ruin_pillar',
       'sea_monster',
@@ -102,7 +100,6 @@ describe('0 A.D. Asset Catalog & Model Specs', () => {
       'lake_nessie',
       'beacon_tower',
       'merchant_ship',
-      'warship_trireme',
       'fish_shoal',
       'han_ministry',
       'brit_kennel',
@@ -113,6 +110,7 @@ describe('0 A.D. Asset Catalog & Model Specs', () => {
       'maur_pillar',
       'sele_colony',
       'maur_champion',
+      'siege_cannon',
     ]);
     for (const civ of ALL_CIV_IDS) {
       for (const id of Object.keys(TEMPLATES)) {
@@ -216,6 +214,33 @@ describe('0 A.D. Asset Catalog & Model Specs', () => {
     for (const id of Object.keys(TECHS)) {
       const zh = getTechText(id);
       expect(zh.name, `Missing zh-TW tech name for ${id}`).not.toBe(TECHS[id].name);
+    }
+  });
+
+  it('ensures zero DAE meshes use unsupported <polygons> tags and Han roof / bamboo leaf textures exist', async () => {
+    const fsMod = 'node:fs';
+    const pathMod = 'node:path';
+    const fs = (await import(/* @vite-ignore */ fsMod)) as {
+      readdirSync: (dir: string) => string[];
+      readFileSync: (p: string, enc: string) => string;
+      existsSync: (p: string) => boolean;
+    };
+    const path = (await import(/* @vite-ignore */ pathMod)) as {
+      resolve: (...segs: string[]) => string;
+      join: (...segs: string[]) => string;
+    };
+    const cwd = (globalThis as { process?: { cwd: () => string } }).process?.cwd() ?? '.';
+    const modelsDir = path.resolve(cwd, 'public/assets/0ad/models');
+    const daes = fs.readdirSync(modelsDir).filter((f) => f.endsWith('.dae'));
+    expect(daes.length).toBeGreaterThan(50);
+    for (const fn of daes) {
+      const xml = fs.readFileSync(path.join(modelsDir, fn), 'utf8');
+      expect(xml.includes('<polygons'), `${fn} contains unsupported <polygons> tag (invisible in Three.js ColladaLoader!)`).toBe(false);
+    }
+
+    const texDir = path.resolve(cwd, 'public/assets/0ad/textures');
+    for (const requiredTex of ['han_rooftile.png', 'han_rooftile_norm.png', 'bamboo_leaves.png']) {
+      expect(fs.existsSync(path.join(texDir, requiredTex)), `Missing required texture ${requiredTex}`).toBe(true);
     }
   });
 });

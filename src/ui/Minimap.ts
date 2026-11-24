@@ -9,7 +9,10 @@ export class Minimap {
   private readonly ctx: CanvasRenderingContext2D;
   private readonly size: number;
   private readonly baseCanvas: HTMLCanvasElement;
+  private readonly territoryCanvas: HTMLCanvasElement;
+  private terrain: TerrainMap;
   private isLeftDragging = false;
+  private territoryFocusMode = false;
   private cachedTerrainVersion = -1;
   private cachedTerritoryVersion = -1;
   private cachedTerritoryLoops: TerritoryLoop[] = [];
@@ -21,21 +24,67 @@ export class Minimap {
     private onRightClickOrder: (wx: number, wz: number) => void
   ) {
     this.canvas = canvas;
+    this.terrain = terrain;
     this.size = canvas.width;
     this.ctx = canvas.getContext('2d')!;
 
     this.baseCanvas = document.createElement('canvas');
     this.baseCanvas.width = terrain.width;
     this.baseCanvas.height = terrain.height;
+    this.territoryCanvas = document.createElement('canvas');
+    this.territoryCanvas.width = terrain.width;
+    this.territoryCanvas.height = terrain.height;
+
     this.bakeTerrain(terrain);
-    this.attachEvents(terrain);
+    this.attachEvents();
   }
 
   rebuildTerrain(terrain: TerrainMap): void {
+    this.terrain = terrain;
+    this.baseCanvas.width = terrain.width;
+    this.baseCanvas.height = terrain.height;
+    this.territoryCanvas.width = terrain.width;
+    this.territoryCanvas.height = terrain.height;
     this.cachedTerrainVersion = terrain.version;
     this.cachedTerritoryVersion = -1;
     this.cachedTerritoryLoops = [];
     this.bakeTerrain(terrain);
+  }
+
+  private bakeTerritoryOverlay(world: World): void {
+    const w = world.terrain.width;
+    const h = world.terrain.height;
+    if (this.territoryCanvas.width !== w || this.territoryCanvas.height !== h) {
+      this.territoryCanvas.width = w;
+      this.territoryCanvas.height = h;
+    }
+    const tctx = this.territoryCanvas.getContext('2d')!;
+    const img = tctx.createImageData(w, h);
+    const data = img.data;
+    const owners = world.territory.owner;
+    const borders = world.territory.border;
+
+    // Pre-unpack player RGB colors for fast per-tile territory fill baking
+    const colorRgb = new Map<number, [number, number, number]>();
+    for (const p of world.players.values()) {
+      colorRgb.set(p.id, [(p.color >> 16) & 0xff, (p.color >> 8) & 0xff, p.color & 0xff]);
+    }
+
+    const total = w * h;
+    for (let i = 0; i < total; i++) {
+      const o = owners[i];
+      if (o === 0) continue;
+      const rgb = colorRgb.get(o);
+      if (!rgb) continue;
+      const p = i * 4;
+      const isEdge = borders[i] === 1;
+      data[p] = rgb[0];
+      data[p + 1] = rgb[1];
+      data[p + 2] = rgb[2];
+      // Vivid interior tint + sharper edge saturation so every nation's territory reads at a glance!
+      data[p + 3] = isEdge ? 225 : 138;
+    }
+    tctx.putImageData(img, 0, 0);
   }
 
   private bakeTerrain(terrain: TerrainMap): void {
@@ -193,13 +242,20 @@ export class Minimap {
     bctx.putImageData(img, 0, 0);
   }
 
-  private attachEvents(terrain: TerrainMap): void {
+  private attachEvents(): void {
     const toWorld = (e: MouseEvent) => {
       const rect = this.canvas.getBoundingClientRect();
       const nx = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
       const nz = Math.max(0, Math.min(1, (e.clientY - rect.top) / rect.height));
-      return { wx: nx * terrain.worldSize, wz: nz * terrain.worldSize };
+      return { wx: nx * this.terrain.worldSize, wz: nz * this.terrain.worldSize };
     };
+
+    const toggleBtn = document.getElementById('btn-minimap-territory');
+    toggleBtn?.addEventListener('click', (e) => {
+      e.stopPropagation();
+      this.territoryFocusMode = !this.territoryFocusMode;
+      toggleBtn.classList.toggle('active', this.territoryFocusMode);
+    });
 
     this.canvas.addEventListener('contextmenu', (e) => e.preventDefault());
     this.canvas.addEventListener('mousedown', (e) => {
@@ -234,27 +290,16 @@ export class Minimap {
       this.bakeTerrain(world.terrain);
     }
     ctx.drawImage(this.baseCanvas, 0, 0, s, s);
-
-    // 2. Fog overlay (sampled every 2 tiles for ultra-fast 60fps canvas draw)
-    const fogGrid = world.fog.getGrid(humanPlayerId);
-
-    for (let tz = 0; tz < world.terrain.height; tz += 2) {
-      for (let tx = 0; tx < world.terrain.width; tx += 2) {
-        const idx = tz * world.terrain.width + tx;
-        const f = revealAll ? 2 : fogGrid[idx];
-        if (f === 0) {
-          ctx.fillStyle = 'rgba(10, 14, 20, 0.88)';
-          ctx.fillRect(tx * tilePx, tz * tilePx, tilePx * 2.1, tilePx * 2.1);
-        } else if (f === 1) {
-          ctx.fillStyle = 'rgba(10, 14, 20, 0.42)';
-          ctx.fillRect(tx * tilePx, tz * tilePx, tilePx * 2.1, tilePx * 2.1);
-        }
-      }
+    if (this.territoryFocusMode) {
+      // Subdue terrain details in Political Map Mode so national territories pop vividly
+      ctx.fillStyle = 'rgba(8, 12, 18, 0.44)';
+      ctx.fillRect(0, 0, s, s);
     }
 
-    // 2b. Crisp dashed territory border contours for all 2..8 nations (only over explored tiles)
+    // 1b. Refresh cached national territory fill & contour borders whenever territory changes
     if (this.cachedTerritoryVersion !== world.territory.version) {
       this.cachedTerritoryVersion = world.territory.version;
+      this.bakeTerritoryOverlay(world);
       const owners = Array.from(world.players.keys());
       this.cachedTerritoryLoops = extractTerritoryContours(world.territory, world.terrain, {
         owners: owners.length > 0 ? owners : [1, 2],
@@ -264,20 +309,44 @@ export class Minimap {
       });
     }
 
+    // 1c. Translucent national territory color wash (drawn beneath Fog shroud so unexplored lands stay hidden)
+    ctx.save();
+    ctx.globalAlpha = this.territoryFocusMode ? 0.94 : 0.64;
+    ctx.drawImage(this.territoryCanvas, 0, 0, s, s);
+    ctx.restore();
+
+    // 2. Fog overlay (sampled every 2 tiles for ultra-fast 60fps canvas draw)
+    const fogGrid = world.fog.getGrid(humanPlayerId);
+    const exploredFogFill = this.territoryFocusMode ? 'rgba(10, 14, 20, 0.14)' : 'rgba(10, 14, 20, 0.26)';
+
+    for (let tz = 0; tz < world.terrain.height; tz += 2) {
+      for (let tx = 0; tx < world.terrain.width; tx += 2) {
+        const idx = tz * world.terrain.width + tx;
+        const f = revealAll ? 2 : fogGrid[idx];
+        if (f === 0) {
+          ctx.fillStyle = 'rgba(10, 14, 20, 0.88)';
+          ctx.fillRect(tx * tilePx, tz * tilePx, tilePx * 2.1, tilePx * 2.1);
+        } else if (f === 1) {
+          ctx.fillStyle = exploredFogFill;
+          ctx.fillRect(tx * tilePx, tz * tilePx, tilePx * 2.1, tilePx * 2.1);
+        }
+      }
+    }
+
+    // 2b. High-contrast 2-pass solid territory borders for all 2..8 nations (over explored tiles)
     if (this.cachedTerritoryLoops.length > 0) {
       ctx.save();
-      ctx.lineWidth = 1.4;
-      ctx.setLineDash([4, 3]);
-      ctx.lineCap = 'butt';
+      ctx.lineJoin = 'round';
+      ctx.lineCap = 'round';
 
       for (const loop of this.cachedTerritoryLoops) {
         const pts = loop.points;
         const n = pts.length;
         if (n < 3) continue;
 
-        ctx.strokeStyle = world.players.get(loop.owner)?.cssColor ?? '#ef4444';
         ctx.beginPath();
         let drawing = false;
+        let hasSegment = false;
 
         for (let i = 0; i <= n; i++) {
           const p = pts[i % n];
@@ -291,11 +360,22 @@ export class Minimap {
               drawing = true;
             } else {
               ctx.lineTo(px, pz);
+              hasSegment = true;
             }
           } else {
             drawing = false;
           }
         }
+        if (!hasSegment) continue;
+
+        // Pass 1: dark contrast halo so border stands out over bright snow, desert, water, or forest
+        ctx.strokeStyle = 'rgba(8, 12, 18, 0.82)';
+        ctx.lineWidth = this.territoryFocusMode ? 3.8 : 3.0;
+        ctx.stroke();
+
+        // Pass 2: vivid solid national border color
+        ctx.strokeStyle = world.players.get(loop.owner)?.cssColor ?? '#ef4444';
+        ctx.lineWidth = this.territoryFocusMode ? 2.4 : 1.85;
         ctx.stroke();
       }
 
@@ -316,6 +396,20 @@ export class Minimap {
 
       if (tpl.kind === 'resource') {
         if (tpl.isFlying) continue;
+        if (tpl.isTreasure) {
+          // Gleaming gold diamond marker for discovered random wilderness treasures!
+          ctx.save();
+          ctx.translate(mx, mz);
+          ctx.rotate(Math.PI / 4);
+          ctx.fillStyle = '#facc15';
+          ctx.fillRect(-2.4, -2.4, 4.8, 4.8);
+          ctx.strokeStyle = '#0f172a';
+          ctx.lineWidth = 1.0;
+          ctx.strokeRect(-2.4, -2.4, 4.8, 4.8);
+          ctx.restore();
+          continue;
+        }
+        if (this.territoryFocusMode) continue;
         if (tpl.isSeaMonster) {
           ctx.fillStyle = '#f43f5e';
           ctx.fillRect(mx - 2.0, mz - 2.0, 4.0, 4.0);
@@ -334,12 +428,26 @@ export class Minimap {
           ctx.fillRect(mx - 1, mz - 1, 2, 2);
         }
       } else if (tpl.kind === 'building') {
-        ctx.fillStyle = world.players.get(e.owner)?.cssColor ?? '#f87171';
-        const bs = tpl.isCivicCenter || tpl.isFortress ? 6 : 4;
-        ctx.fillRect(mx - bs * 0.5, mz - bs * 0.5, bs, bs);
-        ctx.strokeStyle = '#0f172a';
-        ctx.lineWidth = 0.8;
-        ctx.strokeRect(mx - bs * 0.5, mz - bs * 0.5, bs, bs);
+        const pColor = world.players.get(e.owner)?.cssColor ?? '#f87171';
+        if (tpl.isCivicCenter) {
+          // Prominent capital marker with crisp dark outer ring + white/gold inner frame
+          const bs = 8;
+          ctx.fillStyle = pColor;
+          ctx.fillRect(mx - bs * 0.5, mz - bs * 0.5, bs, bs);
+          ctx.strokeStyle = '#0f172a';
+          ctx.lineWidth = 2.0;
+          ctx.strokeRect(mx - bs * 0.5 - 0.5, mz - bs * 0.5 - 0.5, bs + 1, bs + 1);
+          ctx.strokeStyle = e.owner === humanPlayerId ? '#fef08a' : '#ffffff';
+          ctx.lineWidth = 1.1;
+          ctx.strokeRect(mx - bs * 0.5 + 0.5, mz - bs * 0.5 + 0.5, bs - 1, bs - 1);
+        } else {
+          ctx.fillStyle = pColor;
+          const bs = tpl.isFortress ? 6.5 : 4.2;
+          ctx.fillRect(mx - bs * 0.5, mz - bs * 0.5, bs, bs);
+          ctx.strokeStyle = '#0f172a';
+          ctx.lineWidth = 0.9;
+          ctx.strokeRect(mx - bs * 0.5, mz - bs * 0.5, bs, bs);
+        }
       } else if (tpl.isNaval) {
         ctx.fillStyle = world.players.get(e.owner)?.cssColor ?? '#fca5a5';
         ctx.fillRect(mx - 2.0, mz - 2.0, 4.0, 4.0);
@@ -348,7 +456,7 @@ export class Minimap {
         ctx.strokeRect(mx - 2.0, mz - 2.0, 4.0, 4.0);
       } else {
         ctx.fillStyle = world.players.get(e.owner)?.cssColor ?? '#fca5a5';
-        ctx.fillRect(mx - 1.4, mz - 1.4, 2.8, 2.8);
+        ctx.fillRect(mx - 1.5, mz - 1.5, 3.0, 3.0);
       }
     }
 

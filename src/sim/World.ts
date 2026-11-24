@@ -8,6 +8,7 @@ import {
   Difficulty,
   DiplomaticStance,
   Entity,
+  FishingMethod,
   GameCommand,
   GameMode,
   MapSize,
@@ -102,9 +103,98 @@ export class World {
   tickCount = 0;
   time = 0;
   winnerId: number | null = null;
+  static readonly BEACON_IGNITE_TIME = 3.0; // Seconds to kindle fire after spotting enemy or neighboring smoke
+  static readonly BEACON_SMOKE_TIME = 3.0; // Seconds after fire catches before thick signal smoke rises high
+  static readonly BEACON_BURN_DURATION = 30.0; // Seconds without enemies nearby before fire begins extinguishing
+  static readonly BEACON_EXTINGUISH_TIME = 4.0; // Seconds for fire & wolf-smoke to smoothly die down once extinguishing starts
+  static readonly TREE_GROWTH_SECONDS = 65.0; // Seconds for a planted sapling to grow from small sapling to mature tree
+  static readonly FRUIT_GROWTH_SECONDS = 25.0; // Seconds for a mature fruit tree to grow a full crop of ripe harvestable fruit
+  static readonly MAX_BRIDGE_LENGTH_TILES = 3; // Maximum contiguous stone bridge length (3 tiles ~ 6m)
+  static readonly ANIMAL_BREED_SECONDS = 35.0; // Seconds for a housed adult animal in a Pasture to birth a baby animal
+  static readonly ANIMAL_GROWTH_SECONDS = 45.0; // Seconds for a baby animal born in a Pasture to grow to full adult size
+
+  static isDomesticableAnimal(e: Entity): boolean {
+    if (!e.alive || e.hp <= 0 || e.pastureId !== undefined) return false;
+    return Boolean(TEMPLATES[e.templateId]?.isDomesticable);
+  }
+
+  static isTreeTemplate(templateId: string): boolean {
+    const tpl = TEMPLATES[templateId];
+    if (!tpl || tpl.kind !== 'resource') return false;
+    return templateId.startsWith('tree_') || Boolean(tpl.isFruitTree);
+  }
+
+  /** Growing saplings (treeGrowth < 1) cannot be harvested until they mature into full-sized trees */
+  static isSapling(e: Entity): boolean {
+    return e.treeGrowth !== undefined && e.treeGrowth < 1;
+  }
+
+  /** Fruit trees whose fruit is still growing (fruitProgress < 1) cannot be harvested for Food until ripe */
+  static isFruitNotRipe(e: Entity): boolean {
+    return Boolean(TEMPLATES[e.templateId]?.isFruitTree) && e.fruitProgress !== undefined && e.fruitProgress < 1;
+  }
+
+  /** Protected trees marked by the player cannot be chopped or harvested by workers or AI */
+  static isProtectedTree(e: Entity): boolean {
+    return Boolean(e.protectedByPlayer);
+  }
+
+  /** Returns true if a tree entity is currently off-limits for harvesting (sapling, unripe fruit, or player-protected) */
+  static isUnharvestableTree(e: Entity): boolean {
+    return World.isSapling(e) || World.isProtectedTree(e) || World.isFruitNotRipe(e);
+  }
+
+  /**
+   * Symmetric botanical hybridization resolver: crossbreeds any 2 DIFFERENT tree species
+   * into a brand-new high-yield hybrid tree species! Returns null if same species or non-trees.
+   */
+  static resolveHybridTreeTemplate(tplA: string, tplB: string): string | null {
+    if (tplA === tplB) return null;
+    if (!World.isTreeTemplate(tplA) || !World.isTreeTemplate(tplB)) return null;
+    const tA = TEMPLATES[tplA];
+    const tB = TEMPLATES[tplB];
+    if (tA.isHybridTree || tB.isHybridTree) {
+      if (tplA === 'tree_hybrid_royal_orchard' || tplB === 'tree_hybrid_royal_orchard') {
+        const otherId = tplA === 'tree_hybrid_royal_orchard' ? tplB : tplA;
+        const other = TEMPLATES[otherId];
+        if (other.isFruitTree) {
+          return otherId === 'tree_hybrid_golden_citrus' ? 'tree_hybrid_honey_fig' : 'tree_hybrid_golden_citrus';
+        }
+        return otherId === 'tree_hybrid_cedar_oak' ? 'tree_hybrid_iron_bamboo' : 'tree_hybrid_cedar_oak';
+      }
+      return 'tree_hybrid_royal_orchard';
+    }
+    const fruitA = Boolean(tA.isFruitTree);
+    const fruitB = Boolean(tB.isFruitTree);
+    if (fruitA && fruitB) {
+      if (tplA === 'tree_fig' || tplB === 'tree_fig' || tplA === 'tree_date_palm' || tplB === 'tree_date_palm') {
+        return 'tree_hybrid_honey_fig';
+      }
+      return 'tree_hybrid_golden_citrus';
+    }
+    if (fruitA !== fruitB) {
+      return 'tree_hybrid_olive_citrus';
+    }
+    if (tplA === 'tree_bamboo' || tplB === 'tree_bamboo') {
+      return 'tree_hybrid_iron_bamboo';
+    }
+    return 'tree_hybrid_cedar_oak';
+  }
+
+  /** Rolls an equal 1/3 probability each for Shoreline Fishing Rod, Cast Net, or Fishing Spear! */
+  rollShoreFishingMethod(): FishingMethod {
+    const r = this.rng.next();
+    if (r < 1 / 3) return 'rod';
+    if (r < 2 / 3) return 'net';
+    return 'spear';
+  }
+
   private lastAttackAlertTime: Map<number, number> = new Map();
   private idleTicks: Map<number, number> = new Map();
   private stuckTicks: Map<number, number> = new Map();
+  /** Tracks multi-tick net displacement (after local avoidance!) to catch tile-jitter deadlocks immediately */
+  private moveAnchors: Map<number, { x: number; z: number; ticks: number }> = new Map();
+  private scoutBlockedTiles: Map<number, Set<number>> = new Map();
   private wildlifeState: Map<number, { hunterId: number; alertTimer: number; attackCooldown: number }> = new Map();
   /** Remembers unfinished dig/fill/level jobs so any other worker can later resume them seamlessly! */
   private savedTerraformJobs: Map<
@@ -718,32 +808,35 @@ export class World {
       primaryBird: 'wild_eagle' | 'wild_seagull' | 'mixed';
     };
     const biomeWildlife: Record<string, BiomeWildlifeProfile> = {
-      inland_oasis: { passive: ['wild_gazelle'], predators: ['predator_lion'], passiveGroups: 5, predatorGroups: 4, primaryBird: 'wild_eagle' },
-      mesa: { passive: ['wild_gazelle'], predators: ['predator_lion'], passiveGroups: 4, predatorGroups: 4, primaryBird: 'wild_eagle' },
-      alpine_passes: { passive: ['deer_herd'], predators: ['predator_bear', 'predator_wolf'], passiveGroups: 4, predatorGroups: 4, primaryBird: 'wild_eagle' },
-      mountain: { passive: ['deer_herd'], predators: ['predator_bear', 'predator_wolf'], passiveGroups: 4, predatorGroups: 5, primaryBird: 'wild_eagle' },
-      hills: { passive: ['deer_herd', 'wild_gazelle'], predators: ['predator_wolf'], passiveGroups: 4, predatorGroups: 4, primaryBird: 'wild_eagle' },
-      plateau: { passive: ['wild_gazelle', 'deer_herd'], predators: ['predator_lion', 'predator_wolf'], passiveGroups: 4, predatorGroups: 4, primaryBird: 'wild_eagle' },
-      rainforest: { passive: ['wild_elephant', 'wild_boar'], predators: ['predator_lion', 'predator_bear'], passiveGroups: 5, predatorGroups: 4, primaryBird: 'wild_eagle' },
-      swamp: { passive: ['wild_boar', 'wild_elephant'], predators: ['predator_bear'], passiveGroups: 5, predatorGroups: 4, primaryBird: 'mixed' },
-      forest: { passive: ['deer_herd', 'wild_boar'], predators: ['predator_wolf', 'predator_bear'], passiveGroups: 5, predatorGroups: 5, primaryBird: 'wild_eagle' },
-      island: { passive: ['wild_boar', 'wild_elephant'], predators: ['predator_lion'], passiveGroups: 4, predatorGroups: 3, primaryBird: 'wild_seagull' },
-      twin_peninsulas: { passive: ['deer_herd', 'wild_boar'], predators: ['predator_wolf'], passiveGroups: 4, predatorGroups: 3, primaryBird: 'wild_seagull' },
-      aegean_valley: { passive: ['deer_herd', 'wild_boar'], predators: ['predator_wolf', 'predator_lion'], passiveGroups: 4, predatorGroups: 4, primaryBird: 'mixed' },
-      volcano: { passive: ['wild_gazelle'], predators: ['predator_lion', 'predator_wolf'], passiveGroups: 3, predatorGroups: 4, primaryBird: 'wild_eagle' },
-      open_plains: { passive: ['wild_gazelle', 'deer_herd'], predators: ['predator_lion', 'predator_wolf'], passiveGroups: 5, predatorGroups: 4, primaryBird: 'wild_eagle' },
+      inland_oasis: { passive: ['wild_camel', 'wild_gazelle', 'wild_goat'], predators: ['predator_lion', 'predator_hippo'], passiveGroups: 6, predatorGroups: 4, primaryBird: 'wild_eagle' },
+      mesa: { passive: ['wild_camel', 'wild_goat', 'wild_gazelle'], predators: ['predator_lion'], passiveGroups: 5, predatorGroups: 4, primaryBird: 'wild_eagle' },
+      alpine_passes: { passive: ['deer_herd', 'wild_goat', 'wild_sheep'], predators: ['predator_polar_bear', 'predator_wolf'], passiveGroups: 5, predatorGroups: 4, primaryBird: 'wild_eagle' },
+      mountain: { passive: ['wild_goat', 'deer_herd', 'wild_aurochs'], predators: ['predator_bear', 'predator_polar_bear', 'predator_wolf'], passiveGroups: 5, predatorGroups: 5, primaryBird: 'wild_eagle' },
+      hills: { passive: ['wild_sheep', 'wild_goat', 'wild_chicken', 'deer_herd'], predators: ['predator_wolf', 'predator_bear'], passiveGroups: 6, predatorGroups: 4, primaryBird: 'wild_eagle' },
+      plateau: { passive: ['wild_aurochs', 'wild_gazelle', 'wild_sheep'], predators: ['predator_lion', 'predator_wolf'], passiveGroups: 5, predatorGroups: 4, primaryBird: 'wild_eagle' },
+      rainforest: { passive: ['wild_elephant', 'wild_boar', 'wild_chicken'], predators: ['predator_tiger', 'predator_hippo'], passiveGroups: 6, predatorGroups: 4, primaryBird: 'wild_eagle' },
+      swamp: { passive: ['wild_boar', 'wild_aurochs', 'wild_elephant'], predators: ['predator_hippo', 'predator_bear'], passiveGroups: 6, predatorGroups: 4, primaryBird: 'mixed' },
+      forest: { passive: ['deer_herd', 'wild_boar', 'wild_chicken', 'wild_aurochs'], predators: ['predator_wolf', 'predator_tiger', 'predator_bear'], passiveGroups: 6, predatorGroups: 5, primaryBird: 'wild_eagle' },
+      island: { passive: ['wild_sheep', 'wild_goat', 'wild_chicken', 'wild_boar'], predators: ['predator_tiger', 'predator_bear'], passiveGroups: 6, predatorGroups: 3, primaryBird: 'wild_seagull' },
+      archipelago: { passive: ['wild_sheep', 'wild_goat', 'wild_chicken', 'wild_boar'], predators: ['predator_tiger', 'predator_bear'], passiveGroups: 6, predatorGroups: 3, primaryBird: 'wild_seagull' },
+      twin_peninsulas: { passive: ['wild_sheep', 'deer_herd', 'wild_chicken', 'wild_boar'], predators: ['predator_wolf', 'predator_hippo'], passiveGroups: 6, predatorGroups: 3, primaryBird: 'wild_seagull' },
+      aegean_valley: { passive: ['wild_sheep', 'wild_goat', 'deer_herd', 'wild_chicken'], predators: ['predator_wolf', 'predator_hippo'], passiveGroups: 6, predatorGroups: 4, primaryBird: 'mixed' },
+      volcano: { passive: ['wild_goat', 'wild_aurochs', 'wild_camel'], predators: ['predator_lion', 'predator_tiger'], passiveGroups: 5, predatorGroups: 4, primaryBird: 'wild_eagle' },
+      open_plains: { passive: ['wild_sheep', 'wild_aurochs', 'wild_chicken', 'wild_gazelle', 'deer_herd'], predators: ['predator_lion', 'predator_wolf'], passiveGroups: 6, predatorGroups: 4, primaryBird: 'wild_eagle' },
     };
     const bw = biomeWildlife[mt] ?? biomeWildlife.open_plains;
 
     for (let g = 0; g < bw.passiveGroups; g++) {
       const animalId = bw.passive[g % bw.passive.length];
-      const gp = pickDryPair(18, 0.7, 6.2, 45);
+      const gp = pickDryPair(16, 0.7, 6.2, 45);
       if (!gp) continue;
-      const count = animalId === 'wild_elephant' ? 1 : 2;
+      const count = animalId === 'wild_elephant' || animalId === 'wild_aurochs' ? 1 : animalId === 'wild_chicken' ? 3 : 2;
       for (let k = 0; k < count; k++) {
-        const ox = k === 0 ? -1.0 : 1.0;
-        this.trySpawnResourceNear(animalId, gp.x + ox, gp.z, 4);
-        this.trySpawnResourceNear(animalId, this.terrain.width - (gp.x + ox), this.terrain.height - gp.z, 4);
+        const ang = (k / Math.max(1, count)) * Math.PI * 2;
+        const ox = Math.cos(ang) * 1.1;
+        const oz = Math.sin(ang) * 1.1;
+        this.trySpawnResourceNear(animalId, gp.x + ox, gp.z + oz, 4);
+        this.trySpawnResourceNear(animalId, this.terrain.width - (gp.x + ox), this.terrain.height - (gp.z + oz), 4);
       }
     }
 
@@ -782,13 +875,18 @@ export class World {
       this.entities.set(bird.id, bird);
     }
 
-    // 11. Deep-Sea Monsters (Winged Sea Dragons & Giant Octopuses patrolling open navigable ocean!)
-    const maxOceanMonsters =
+    // 11. Rare Deep-Sea Monsters (Plesiosaurs & occasional Kraken — intentionally uncommon!)
+    const monsterRoll = this.rng.next();
+    const oceanCap =
       mt === 'island' || mt === 'archipelago' || mt === 'twin_peninsulas'
-        ? 6
-        : mt === 'aegean_valley' || mt === 'swamp'
-          ? 4
-          : 2;
+        ? monsterRoll < 0.30
+          ? 2
+          : monsterRoll < 0.62
+            ? 1
+            : 0
+        : monsterRoll < 0.32
+          ? 1
+          : 0;
     let monstersSpawned = 0;
     const isNearAnySpawnWorld = (wx: number, wz: number, minD: number): boolean => {
       for (const s of this.terrain.spawns) {
@@ -805,7 +903,7 @@ export class World {
       }
       return false;
     };
-    for (let tries = 0; tries < 560 && monstersSpawned < maxOceanMonsters; tries++) {
+    for (let tries = 0; tries < 420 && monstersSpawned < oceanCap; tries++) {
       const tx = this.rng.int(7, this.terrain.width - 8);
       const tz = this.rng.int(7, this.terrain.height - 8);
       if (!this.terrain.isTileWaterNavigable(tx, tz)) continue;
@@ -819,16 +917,17 @@ export class World {
         continue;
       }
       const pos = this.terrain.tileToWorldCenter(tx, tz);
-      if (isNearAnySpawnWorld(pos.x, pos.z, 26)) continue;
+      if (isNearAnySpawnWorld(pos.x, pos.z, 34)) continue;
       let tooClose = false;
       for (const e of this.entities.values()) {
-        if (TEMPLATES[e.templateId]?.isSeaMonster && Math.hypot(e.x - pos.x, e.z - pos.z) < 26) {
+        if (TEMPLATES[e.templateId]?.isSeaMonster && Math.hypot(e.x - pos.x, e.z - pos.z) < 42) {
           tooClose = true;
           break;
         }
       }
       if (tooClose) continue;
-      const oceanTplId = monstersSpawned % 2 === 0 ? 'sea_kraken' : 'sea_monster';
+      // Primarily spawn iconic long-necked Sea Plesiosaurs ('sea_monster'), with occasional Kraken
+      const oceanTplId = monstersSpawned === 0 && this.rng.next() < 0.72 ? 'sea_monster' : 'sea_kraken';
       const monster = this.createBaseEntity(oceanTplId, 0, pos.x, pos.z);
       monster.guardX = pos.x;
       monster.guardZ = pos.z;
@@ -838,9 +937,9 @@ export class World {
       monstersSpawned++;
     }
 
-    // 11b. Inland Lake Monsters (Loch Ness Plesiosaurs lurking inside scenic lakes!)
+    // 11b. Rare Inland Lake Plesiosaur (only ~32% chance per map, at most 1 rare Loch Ness Plesiosaur!)
     let lakesPopulated = 0;
-    const maxLakeMonsters = 3;
+    const maxLakeMonsters = this.rng.next() < 0.34 ? 1 : 0;
     for (const lake of this.terrain.lakes) {
       if (lakesPopulated >= maxLakeMonsters) break;
       const cx = Math.round(lake.x);
@@ -870,10 +969,10 @@ export class World {
       }
       if (!foundTile) continue;
       const pos = this.terrain.tileToWorldCenter(foundTile.tx, foundTile.tz);
-      if (isNearAnySpawnWorld(pos.x, pos.z, 18)) continue;
+      if (isNearAnySpawnWorld(pos.x, pos.z, 22)) continue;
       let tooClose = false;
       for (const e of this.entities.values()) {
-        if (TEMPLATES[e.templateId]?.isSeaMonster && Math.hypot(e.x - pos.x, e.z - pos.z) < 24) {
+        if (TEMPLATES[e.templateId]?.isSeaMonster && Math.hypot(e.x - pos.x, e.z - pos.z) < 32) {
           tooClose = true;
           break;
         }
@@ -887,40 +986,226 @@ export class World {
       this.entities.set(nessie.id, nessie);
       lakesPopulated++;
     }
+
+    // 12. Sunlit Fruit Tree Orchards (harvestable directly as Food!)
+    const fruitOrchardTarget = Math.max(4, Math.round(6 * (this.terrain.width / 128)));
+    let orchardsPlaced = 0;
+    const biomeFruitPool: string[] =
+      mt === 'inland_oasis' || mt === 'mesa'
+        ? ['tree_date_palm', 'tree_fig']
+        : mt === 'island' || mt === 'archipelago' || mt === 'twin_peninsulas'
+          ? ['tree_orange', 'tree_fig', 'tree_date_palm']
+          : mt === 'forest' || mt === 'hills' || mt === 'alpine_passes' || mt === 'mountain'
+            ? ['tree_apple', 'tree_fig']
+            : ['tree_apple', 'tree_orange', 'tree_fig'];
+    for (let tries = 0; tries < 240 && orchardsPlaced < fruitOrchardTarget; tries++) {
+      const gx = this.rng.int(10, this.terrain.width - 11);
+      const gz = this.rng.int(10, this.terrain.height - 11);
+      if (!this.terrain.isTileDryLand(gx, gz) || !this.navGrid.isWalkable(gx, gz)) continue;
+      const gc = this.terrain.tileToWorldCenter(gx, gz);
+      if (isNearAnySpawnWorld(gc.x, gc.z, 18)) continue;
+      const fruitTpl = biomeFruitPool[orchardsPlaced % biomeFruitPool.length];
+      let placedInGrove = 0;
+      for (let ti = 0; ti < 4; ti++) {
+        const ang = (ti / 4) * Math.PI * 2 + this.rng.range(-0.35, 0.35);
+        const dist = ti === 0 ? 0 : this.rng.range(1.6, 2.8);
+        const fx = gx + Math.cos(ang) * dist;
+        const fz = gz + Math.sin(ang) * dist;
+        if (this.trySpawnResource(fruitTpl, fx, fz)) placedInGrove++;
+      }
+      if (placedInGrove > 0) orchardsPlaced++;
+    }
+
+    // 13. Random Wilderness Treasures (hidden across clearings, hills, beaches & distant islands!)
+    const treasureCount = Math.max(5, Math.round(7 * (this.terrain.width / 128)));
+    let treasuresPlaced = 0;
+    const treasurePool = ['treasure_chest', 'treasure_amphora', 'treasure_relic'] as const;
+    const minTreasureSpacing = mt === 'archipelago' || this.terrain.width <= 96 ? 18 : 28;
+    for (let tries = 0; tries < 720 && treasuresPlaced < treasureCount; tries++) {
+      const tx = this.rng.int(8, this.terrain.width - 9);
+      const tz = this.rng.int(8, this.terrain.height - 9);
+      if (!this.terrain.isTileDryLand(tx, tz) || !this.navGrid.isWalkable(tx, tz)) continue;
+      const pos = this.terrain.tileToWorldCenter(tx, tz);
+      if (isNearAnySpawnWorld(pos.x, pos.z, 22)) continue;
+      let tooClose = false;
+      for (const e of this.entities.values()) {
+        if (TEMPLATES[e.templateId]?.isTreasure && Math.hypot(e.x - pos.x, e.z - pos.z) < minTreasureSpacing) {
+          tooClose = true;
+          break;
+        }
+      }
+      if (tooClose) continue;
+      const tTpl = treasurePool[this.rng.int(0, treasurePool.length - 1)];
+      if (this.trySpawnResource(tTpl, tx + 0.5, tz + 0.5)) {
+        treasuresPlaced++;
+      }
+    }
+
+    // 14. Rare ancient wild Imperial Miracle Orchard Trees (帝國奇蹟果木) — 2 scenic landmarks per map!
+    let miraclePlaced = 0;
+    for (let tries = 0; tries < 220 && miraclePlaced < 2; tries++) {
+      const tx = this.rng.int(10, this.terrain.width - 11);
+      const tz = this.rng.int(10, this.terrain.height - 11);
+      if (!this.terrain.isTileDryLand(tx, tz) || !this.navGrid.isWalkable(tx, tz)) continue;
+      const pos = this.terrain.tileToWorldCenter(tx, tz);
+      if (isNearAnySpawnWorld(pos.x, pos.z, 18)) continue;
+      const spawned = this.trySpawnResource('tree_hybrid_royal_orchard', tx + 0.5, tz + 0.5);
+      if (spawned) {
+        spawned.fruitProgress = 1;
+        miraclePlaced++;
+      }
+    }
+
+    // 15. Marine Food Mammals: Coastal Walruses (sea_walrus) & Deep-Sea Whales (sea_whale)!
+    const walrusCap = mt === 'island' || mt === 'archipelago' || mt === 'twin_peninsulas' ? 4 : 2;
+    let walrusSpawned = 0;
+    for (let tries = 0; tries < 280 && walrusSpawned < walrusCap; tries++) {
+      const tx = this.rng.int(5, this.terrain.width - 6);
+      const tz = this.rng.int(5, this.terrain.height - 6);
+      if (!this.terrain.isTileWaterNavigable(tx, tz)) continue;
+      let nearCoast = false;
+      for (let dz = -3; dz <= 3 && !nearCoast; dz++) {
+        for (let dx = -3; dx <= 3; dx++) {
+          if (this.terrain.isTileDryLand(tx + dx, tz + dz)) {
+            nearCoast = true;
+            break;
+          }
+        }
+      }
+      if (!nearCoast) continue;
+      const pos = this.terrain.tileToWorldCenter(tx, tz);
+      let tooClose = false;
+      for (const e of this.entities.values()) {
+        if (TEMPLATES[e.templateId]?.isAquatic && Math.hypot(e.x - pos.x, e.z - pos.z) < 14) {
+          tooClose = true;
+          break;
+        }
+      }
+      if (tooClose) continue;
+      const walrus = this.createBaseEntity('sea_walrus', 0, pos.x, pos.z);
+      walrus.guardX = pos.x;
+      walrus.guardZ = pos.z;
+      walrus.facing = this.rng.range(0, Math.PI * 2);
+      walrus.resourceRemaining = TEMPLATES.sea_walrus.resourceAmount ?? 520;
+      this.entities.set(walrus.id, walrus);
+      walrusSpawned++;
+    }
+
+    const whaleCap = mt === 'island' || mt === 'archipelago' || mt === 'twin_peninsulas' ? 3 : 1;
+    let whalesSpawned = 0;
+    for (let tries = 0; tries < 320 && whalesSpawned < whaleCap; tries++) {
+      const tx = this.rng.int(8, this.terrain.width - 9);
+      const tz = this.rng.int(8, this.terrain.height - 9);
+      if (
+        !this.terrain.isTileWaterNavigable(tx, tz) ||
+        !this.terrain.isTileWaterNavigable(tx + 2, tz) ||
+        !this.terrain.isTileWaterNavigable(tx - 2, tz) ||
+        !this.terrain.isTileWaterNavigable(tx, tz + 2) ||
+        !this.terrain.isTileWaterNavigable(tx, tz - 2)
+      ) {
+        continue;
+      }
+      const pos = this.terrain.tileToWorldCenter(tx, tz);
+      let tooClose = false;
+      for (const e of this.entities.values()) {
+        if (TEMPLATES[e.templateId]?.isAquatic && Math.hypot(e.x - pos.x, e.z - pos.z) < 22) {
+          tooClose = true;
+          break;
+        }
+      }
+      if (tooClose) continue;
+      const whale = this.createBaseEntity('sea_whale', 0, pos.x, pos.z);
+      whale.guardX = pos.x;
+      whale.guardZ = pos.z;
+      whale.facing = this.rng.range(0, Math.PI * 2);
+      whale.resourceRemaining = TEMPLATES.sea_whale.resourceAmount ?? 1100;
+      this.entities.set(whale.id, whale);
+      whalesSpawned++;
+    }
   }
 
   private pickBiomeTree(elevation: number): string {
     const r = this.rng.next();
     const mt = this.terrain.resolvedMapType;
     if (mt === 'rainforest') {
-      return r < 0.42 ? 'tree_bamboo' : r < 0.75 ? 'tree_palm' : 'tree_oak';
+      if (r < 0.22) return 'tree_bamboo';
+      if (r < 0.36) return 'tree_coconut';
+      if (r < 0.48) return 'tree_kapok';
+      if (r < 0.60) return 'tree_flamboyant';
+      if (r < 0.72) return 'tree_golden_shower';
+      if (r < 0.82) return 'tree_palm';
+      if (r < 0.91) return 'tree_orange';
+      return 'tree_willow';
     }
     if (mt === 'swamp') {
-      return r < 0.48 ? 'tree_bamboo' : r < 0.76 ? 'tree_oak' : 'tree_cypress';
+      if (r < 0.32) return 'tree_willow';
+      if (r < 0.56) return 'tree_bamboo';
+      if (r < 0.72) return 'tree_jacaranda';
+      if (r < 0.86) return 'tree_oak';
+      return 'tree_golden_shower';
     }
     if (mt === 'forest') {
-      return r < 0.44 ? 'tree_oak' : r < 0.74 ? 'tree_pine' : r < 0.88 ? 'tree_bamboo' : 'tree_cypress';
+      if (r < 0.18) return 'tree_oak';
+      if (r < 0.32) return 'tree_maple';
+      if (r < 0.44) return 'tree_ginkgo';
+      if (r < 0.56) return 'tree_cherry';
+      if (r < 0.68) return 'tree_birch';
+      if (r < 0.80) return 'tree_cedar';
+      if (r < 0.90) return 'tree_apple';
+      return 'tree_blue_spruce';
     }
     if (mt === 'island' || mt === 'archipelago') {
-      return r < 0.52 ? 'tree_palm' : r < 0.78 ? 'tree_bamboo' : 'tree_olive';
+      if (r < 0.24) return 'tree_coconut';
+      if (r < 0.40) return 'tree_palm';
+      if (r < 0.54) return 'tree_flamboyant';
+      if (r < 0.66) return 'tree_kapok';
+      if (r < 0.78) return 'tree_orange';
+      if (r < 0.89) return 'tree_fig';
+      return 'tree_trumpet';
     }
     if (mt === 'alpine_passes' || mt === 'mountain') {
-      return r < 0.78 ? 'tree_pine' : 'tree_cypress';
+      if (r < 0.34) return 'tree_blue_spruce';
+      if (r < 0.58) return 'tree_pine';
+      if (r < 0.78) return 'tree_birch';
+      if (r < 0.90) return 'tree_cedar';
+      return 'tree_ginkgo';
     }
     if (mt === 'inland_oasis' || mt === 'mesa') {
-      return r < 0.68 ? 'tree_palm' : 'tree_olive';
+      if (r < 0.30) return 'tree_date_palm';
+      if (r < 0.54) return 'tree_palm';
+      if (r < 0.72) return 'tree_coconut';
+      if (r < 0.86) return 'tree_fig';
+      return 'tree_flamboyant';
     }
     if (elevation < 1.55) {
-      return r < 0.5 ? 'tree_palm' : r < 0.75 ? 'tree_bamboo' : 'tree_cypress';
+      if (r < 0.22) return 'tree_coconut';
+      if (r < 0.40) return 'tree_willow';
+      if (r < 0.56) return 'tree_golden_shower';
+      if (r < 0.70) return 'tree_jacaranda';
+      if (r < 0.84) return 'tree_orange';
+      return 'tree_palm';
     }
     if (elevation > 4.2) {
-      return r < 0.68 ? 'tree_pine' : 'tree_cypress';
+      if (r < 0.28) return 'tree_blue_spruce';
+      if (r < 0.52) return 'tree_birch';
+      if (r < 0.74) return 'tree_cedar';
+      if (r < 0.88) return 'tree_maple';
+      return 'tree_pine';
     }
-    if (r < 0.32) return 'tree_cypress';
-    if (r < 0.6) return 'tree_olive';
-    if (r < 0.84) return 'tree_oak';
-    if (r < 0.94) return 'tree_pine';
-    return 'tree_bamboo';
+    if (r < 0.10) return 'tree_cherry';
+    if (r < 0.19) return 'tree_maple';
+    if (r < 0.28) return 'tree_ginkgo';
+    if (r < 0.36) return 'tree_jacaranda';
+    if (r < 0.44) return 'tree_trumpet';
+    if (r < 0.52) return 'tree_golden_shower';
+    if (r < 0.60) return 'tree_kapok';
+    if (r < 0.68) return 'tree_flamboyant';
+    if (r < 0.75) return 'tree_birch';
+    if (r < 0.81) return 'tree_oak';
+    if (r < 0.87) return 'tree_apple';
+    if (r < 0.93) return 'tree_orange';
+    if (r < 0.97) return 'tree_fig';
+    return 'tree_cypress';
   }
 
   /**
@@ -1016,7 +1301,7 @@ export class World {
       hp: maxHp,
       maxHp,
       alive: true,
-      stance: tpl.isWoman || tpl.isTrader ? 'passive' : 'aggressive',
+      stance: tpl.isWoman || tpl.isTrader || tpl.isScout || tpl.isHealer ? 'passive' : 'aggressive',
       order: { type: 'idle' },
       queuedOrders: [],
       path: [],
@@ -1236,6 +1521,8 @@ export class World {
     }
     if (tpl.isBeaconTower) {
       entity.beaconLevel = 1;
+      entity.beaconState = 'idle';
+      entity.beaconStageProgress = 0;
       entity.beaconLitTimer = 0;
     }
     if (tpl.isBridge && !asFoundation) {
@@ -1310,6 +1597,9 @@ export class World {
       }
       if (!anchored) {
         return { ok: false, reason: 'Bridge must be placed on water adjacent to land or another bridge' };
+      }
+      if (this.countConnectedBridgeTiles(tileX, tileZ) + 1 > World.MAX_BRIDGE_LENGTH_TILES) {
+        return { ok: false, reason: `Bridge exceeds maximum length (${World.MAX_BRIDGE_LENGTH_TILES} tiles)` };
       }
     } else if (tpl.isTunnel) {
       // Tunnel portals can be carved into dry flat ground OR steep mountain foothills!
@@ -1444,6 +1734,9 @@ export class World {
     this.updateWildlife();
     this.updateBuildings();
     this.updateProjectiles();
+    this.updateGrowingTrees();
+    this.updatePastureLivestock();
+    this.checkTreasureClaims();
     this.cleanupDead();
 
     if (this.lastTerrainVersion !== this.terrain.version) {
@@ -1513,6 +1806,12 @@ export class World {
         case 'move':
           this.handleMoveCommand(cmd);
           break;
+        case 'explore':
+          this.handleExploreCommand(cmd);
+          break;
+        case 'heal':
+          this.handleHealCommand(cmd);
+          break;
         case 'attack':
           this.handleAttackCommand(cmd);
           break;
@@ -1530,6 +1829,18 @@ export class World {
           break;
         case 'cancel_terraform':
           this.handleCancelTerraformCommand(cmd);
+          break;
+        case 'plant_tree':
+          this.handlePlantTreeCommand(cmd);
+          break;
+        case 'hybridize_tree':
+          this.handleHybridizeTreeCommand(cmd);
+          break;
+        case 'toggle_protect_tree':
+          this.handleToggleProtectTreeCommand(cmd);
+          break;
+        case 'capture_animal':
+          this.handleCaptureAnimalCommand(cmd);
           break;
         case 'demolish':
           this.handleDemolishCommand(cmd);
@@ -1748,6 +2059,7 @@ export class World {
     const tTpl = TEMPLATES[target.templateId];
     const resType = tTpl.resourceType;
     if (!resType || target.resourceRemaining <= 0) return;
+    if (World.isUnharvestableTree(target)) return; // Growing saplings & player-protected trees cannot be harvested!
     if (tTpl.isFarmField && (target.owner !== cmd.playerId || target.isFoundation)) return;
 
     for (const id of cmd.entityIds) {
@@ -1764,7 +2076,7 @@ export class World {
       if (uNaval && !tAquatic) continue;
       if (!uNaval && tAquatic) {
         const stand = this.canLandWorkerFish(target) ? this.getShoreFishingStandPos(target, u.x, u.z) : null;
-        if (!stand) continue; // Too far in deep sea — land rod/net fishing only reaches shoreline fish!
+        if (!stand) continue; // Too far in deep sea — land rod/net/spear fishing only reaches shoreline fish!
         goalX = stand.x;
         goalZ = stand.z;
       }
@@ -1775,7 +2087,13 @@ export class World {
         u.carryType = null;
       }
 
-      u.order = { type: 'gather', targetId: target.id, resourceType: resType, returning: false };
+      u.order = {
+        type: 'gather',
+        targetId: target.id,
+        resourceType: resType,
+        returning: false,
+        fishingMethod: !uNaval && tAquatic ? this.rollShoreFishingMethod() : undefined,
+      };
       u.queuedOrders.length = 0;
       u.path = uNaval
         ? this.navGrid.findWaterPath(u.x, u.z, goalX, goalZ)
@@ -2336,7 +2654,7 @@ export class World {
   isMilitaryUnit(templateId: string): boolean {
     const tpl = TEMPLATES[templateId];
     if (!tpl || tpl.kind !== 'unit') return false;
-    if (tpl.isWoman || templateId === 'male_citizen' || tpl.isTrader || tpl.isHealer || tpl.isNaval) return false;
+    if (tpl.isWoman || templateId === 'male_citizen' || tpl.isTrader || tpl.isHealer || tpl.isScout || tpl.isNaval) return false;
     return Boolean(tpl.attack);
   }
 
@@ -2445,62 +2763,38 @@ export class World {
     if (!TEMPLATES[beacon.templateId]?.isBeaconTower) return;
     if (this.getBeaconGarrisonSoldiers(beacon).length === 0) return;
     beacon.beaconSuppressTimer = 0;
-    this.igniteBeacon(beacon, false);
+    beacon.beaconRelayCooldown = 0;
+    this.startBeaconIgnition(beacon);
   }
 
   private handleExtinguishBeaconCommand(cmd: Extract<GameCommand, { type: 'extinguish_beacon' }>): void {
     const beacon = this.entities.get(cmd.buildingId);
     if (!beacon || !beacon.alive || beacon.owner !== cmd.playerId || beacon.isFoundation) return;
     if (!TEMPLATES[beacon.templateId]?.isBeaconTower) return;
+    beacon.beaconState = 'idle';
+    beacon.beaconStageProgress = 0;
     beacon.beaconLitTimer = 0;
-    beacon.beaconSuppressTimer = 10; // Prevent immediate auto-reignite for 10s after player manually extinguishes
+    beacon.beaconSuppressTimer = 12; // Prevent immediate auto-reignite for 12s after player manually extinguishes
+    beacon.beaconRelayCooldown = 12;
   }
 
   /**
-   * Lights a garrisoned Great Wall Beacon Tower:
-   * - Chains ignition to all other garrisoned Beacon Towers within relayRange(level)
-   * - Automatically rallies own armies within rallyRange(level) toward the lit Beacon Tower!
+   * Begins staged Beacon Tower ignition:
+   * 1. 'igniting' (3s): garrisoned soldiers kindle the fire (no smoke yet).
+   * 2. 'burning'  (3s): flames roar up and build dense wolf-smoke (neighbors still waiting).
+   * 3. 'smoking' (30s): soaring smoke plume rallies nearby armies AND is spotted by neighboring beacons,
+   *    causing B to begin igniting -> burning -> smoking -> triggering C -> D in a realistic Great Wall relay!
+   * 4. 'extinguishing' (4s): if no enemy appears nearby for 30s, fire & smoke smoothly die out.
    */
-  private igniteBeacon(beacon: Entity, autoDetected: boolean, visited?: Set<number>): void {
-    const seen = visited ?? new Set<number>();
-    if (seen.has(beacon.id)) return;
-    seen.add(beacon.id);
-
+  private startBeaconIgnition(beacon: Entity): void {
     if (this.getBeaconGarrisonSoldiers(beacon).length === 0) return;
-    const level = beacon.beaconLevel ?? 1;
-    const stats = World.getBeaconStats(level);
-    beacon.beaconLitTimer = 25;
-    beacon.beaconRallyCooldown = 4.5;
-
-    this.events.push({
-      type: 'beacon_lit',
-      playerId: beacon.owner,
-      x: beacon.x,
-      z: beacon.z,
-      level,
-      autoDetected,
-    });
-
-    // Rally all own military units within rallyRange toward this Beacon Tower!
-    this.rallyArmiesToBeacon(beacon, stats.rallyRange);
-
-    // Chain-ignite every other garrisoned friendly Beacon Tower within relayRange!
-    for (const other of this.entities.values()) {
-      if (
-        other.id === beacon.id ||
-        seen.has(other.id) ||
-        !other.alive ||
-        other.isFoundation ||
-        other.owner !== beacon.owner ||
-        !TEMPLATES[other.templateId]?.isBeaconTower
-      ) {
-        continue;
-      }
-      if (Math.hypot(other.x - beacon.x, other.z - beacon.z) <= stats.relayRange) {
-        if (this.getBeaconGarrisonSoldiers(other).length > 0) {
-          this.igniteBeacon(other, false, seen);
-        }
-      }
+    const state = beacon.beaconState ?? 'idle';
+    if (state === 'idle' || state === 'extinguishing') {
+      beacon.beaconState = 'igniting';
+      beacon.beaconStageProgress = 0;
+      beacon.beaconLitTimer = 0;
+    } else if (state === 'smoking') {
+      beacon.beaconLitTimer = Math.max(beacon.beaconLitTimer ?? 0, World.BEACON_BURN_DURATION);
     }
   }
 
@@ -2685,6 +2979,8 @@ export class World {
     } else if (b.templateId === 'stone_wall' && targetTplId === 'beacon_tower') {
       b.templateId = 'beacon_tower';
       b.beaconLevel = 1;
+      b.beaconState = 'idle';
+      b.beaconStageProgress = 0;
       b.beaconLitTimer = 0;
       const stats = World.getBeaconStats(1);
       b.maxHp = stats.maxHp;
@@ -2874,9 +3170,62 @@ export class World {
   private handleSetRallyCommand(cmd: Extract<GameCommand, { type: 'set_rally' }>): void {
     const building = this.entities.get(cmd.buildingId);
     if (!building || !building.alive || building.owner !== cmd.playerId) return;
-    building.rallyX = Math.max(4, Math.min(this.terrain.worldSize - 4, cmd.x));
-    building.rallyZ = Math.max(4, Math.min(this.terrain.worldSize - 4, cmd.z));
+    building.rallyX = Math.max(2, Math.min(this.terrain.worldSize - 2, cmd.x));
+    building.rallyZ = Math.max(2, Math.min(this.terrain.worldSize - 2, cmd.z));
     building.rallyTargetId = cmd.targetId ?? null;
+  }
+
+  private handleExploreCommand(cmd: Extract<GameCommand, { type: 'explore' }>): void {
+    for (const id of cmd.entityIds) {
+      const u = this.entities.get(id);
+      if (!u || !u.alive || u.owner !== cmd.playerId || u.garrisonedIn !== null) continue;
+      const tpl = TEMPLATES[u.templateId];
+      if (!tpl?.isScout) continue;
+      u.order = { type: 'explore' };
+      u.queuedOrders.length = 0;
+      u.path = [];
+      u.pathIndex = 0;
+      u.repathTimer = 0;
+      this.scoutBlockedTiles.delete(u.id);
+    }
+  }
+
+  private handleHealCommand(cmd: Extract<GameCommand, { type: 'heal' }>): void {
+    const target = this.entities.get(cmd.targetId);
+    if (!target || !target.alive || target.garrisonedIn !== null) return;
+    if (!this.isAlliedOrOwn(cmd.playerId, target.owner)) return;
+    if (TEMPLATES[target.templateId]?.kind !== 'unit') return;
+    for (const id of cmd.entityIds) {
+      const u = this.entities.get(id);
+      if (!u || !u.alive || u.owner !== cmd.playerId || u.garrisonedIn !== null || u.id === target.id) continue;
+      const tpl = TEMPLATES[u.templateId];
+      if (!tpl?.isHealer) continue;
+      u.order = { type: 'heal', targetId: target.id };
+      u.queuedOrders.length = 0;
+      u.path = this.navGrid.findPath(u.x, u.z, target.x, target.z, 2500, false, u.owner);
+      u.pathIndex = 0;
+      u.repathTimer = 0.6;
+    }
+  }
+
+  /** Finds the nearest wounded own or allied unit within maxRadius (for Doctors & Healers) */
+  findNearestWoundedAlly(ownerId: number, x: number, z: number, maxRadius = 80, excludeId = -1): Entity | null {
+    let best: Entity | null = null;
+    let bestD2 = maxRadius * maxRadius;
+    for (const e of this.entities.values()) {
+      if (!e.alive || e.id === excludeId || e.garrisonedIn !== null) continue;
+      if (e.owner === 0 || !this.isAlliedOrOwn(ownerId, e.owner)) continue;
+      if (TEMPLATES[e.templateId]?.kind !== 'unit') continue;
+      if (e.hp >= e.maxHp - 0.5) continue;
+      const dx = e.x - x;
+      const dz = e.z - z;
+      const d2 = dx * dx + dz * dz;
+      if (d2 < bestD2) {
+        bestD2 = d2;
+        best = e;
+      }
+    }
+    return best;
   }
 
   private handleSetStanceCommand(cmd: Extract<GameCommand, { type: 'set_stance' }>): void {
@@ -2898,49 +3247,357 @@ export class World {
     }
   }
 
-  private handleGarrisonCommand(cmd: Extract<GameCommand, { type: 'garrison' }>): void {
-    const building = this.entities.get(cmd.buildingId);
-    if (!building || !building.alive || building.owner !== cmd.playerId || building.isFoundation) return;
-    if (this.getMaxGarrisonCapacity(building) <= 0) return;
+  /** Counts how many contiguous existing bridge segments (completed or foundation) connect to (tileX, tileZ) */
+  countConnectedBridgeTiles(tileX: number, tileZ: number): number {
+    const bridges: Array<{ tx: number; tz: number }> = [];
+    for (const e of this.entities.values()) {
+      if (e.alive && TEMPLATES[e.templateId]?.isBridge) {
+        bridges.push({ tx: e.tileX, tz: e.tileZ });
+      }
+    }
+    if (bridges.length === 0) return 0;
+    const visited = new Set<number>();
+    const queue: Array<{ tx: number; tz: number }> = [{ tx: tileX, tz: tileZ }];
+    let count = 0;
+    while (queue.length > 0) {
+      const cur = queue.shift()!;
+      for (let i = 0; i < bridges.length; i++) {
+        if (visited.has(i)) continue;
+        const b = bridges[i];
+        if (Math.hypot(b.tx - cur.tx, b.tz - cur.tz) <= 2.35) {
+          visited.add(i);
+          count++;
+          queue.push(b);
+        }
+      }
+    }
+    return count;
+  }
+
+  canPlantTreeAt(wx: number, wz: number): boolean {
+    if (wx < 4 || wz < 4 || wx > this.terrain.worldSize - 4 || wz > this.terrain.worldSize - 4) return false;
+    const { tx, tz } = this.terrain.worldToTile(wx, wz);
+    if (!this.terrain.isTileDryLand(tx, tz) || !this.navGrid.isWalkable(tx, tz)) return false;
+    for (const e of this.entities.values()) {
+      if (!e.alive) continue;
+      const eTpl = TEMPLATES[e.templateId];
+      if (!eTpl || eTpl.kind === 'unit') continue;
+      const minD = eTpl.radius + 1.15;
+      if ((e.x - wx) * (e.x - wx) + (e.z - wz) * (e.z - wz) < minD * minD) return false;
+    }
+    return true;
+  }
+
+  /** Finds the nearest valid dry-land tree planting spot at or around (wx, wz) within maxRadius */
+  findNearestPlantableSpot(wx: number, wz: number, maxRadius = 6.5): { x: number; z: number } | null {
+    if (this.canPlantTreeAt(wx, wz)) return { x: wx, z: wz };
+    for (let r = 1.05; r <= maxRadius; r += 0.9) {
+      const steps = 12;
+      for (let a = 0; a < steps; a++) {
+        const ang = (a / steps) * Math.PI * 2;
+        const cx = wx + Math.cos(ang) * r;
+        const cz = wz + Math.sin(ang) * r;
+        if (this.canPlantTreeAt(cx, cz)) {
+          return { x: cx, z: cz };
+        }
+      }
+    }
+    return null;
+  }
+
+  private handlePlantTreeCommand(cmd: Extract<GameCommand, { type: 'plant_tree' }>): void {
+    const source = this.entities.get(cmd.sourceTreeId);
+    if (!source || !source.alive || !World.isTreeTemplate(source.templateId)) return;
+    const spot = this.findNearestPlantableSpot(cmd.x, cmd.z, 4.0);
+    if (!spot) return;
 
     for (const id of cmd.entityIds) {
       const u = this.entities.get(id);
       if (!u || !u.alive || u.owner !== cmd.playerId || u.garrisonedIn !== null) continue;
-      if (TEMPLATES[u.templateId].kind !== 'unit') continue;
-      u.order = { type: 'garrison', targetId: building.id };
+      const uTpl = TEMPLATES[u.templateId];
+      if (!uTpl || !uTpl.gather || uTpl.isNaval) continue;
+
+      const order: Extract<UnitOrder, { type: 'plant_tree' }> = {
+        type: 'plant_tree',
+        sourceTreeId: source.id,
+        treeTemplateId: source.templateId,
+        x: spot.x,
+        z: spot.z,
+        stage: 'cut',
+        progress: 0,
+      };
+      if (cmd.queued && u.order.type !== 'idle') {
+        u.queuedOrders.push(order);
+      } else {
+        u.order = order;
+        u.queuedOrders.length = 0;
+        u.path = this.navGrid.findPath(u.x, u.z, source.x, source.z, 3500, false, u.owner);
+        u.pathIndex = 0;
+        u.repathTimer = 1.0;
+      }
+    }
+  }
+
+  private handleToggleProtectTreeCommand(cmd: Extract<GameCommand, { type: 'toggle_protect_tree' }>): void {
+    const tree = this.entities.get(cmd.entityId);
+    if (!tree || !tree.alive || !World.isTreeTemplate(tree.templateId)) return;
+    tree.protectedByPlayer = !tree.protectedByPlayer;
+    if (tree.protectedByPlayer) {
+      // Immediately halt any workers currently harvesting this newly protected tree!
+      for (const u of this.entities.values()) {
+        if (!u.alive || u.garrisonedIn !== null || u.order.type !== 'gather') continue;
+        if (u.order.targetId !== tree.id) continue;
+        if (u.carryAmount > 0) {
+          const alt = this.findNearestResource(u.x, u.z, u.order.resourceType, u.owner, 48, false);
+          u.order.targetId = alt ? alt.id : -1;
+          u.order.returning = true;
+          u.path = [];
+        } else {
+          const alt = this.findNearestResource(u.x, u.z, u.order.resourceType, u.owner, 48, false);
+          if (alt) {
+            u.order.targetId = alt.id;
+            u.path = this.navGrid.findPath(u.x, u.z, alt.x, alt.z, 3500, false, u.owner);
+            u.pathIndex = 0;
+          } else {
+            u.order = { type: 'idle' };
+            u.path = [];
+          }
+        }
+      }
+    }
+  }
+
+  private handleHybridizeTreeCommand(cmd: Extract<GameCommand, { type: 'hybridize_tree' }>): void {
+    const treeA = this.entities.get(cmd.treeAId);
+    const treeB = this.entities.get(cmd.treeBId);
+    if (!treeA || !treeA.alive || !World.isTreeTemplate(treeA.templateId)) return;
+    if (!treeB || !treeB.alive || !World.isTreeTemplate(treeB.templateId)) return;
+    const resultTemplateId = World.resolveHybridTreeTemplate(treeA.templateId, treeB.templateId);
+    if (!resultTemplateId) return;
+    const spot = this.findNearestPlantableSpot(cmd.x, cmd.z, 4.0);
+    if (!spot) return;
+
+    for (const id of cmd.entityIds) {
+      const u = this.entities.get(id);
+      if (!u || !u.alive || u.owner !== cmd.playerId || u.garrisonedIn !== null) continue;
+      const uTpl = TEMPLATES[u.templateId];
+      if (!uTpl || !uTpl.gather || uTpl.isNaval) continue;
+
+      const order: Extract<UnitOrder, { type: 'hybridize_tree' }> = {
+        type: 'hybridize_tree',
+        treeAId: treeA.id,
+        treeBId: treeB.id,
+        treeATemplateId: treeA.templateId,
+        treeBTemplateId: treeB.templateId,
+        resultTemplateId,
+        x: spot.x,
+        z: spot.z,
+        stage: 'cutA',
+        progress: 0,
+      };
+      if (cmd.queued && u.order.type !== 'idle') {
+        u.queuedOrders.push(order);
+      } else {
+        u.order = order;
+        u.queuedOrders.length = 0;
+        u.path = this.navGrid.findPath(u.x, u.z, treeA.x, treeA.z, 3500, false, u.owner);
+        u.pathIndex = 0;
+        u.repathTimer = 1.0;
+      }
+    }
+  }
+
+  /** Returns the current number of alive livestock animals housed inside a Pasture */
+  getPastureAnimalCount(pastureId: number): number {
+    let count = 0;
+    for (const e of this.entities.values()) {
+      if (e.alive && e.pastureId === pastureId) count++;
+    }
+    return count;
+  }
+
+  /** Finds the nearest completed friendly Pasture with available livestock capacity */
+  findNearestAvailablePasture(ownerId: number, x: number, z: number): Entity | null {
+    let best: Entity | null = null;
+    let bestD2 = Infinity;
+    for (const e of this.entities.values()) {
+      if (!e.alive || e.owner !== ownerId || e.isFoundation) continue;
+      const tpl = TEMPLATES[e.templateId];
+      if (!tpl?.isPasture) continue;
+      const cap = tpl.pastureCapacity ?? 12;
+      if (this.getPastureAnimalCount(e.id) >= cap) continue;
+      const d2 = (e.x - x) * (e.x - x) + (e.z - z) * (e.z - z);
+      if (d2 < bestD2) {
+        bestD2 = d2;
+        best = e;
+      }
+    }
+    return best;
+  }
+
+  private handleCaptureAnimalCommand(cmd: Extract<GameCommand, { type: 'capture_animal' }>): void {
+    const animal = this.entities.get(cmd.animalId);
+    if (!animal || !World.isDomesticableAnimal(animal)) return;
+    let pasture = cmd.pastureId ? this.entities.get(cmd.pastureId) ?? null : null;
+    if (
+      !pasture ||
+      !pasture.alive ||
+      pasture.owner !== cmd.playerId ||
+      pasture.isFoundation ||
+      !TEMPLATES[pasture.templateId]?.isPasture ||
+      this.getPastureAnimalCount(pasture.id) >= (TEMPLATES[pasture.templateId].pastureCapacity ?? 12)
+    ) {
+      pasture = this.findNearestAvailablePasture(cmd.playerId, animal.x, animal.z);
+    }
+    if (!pasture) return;
+
+    for (const id of cmd.entityIds) {
+      const u = this.entities.get(id);
+      if (!u || !u.alive || u.owner !== cmd.playerId || u.garrisonedIn !== null) continue;
+      const uTpl = TEMPLATES[u.templateId];
+      if (!uTpl || !uTpl.gather || uTpl.isNaval) continue;
+      u.order = {
+        type: 'capture_animal',
+        animalId: animal.id,
+        pastureId: pasture.id,
+        stage: 'approach',
+        progress: 0,
+      };
       u.queuedOrders.length = 0;
-      u.path = this.navGrid.findPath(u.x, u.z, building.x, building.z, 4500, false, u.owner);
+      u.path = this.navGrid.findPath(u.x, u.z, animal.x, animal.z, 4500, false, u.owner);
       u.pathIndex = 0;
+      u.repathTimer = 0.8;
+    }
+  }
+
+  /** Finds the nearest walkable dry-land shore tile near a Warship so land units can board cleanly! */
+  getShoreBoardingPos(ship: Entity, fromX?: number, fromZ?: number): { x: number; z: number } | null {
+    const st = this.terrain.worldToTile(ship.x, ship.z);
+    let bestX = 0;
+    let bestZ = 0;
+    let bestScore = Infinity;
+    for (let r = 1; r <= 10; r++) {
+      for (let dz = -r; dz <= r; dz++) {
+        for (let dx = -r; dx <= r; dx++) {
+          if (Math.abs(dx) !== r && Math.abs(dz) !== r) continue;
+          const tx = st.tx + dx;
+          const tz = st.tz + dz;
+          if (tx < 2 || tz < 2 || tx >= this.terrain.width - 2 || tz >= this.terrain.height - 2) continue;
+          if (!this.terrain.isTileDryLand(tx, tz) || !this.navGrid.isWalkableFor(tx, tz, ship.owner)) continue;
+          const pos = this.terrain.tileToWorldCenter(tx, tz);
+          const shipDist = Math.hypot(pos.x - ship.x, pos.z - ship.z);
+          const walkerDist = fromX !== undefined && fromZ !== undefined ? Math.hypot(pos.x - fromX, pos.z - fromZ) * 0.2 : 0;
+          const score = shipDist + walkerDist;
+          if (score < bestScore) {
+            bestX = pos.x;
+            bestZ = pos.z;
+            bestScore = score;
+          }
+        }
+      }
+      if (bestScore < Infinity && r >= 3) break;
+    }
+    return bestScore < Infinity ? { x: bestX, z: bestZ } : null;
+  }
+
+  /** Finds a nearby dry-land shore point (within 8 tiles) where a Warship's passengers can safely disembark! */
+  findShipDisembarkPoint(ship: Entity): { x: number; z: number } | null {
+    const st = this.terrain.worldToTile(ship.x, ship.z);
+    let bestX = 0;
+    let bestZ = 0;
+    let bestDist = Infinity;
+    for (let r = 1; r <= 8; r++) {
+      for (let dz = -r; dz <= r; dz++) {
+        for (let dx = -r; dx <= r; dx++) {
+          if (Math.abs(dx) !== r && Math.abs(dz) !== r) continue;
+          const tx = st.tx + dx;
+          const tz = st.tz + dz;
+          if (tx < 2 || tz < 2 || tx >= this.terrain.width - 2 || tz >= this.terrain.height - 2) continue;
+          if (!this.terrain.isTileDryLand(tx, tz) || !this.navGrid.isWalkableFor(tx, tz, ship.owner)) continue;
+          const pos = this.terrain.tileToWorldCenter(tx, tz);
+          const dist = Math.hypot(pos.x - ship.x, pos.z - ship.z);
+          if (dist < bestDist) {
+            bestX = pos.x;
+            bestZ = pos.z;
+            bestDist = dist;
+          }
+        }
+      }
+      if (bestDist < Infinity) break;
+    }
+    return bestDist < Infinity ? { x: bestX, z: bestZ } : null;
+  }
+
+  private handleGarrisonCommand(cmd: Extract<GameCommand, { type: 'garrison' }>): void {
+    const carrier = this.entities.get(cmd.buildingId);
+    if (!carrier || !carrier.alive || carrier.owner !== cmd.playerId || carrier.isFoundation) return;
+    if (this.getMaxGarrisonCapacity(carrier) <= 0) return;
+    const cTpl = TEMPLATES[carrier.templateId];
+
+    for (const id of cmd.entityIds) {
+      const u = this.entities.get(id);
+      if (!u || !u.alive || u.owner !== cmd.playerId || u.garrisonedIn !== null || u.id === carrier.id) continue;
+      const uTpl = TEMPLATES[u.templateId];
+      if (!uTpl || uTpl.kind !== 'unit' || uTpl.isNaval) continue;
+      u.order = { type: 'garrison', targetId: carrier.id };
+      u.queuedOrders.length = 0;
+      let goal: { x: number; z: number };
+      if (cTpl.isNaval) {
+        goal = this.getShoreBoardingPos(carrier, u.x, u.z) ?? { x: carrier.x, z: carrier.z };
+      } else if (cTpl.isBeaconTower) {
+        goal = this.getTerraformApproachPos(u, carrier.tileX, carrier.tileZ, { x: carrier.x, z: carrier.z });
+      } else {
+        goal = { x: carrier.x, z: carrier.z };
+      }
+      u.path = this.navGrid.findPath(u.x, u.z, goal.x, goal.z, 4500, false, u.owner);
+      u.pathIndex = 0;
+      u.repathTimer = 0.8;
     }
   }
 
   private handleUngarrisonCommand(cmd: Extract<GameCommand, { type: 'ungarrison' }>): void {
-    const building = this.entities.get(cmd.buildingId);
-    if (!building || !building.alive || building.owner !== cmd.playerId) return;
-    this.ungarrisonAll(building);
+    const carrier = this.entities.get(cmd.buildingId);
+    if (!carrier || !carrier.alive || carrier.owner !== cmd.playerId) return;
+    this.ungarrisonAll(carrier);
   }
 
   private handleUngarrisonOneCommand(cmd: Extract<GameCommand, { type: 'ungarrison_one' }>): void {
-    const building = this.entities.get(cmd.buildingId);
-    if (!building || !building.alive || building.owner !== cmd.playerId) return;
-    const idx = building.garrisonedIds.indexOf(cmd.unitId);
+    const carrier = this.entities.get(cmd.buildingId);
+    if (!carrier || !carrier.alive || carrier.owner !== cmd.playerId) return;
+    const idx = carrier.garrisonedIds.indexOf(cmd.unitId);
     if (idx === -1) return;
-    building.garrisonedIds.splice(idx, 1);
+    const cTpl = TEMPLATES[carrier.templateId];
+    let dropBase: { x: number; z: number } | null = null;
+    if (cTpl.isNaval) {
+      dropBase = this.findShipDisembarkPoint(carrier);
+      if (!dropBase) return; // Ship must be near a shoreline to disembark safely onto dry land!
+    }
+    carrier.garrisonedIds.splice(idx, 1);
     const u = this.entities.get(cmd.unitId);
     if (!u || !u.alive) return;
     u.garrisonedIn = null;
-    const bTpl = TEMPLATES[building.templateId];
     const angle = (idx % 8) * (Math.PI * 0.25);
-    const dist = bTpl.radius + 1.65;
-    const rawX = Math.max(4, Math.min(this.terrain.worldSize - 4, building.x + Math.cos(angle) * dist));
-    const rawZ = Math.max(4, Math.min(this.terrain.worldSize - 4, building.z + Math.sin(angle) * dist));
-    const rt = this.terrain.worldToTile(rawX, rawZ);
-    const safe = this.navGrid.isWalkableFor(rt.tx, rt.tz, u.owner)
-      ? { x: rawX, z: rawZ }
-      : (() => {
-          const tile = this.navGrid.findNearestWalkable(rt.tx, rt.tz, 6, rt.tx, rt.tz, u.owner);
-          return tile ? this.terrain.tileToWorldCenter(tile.tx, tile.tz) : { x: rawX, z: rawZ };
-        })();
+    let safe: { x: number; z: number };
+    if (dropBase) {
+      const rx = Math.max(4, Math.min(this.terrain.worldSize - 4, dropBase.x + Math.cos(angle) * 0.9));
+      const rz = Math.max(4, Math.min(this.terrain.worldSize - 4, dropBase.z + Math.sin(angle) * 0.9));
+      const rt = this.terrain.worldToTile(rx, rz);
+      safe =
+        this.terrain.isTileDryLand(rt.tx, rt.tz) && this.navGrid.isWalkableFor(rt.tx, rt.tz, u.owner)
+          ? { x: rx, z: rz }
+          : dropBase;
+    } else {
+      const dist = cTpl.radius + 1.65;
+      const rawX = Math.max(4, Math.min(this.terrain.worldSize - 4, carrier.x + Math.cos(angle) * dist));
+      const rawZ = Math.max(4, Math.min(this.terrain.worldSize - 4, carrier.z + Math.sin(angle) * dist));
+      const rt = this.terrain.worldToTile(rawX, rawZ);
+      safe = this.navGrid.isWalkableFor(rt.tx, rt.tz, u.owner)
+        ? { x: rawX, z: rawZ }
+        : (() => {
+            const tile = this.navGrid.findNearestWalkable(rt.tx, rt.tz, 6, rt.tx, rt.tz, u.owner);
+            return tile ? this.terrain.tileToWorldCenter(tile.tx, tile.tz) : { x: rawX, z: rawZ };
+          })();
+    }
     u.x = safe.x;
     u.z = safe.z;
     u.prevX = u.x;
@@ -3126,26 +3783,45 @@ export class World {
 
   private ungarrisonAll(building: Entity): void {
     const bTpl = TEMPLATES[building.templateId];
+    let dropBase: { x: number; z: number } | null = null;
+    if (bTpl.isNaval) {
+      dropBase = this.findShipDisembarkPoint(building);
+      if (!dropBase) return; // Ship is in deep water far from dry land — stay safely aboard!
+    }
     const ids = building.garrisonedIds.splice(0);
     ids.forEach((uid, i) => {
       const u = this.entities.get(uid);
       if (!u || !u.alive) return;
       u.garrisonedIn = null;
       const angle = (i / Math.max(1, ids.length)) * Math.PI * 2;
-      const dist = bTpl.radius + 1.6;
-      const rawX = Math.max(4, Math.min(this.terrain.worldSize - 4, building.x + Math.cos(angle) * dist));
-      const rawZ = Math.max(4, Math.min(this.terrain.worldSize - 4, building.z + Math.sin(angle) * dist));
-      const rt = this.terrain.worldToTile(rawX, rawZ);
-      const safe = this.navGrid.isWalkableFor(rt.tx, rt.tz, u.owner)
-        ? { x: rawX, z: rawZ }
-        : (() => {
-            const tile = this.navGrid.findNearestWalkable(rt.tx, rt.tz, 6, rt.tx, rt.tz, u.owner);
-            return tile ? this.terrain.tileToWorldCenter(tile.tx, tile.tz) : { x: rawX, z: rawZ };
-          })();
+      let safe: { x: number; z: number };
+      if (dropBase) {
+        const spread = 0.75 + (i % 3) * 0.45;
+        const rawX = Math.max(4, Math.min(this.terrain.worldSize - 4, dropBase.x + Math.cos(angle) * spread));
+        const rawZ = Math.max(4, Math.min(this.terrain.worldSize - 4, dropBase.z + Math.sin(angle) * spread));
+        const rt = this.terrain.worldToTile(rawX, rawZ);
+        safe =
+          this.terrain.isTileDryLand(rt.tx, rt.tz) && this.navGrid.isWalkableFor(rt.tx, rt.tz, u.owner)
+            ? { x: rawX, z: rawZ }
+            : dropBase;
+      } else {
+        const dist = bTpl.radius + 1.6;
+        const rawX = Math.max(4, Math.min(this.terrain.worldSize - 4, building.x + Math.cos(angle) * dist));
+        const rawZ = Math.max(4, Math.min(this.terrain.worldSize - 4, building.z + Math.sin(angle) * dist));
+        const rt = this.terrain.worldToTile(rawX, rawZ);
+        safe = this.navGrid.isWalkableFor(rt.tx, rt.tz, u.owner)
+          ? { x: rawX, z: rawZ }
+          : (() => {
+              const tile = this.navGrid.findNearestWalkable(rt.tx, rt.tz, 6, rt.tx, rt.tz, u.owner);
+              return tile ? this.terrain.tileToWorldCenter(tile.tx, tile.tz) : { x: rawX, z: rawZ };
+            })();
+      }
       u.x = safe.x;
       u.z = safe.z;
       u.prevX = u.x;
       u.prevZ = u.z;
+      u.guardX = u.x;
+      u.guardZ = u.z;
       u.order = { type: 'idle' };
       u.path = [];
     });
@@ -3266,11 +3942,26 @@ export class World {
         return;
       }
     }
+    // Newly trained Scouts immediately head out to actively explore unexplored lands!
+    if (uTpl?.isScout) {
+      const rx = Math.max(2, Math.min(this.terrain.worldSize - 2, building.rallyX));
+      const rz = Math.max(2, Math.min(this.terrain.worldSize - 2, building.rallyZ));
+      if (Math.hypot(rx - building.x, rz - building.z) > 13.5) {
+        unit.order = { type: 'move', x: rx, z: rz };
+        unit.queuedOrders.push({ type: 'explore' });
+        unit.path = this.navGrid.findPath(unit.x, unit.z, rx, rz, 2500, false, unit.owner);
+        unit.pathIndex = 0;
+        unit.repathTimer = 1.0;
+      } else {
+        unit.order = { type: 'explore' };
+      }
+      return;
+    }
     // Newly trained human workers from Civic Center wait 10s (with overhead countdown) before auto-working!
     if (TEMPLATES[building.templateId]?.isCivicCenter && !player.isAI && uTpl?.gather && !uTpl.isNaval) {
       unit.autoWorkDelay = 10;
-      const rx = Math.max(4, Math.min(this.terrain.worldSize - 4, building.rallyX));
-      const rz = Math.max(4, Math.min(this.terrain.worldSize - 4, building.rallyZ));
+      const rx = Math.max(2, Math.min(this.terrain.worldSize - 2, building.rallyX));
+      const rz = Math.max(2, Math.min(this.terrain.worldSize - 2, building.rallyZ));
       if (Math.hypot(rx - unit.x, rz - unit.z) > 1.2) {
         unit.order = { type: 'move', x: rx, z: rz };
         unit.guardX = rx;
@@ -3354,6 +4045,15 @@ export class World {
       }
       u.vx = 0;
       u.vz = 0;
+      u.healingTargetId = null;
+
+      // Scouts are completely unarmed: if any enemy or predator gets close, immediately flee to safety!
+      if (tpl.isScout) {
+        if (this.updateScoutDangerFlee(u)) {
+          this.applyLocalAvoidance(u);
+          continue;
+        }
+      }
 
       // Merchant Ship passive maritime trade income every 10 seconds
       if (tpl.isMerchantShip && this.tickCount % (SIM_HZ * 10) === (u.id % (SIM_HZ * 10))) {
@@ -3380,9 +4080,16 @@ export class World {
           const idleCount = (this.idleTicks.get(u.id) ?? 0) + 1;
           this.idleTicks.set(u.id, idleCount);
 
-          // 1. Temple Healer automatically seeks and heals nearby wounded friendly units
+          // 1. Doctor & Temple Healer automatically seek and heal nearby wounded friendly/allied units
           if (tpl.isHealer) {
             this.updateHealerBehavior(u);
+            break;
+          }
+
+          // 1b. Idle Scout automatically resumes actively exploring unexplored lands
+          if (tpl.isScout && idleCount >= 12) {
+            u.order = { type: 'explore' };
+            this.idleTicks.set(u.id, 0);
             break;
           }
 
@@ -3441,6 +4148,16 @@ export class World {
           this.updateMoveOrder(u, u.order);
           break;
 
+        case 'explore':
+          this.idleTicks.set(u.id, 0);
+          this.updateExploreOrder(u, u.order);
+          break;
+
+        case 'heal':
+          this.idleTicks.set(u.id, 0);
+          this.updateHealOrder(u, u.order);
+          break;
+
         case 'gather':
           this.idleTicks.set(u.id, 0);
           this.updateGatherOrder(u, u.order);
@@ -3475,9 +4192,37 @@ export class World {
           this.idleTicks.set(u.id, 0);
           this.updateGarrisonOrder(u, u.order);
           break;
+
+        case 'plant_tree':
+          this.idleTicks.set(u.id, 0);
+          this.updatePlantTreeOrder(u, u.order);
+          break;
+
+        case 'hybridize_tree':
+          this.idleTicks.set(u.id, 0);
+          this.updateHybridizeTreeOrder(u, u.order);
+          break;
+
+        case 'capture_animal':
+          this.idleTicks.set(u.id, 0);
+          this.updateCaptureAnimalOrder(u, u.order);
+          break;
       }
 
       this.applyLocalAvoidance(u);
+
+      // Keep any garrisoned passengers (e.g. soldiers aboard a sailing Warship) riding smoothly with the vessel!
+      if (u.garrisonedIds.length > 0) {
+        for (let gi = 0; gi < u.garrisonedIds.length; gi++) {
+          const p = this.entities.get(u.garrisonedIds[gi]);
+          if (p && p.alive) {
+            p.x = u.x;
+            p.z = u.z;
+            p.prevX = u.x;
+            p.prevZ = u.z;
+          }
+        }
+      }
     }
   }
 
@@ -3492,6 +4237,18 @@ export class World {
         const c = this.terrain.tileToWorldCenter(next.tileX, next.tileZ);
         const approach = this.getTerraformApproachPos(u, next.tileX, next.tileZ, c);
         u.path = this.navGrid.findPath(u.x, u.z, approach.x, approach.z);
+        u.pathIndex = 0;
+      } else if (next.type === 'plant_tree') {
+        const src = this.entities.get(next.sourceTreeId);
+        const gx = src && src.alive ? src.x : next.x;
+        const gz = src && src.alive ? src.z : next.z;
+        u.path = this.navGrid.findPath(u.x, u.z, gx, gz, 3500, false, u.owner);
+        u.pathIndex = 0;
+      } else if (next.type === 'hybridize_tree') {
+        const srcA = this.entities.get(next.treeAId);
+        const gx = srcA && srcA.alive ? srcA.x : next.x;
+        const gz = srcA && srcA.alive ? srcA.z : next.z;
+        u.path = this.navGrid.findPath(u.x, u.z, gx, gz, 3500, false, u.owner);
         u.pathIndex = 0;
       }
     } else {
@@ -3602,6 +4359,7 @@ export class World {
       u.path = [];
       u.pathIndex = 0;
       this.stuckTicks.set(u.id, 0);
+      this.moveAnchors.delete(u.id);
       return true;
     }
 
@@ -3615,6 +4373,9 @@ export class World {
       isNaval ? this.navGrid.findWaterPath(sx, sz, gx, gz) : this.navGrid.findPath(sx, sz, gx, gz, 1800, false, u.owner);
 
     let speed = uTpl.speed ?? 5.5;
+    if (uTpl.isScout && (u.scoutFleeTimer ?? 0) > 0) {
+      speed *= 1.12;
+    }
     const ownerPlayer = this.players.get(u.owner);
     if (uTpl.isCavalry) {
       if (ownerPlayer?.civ === 'britons') speed *= 1.1;
@@ -3697,7 +4458,7 @@ export class World {
     const dz = wp.z - u.z;
     const dist = Math.hypot(dx, dz);
 
-    if (dist < 0.85 && u.pathIndex < u.path.length) {
+    if (dist < 0.48 && u.pathIndex < u.path.length) {
       u.pathIndex++;
     }
 
@@ -3738,31 +4499,91 @@ export class World {
       }
     }
 
+    // 3. Real net-displacement jitter detector (catches followPath <-> applyLocalAvoidance tug-of-war on the same tile!)
     const movedDist = Math.hypot(u.x - oldX, u.z - oldZ);
-    if (!moved || movedDist < 0.025) {
-      const st = (this.stuckTicks.get(u.id) ?? 0) + 1;
+    let anchor = this.moveAnchors.get(u.id);
+    if (!anchor) {
+      anchor = { x: oldX, z: oldZ, ticks: 0 };
+      this.moveAnchors.set(u.id, anchor);
+    }
+    anchor.ticks++;
+    const netDisp = Math.hypot(u.x - anchor.x, u.z - anchor.z);
+    let jitterStuck = false;
+    if (netDisp >= 0.55) {
+      anchor.x = u.x;
+      anchor.z = u.z;
+      anchor.ticks = 0;
+      this.stuckTicks.set(u.id, 0);
+    } else if (anchor.ticks >= 12) {
+      // Moved less than 0.55m over 12 ticks (0.6s) -> genuinely stuck or jittering in place!
+      jitterStuck = true;
+      anchor.x = u.x;
+      anchor.z = u.z;
+      anchor.ticks = 0;
+    }
+
+    if (!moved || movedDist < 0.025 || jitterStuck) {
+      const st = (this.stuckTicks.get(u.id) ?? 0) + (jitterStuck ? 12 : 1);
       this.stuckTicks.set(u.id, st);
-      if (st === 6 || st === 18) {
+      if ((st === 6 || st === 12 || st === 18) && u.repathTimer <= 0) {
         u.path = findUnitPath(u.x, u.z, goalX, goalZ);
         u.pathIndex = 0;
-        u.repathTimer = 0.6;
-      } else if (st >= 30) {
-        // Unreachable cliff/obstacle directly blocking move destination: arrive cleanly at closest foothold.
-        // NEVER fake arrival for gather/build/attack orders (prevents workers swinging at empty air!).
+        u.repathTimer = 1.0;
+        // Gentle deterministic perpendicular sidestep when jittering against a local blocker
+        if (jitterStuck) {
+          const sideSign = (u.id & 1) === 0 ? 1 : -1;
+          const sidestepX = Math.max(4, Math.min(this.terrain.worldSize - 4, u.x - dirZ * sideSign * 0.42));
+          const sidestepZ = Math.max(4, Math.min(this.terrain.worldSize - 4, u.z + dirX * sideSign * 0.42));
+          const stTile = this.terrain.worldToTile(sidestepX, sidestepZ);
+          if (tilePassable(stTile.tx, stTile.tz)) {
+            u.x = sidestepX;
+            u.z = sidestepZ;
+          }
+        }
+      } else if (st >= 24) {
+        // Unreachable cliff/obstacle/crowded tile directly blocking destination:
         this.stuckTicks.set(u.id, 0);
+        this.moveAnchors.delete(u.id);
         if (u.order.type === 'move') {
           u.path = [];
           u.pathIndex = 0;
           return true;
         }
-        if (u.order.type === 'gather' && !u.order.returning && distGoal > stopDist + 0.5) {
+        if ((u.order.type === 'plant_tree' || u.order.type === 'hybridize_tree' || u.order.type === 'capture_animal') && distGoal <= stopDist + 3.2) {
+          u.path = [];
+          u.pathIndex = 0;
+          return true;
+        }
+        if (u.order.type === 'build' && distGoal <= stopDist + 1.8) {
+          u.path = [];
+          u.pathIndex = 0;
+          return true;
+        }
+        if (u.order.type === 'gather' && u.order.returning && distGoal <= stopDist + 1.8) {
+          // Crowded drop-off (e.g. multiple workers delivering at once): deposit cleanly instead of jittering!
+          u.path = [];
+          u.pathIndex = 0;
+          return true;
+        }
+        if (u.order.type === 'attack' && distGoal > stopDist + 2.5) {
+          this.advanceQueuedOrder(u);
+          return false;
+        }
+        if (u.order.type === 'gather' && !u.order.returning) {
+          if (distGoal <= stopDist + 0.85) {
+            // Crowded ring of workers right around the same tree/mine: start harvesting cleanly instead of vibrating!
+            u.path = [];
+            u.pathIndex = 0;
+            return true;
+          }
           // Blocked from reaching this exact resource (e.g. crowded forest interior): switch to another reachable resource!
           const curTargetId = u.order.targetId;
           let alt: Entity | null = null;
-          let bestD = 32;
+          let bestD = 36;
           for (const e of this.entities.values()) {
-            if (!e.alive || e.id === curTargetId || e.resourceRemaining <= 0) continue;
+            if (!e.alive || e.id === curTargetId || e.resourceRemaining <= 0 || World.isUnharvestableTree(e)) continue;
             const eTpl = TEMPLATES[e.templateId];
+            if (eTpl.isRuinPillar || e.pastureId !== undefined) continue;
             if (eTpl.resourceType !== u.order.resourceType || Boolean(eTpl.isAquatic) !== isNaval) continue;
             if (eTpl.kind === 'building' && e.owner !== u.owner) continue;
             const d = Math.hypot(e.x - u.x, e.z - u.z);
@@ -3784,7 +4605,7 @@ export class World {
         u.pathIndex = 0;
         u.repathTimer = 0.8;
       }
-    } else {
+    } else if (movedDist >= 0.08 && netDisp >= 0.35) {
       this.stuckTicks.set(u.id, 0);
     }
 
@@ -3800,7 +4621,23 @@ export class World {
     const uRad = uTpl.radius;
     const isNaval = Boolean(uTpl.isNaval);
     const activeTargetId =
-      u.order.type === 'gather' || u.order.type === 'build' ? u.order.targetId : null;
+      u.order.type === 'gather'
+        ? u.order.returning
+          ? (u.order.dropOffId ?? null)
+          : u.order.targetId
+        : u.order.type === 'build'
+          ? u.order.targetId
+          : u.order.type === 'plant_tree'
+            ? u.order.sourceTreeId
+            : u.order.type === 'hybridize_tree'
+              ? u.order.stage === 'cutB'
+                ? u.order.treeBId
+                : u.order.treeAId
+              : u.order.type === 'capture_animal'
+                ? u.order.stage === 'herd'
+                  ? u.order.pastureId
+                  : u.order.animalId
+                : null;
     const isWorkingAtTarget = u.animState === 'gather' || u.animState === 'build';
     const nearby = this.spatialHash.queryRadius(u.x, u.z, uRad + 3.2, this.queryBuf);
     let pushX = 0;
@@ -3809,6 +4646,7 @@ export class World {
     for (let i = 0; i < nearby.length; i++) {
       const other = nearby[i];
       if (other.id === u.id || !other.alive || other.garrisonedIn !== null) continue;
+      if (other.capturedByWorkerId === u.id) continue;
       const oTpl = TEMPLATES[other.templateId];
       if (oTpl.isFarmField) continue;
       // Land units march smoothly across completed Stone Bridges!
@@ -3822,7 +4660,7 @@ export class World {
 
       const minDist = isOwnTarget
         ? uRad + oTpl.radius - 0.04
-        : uRad + oTpl.radius + (oTpl.kind === 'unit' ? 0.08 : 0.12);
+        : uRad + oTpl.radius + (oTpl.kind === 'unit' ? (isWorkingAtTarget ? -0.04 : 0.06) : 0.1);
       let dx = u.x - other.x;
       let dz = u.z - other.z;
       const d2 = dx * dx + dz * dz;
@@ -3836,9 +4674,28 @@ export class World {
       }
 
       const overlap = minDist - dist;
-      const weight = isOwnTarget ? 0.25 : oTpl.kind === 'unit' ? 0.35 : 0.9;
-      pushX += (dx / dist) * overlap * weight;
-      pushZ += (dz / dist) * overlap * weight;
+      const weight = isOwnTarget ? 0.22 : oTpl.kind === 'unit' ? (isWorkingAtTarget ? 0.16 : 0.3) : 0.85;
+      const rnx = dx / dist;
+      const rnz = dz / dist;
+      pushX += rnx * overlap * weight;
+      pushZ += rnz * overlap * weight;
+      // Smooth tangential sidestep around non-target static obstacles with deterministic side commit (zero left-right flip-flop jitter!)
+      if (!isOwnTarget && oTpl.kind !== 'unit' && (u.vx !== 0 || u.vz !== 0)) {
+        const vLen = Math.hypot(u.vx, u.vz) || 1;
+        const nvx = u.vx / vLen;
+        const nvz = u.vz / vLen;
+        const headOn = -nvx * rnx - nvz * rnz;
+        if (headOn > 0.35) {
+          const tx = -nvz;
+          const tz = nvx;
+          const sideDot = rnx * tx + rnz * tz;
+          // Use stable deterministic side near dead-center so the unit commits cleanly around one side instead of jittering!
+          const side = Math.abs(sideDot) < 0.28 ? (((u.id + other.id) & 1) === 0 ? 1 : -1) : sideDot > 0 ? 1 : -1;
+          const slide = Math.min(0.24, overlap * 0.78 + 0.12);
+          pushX += tx * side * slide;
+          pushZ += tz * side * slide;
+        }
+      }
     }
 
     if (pushX !== 0 || pushZ !== 0) {
@@ -3898,7 +4755,7 @@ export class World {
       }
 
       const dTpl = TEMPLATES[dropOff.templateId];
-      const dropStop = isNaval ? dTpl.radius + uTpl.radius + 2.4 : dTpl.radius + uTpl.radius + 0.55;
+      const dropStop = isNaval ? dTpl.radius + uTpl.radius + 2.4 : dTpl.radius + uTpl.radius + 0.85;
       const arrived = this.followPath(u, dropOff.x, dropOff.z, dropStop);
       if (arrived) {
         if (u.carryType && u.carryAmount > 0) {
@@ -3909,8 +4766,11 @@ export class World {
         }
         order.returning = false;
         const target = this.entities.get(order.targetId);
-        if (target && target.alive && target.resourceRemaining > 0) {
+        if (target && target.alive && target.resourceRemaining > 0 && !World.isUnharvestableTree(target)) {
           const tAquatic = Boolean(TEMPLATES[target.templateId]?.isAquatic);
+          if (!isNaval && tAquatic) {
+            order.fishingMethod = this.rollShoreFishingMethod();
+          }
           const stand = !isNaval && tAquatic ? this.getShoreFishingStandPos(target, u.x, u.z) : null;
           const gx = stand ? stand.x : target.x;
           const gz = stand ? stand.z : target.z;
@@ -3925,7 +4785,7 @@ export class World {
 
     // Moving to & harvesting resource
     let target = this.entities.get(order.targetId);
-    if (!target || !target.alive || target.resourceRemaining <= 0) {
+    if (!target || !target.alive || target.resourceRemaining <= 0 || World.isUnharvestableTree(target)) {
       const replacement = this.findNearestResource(u.x, u.z, order.resourceType, u.owner, isNaval ? 95 : 48, isNaval);
       if (replacement) {
         order.targetId = replacement.id;
@@ -3948,11 +4808,15 @@ export class World {
 
     let tTpl = TEMPLATES[target.templateId];
     const isShoreFishing = !isNaval && Boolean(tTpl.isAquatic);
+    if (isShoreFishing && !order.fishingMethod) {
+      order.fishingMethod = this.rollShoreFishingMethod();
+    }
     const isPrey =
-      target.templateId === 'deer_herd' ||
-      target.templateId === 'wild_boar' ||
-      Boolean(tTpl.isPassiveFauna) ||
-      Boolean(tTpl.isPredator);
+      !tTpl.isAquatic &&
+      (target.templateId === 'deer_herd' ||
+        target.templateId === 'wild_boar' ||
+        Boolean(tTpl.isPassiveFauna) ||
+        Boolean(tTpl.isPredator));
     const isHuntingLivePrey = isPrey && target.hp > 0;
     let stopDist: number;
     let moveGoalX = target.x;
@@ -3975,11 +4839,11 @@ export class World {
       // Ranged hunters can loose arrows/javelins at hunting range, then walk right up to butcher the carcass
       stopDist = Math.min(8.5, Math.max(tTpl.radius + uTpl.radius + 0.35, uTpl.attack.range * 0.65));
     } else if (order.resourceType === 'wood') {
-      stopDist = tTpl.radius + uTpl.radius + 0.34;
+      stopDist = tTpl.radius + uTpl.radius + 0.52;
     } else if (order.resourceType === 'stone' || order.resourceType === 'metal') {
-      stopDist = tTpl.radius + uTpl.radius + 0.42;
+      stopDist = tTpl.radius + uTpl.radius + 0.58;
     } else {
-      stopDist = tTpl.radius + uTpl.radius + 0.28;
+      stopDist = tTpl.radius + uTpl.radius + 0.48;
     }
 
     // Repath frequently when chasing moving live wildlife
@@ -3993,12 +4857,12 @@ export class World {
 
     // If walking into a dense forest to chop wood and another alive tree is right within arm's reach, chop it cleanly
     if (!arrived && order.resourceType === 'wood' && Math.hypot(target.x - u.x, target.z - u.z) < 6.5) {
-      const nearTree = this.findNearestResource(u.x, u.z, 'wood', u.owner, uTpl.radius + 1.35);
+      const nearTree = this.findNearestResource(u.x, u.z, 'wood', u.owner, uTpl.radius + 1.45);
       if (nearTree && nearTree.id !== target.id) {
         order.targetId = nearTree.id;
         target = nearTree;
         tTpl = TEMPLATES[target.templateId];
-        stopDist = tTpl.radius + uTpl.radius + 0.34;
+        stopDist = tTpl.radius + uTpl.radius + 0.52;
         arrived = Math.hypot(target.x - u.x, target.z - u.z) <= stopDist;
       }
     }
@@ -4006,7 +4870,7 @@ export class World {
 
     // Strict physical proximity & validity guard: NEVER harvest empty air!
     const actualDist = Math.hypot(target.x - u.x, target.z - u.z);
-    const maxValidDist = isShoreFishing ? World.SHORE_FISH_REACH_METERS + 1.25 : stopDist + 0.55;
+    const maxValidDist = isShoreFishing ? World.SHORE_FISH_REACH_METERS + 1.25 : stopDist + 1.05;
     if (!target.alive || target.resourceRemaining <= 0 || actualDist > maxValidDist) {
       u.animState = 'idle';
       return;
@@ -4071,7 +4935,10 @@ export class World {
 
     if (target.resourceRemaining <= 0.01) {
       target.resourceRemaining = 0;
-      if (!tTpl.isFarmField) {
+      if (tTpl.isFruitTree) {
+        // Fruit Trees stay alive after their fruit is picked and slowly regrow a fresh crop of fruit!
+        target.fruitProgress = 0;
+      } else if (!tTpl.isFarmField) {
         target.alive = false;
       } else {
         // Renewable Mediterranean grain field slowly replants automatically
@@ -4103,7 +4970,7 @@ export class World {
     const tTpl = TEMPLATES[target.templateId];
     const isTunnelFoundation = Boolean(tTpl.isTunnel && target.isFoundation && target.linkedTunnelId);
     const partnerPortal = isTunnelFoundation && target.linkedTunnelId ? this.entities.get(target.linkedTunnelId) : null;
-    const buildReach = tTpl.isBridge ? 3.8 : tTpl.radius + uTpl.radius + 0.38;
+    const buildReach = tTpl.isBridge ? 3.8 : tTpl.isWall || tTpl.isGate ? 3.6 : tTpl.radius + uTpl.radius + 0.38;
 
     if (isTunnelFoundation && partnerPortal && partnerPortal.alive) {
       if (!order.inShaft) {
@@ -4134,11 +5001,12 @@ export class World {
     } else {
       const distToTarget = Math.hypot(target.x - u.x, target.z - u.z);
       if (distToTarget > buildReach) {
-        const goal = tTpl.isBridge
+        const useApproach = Boolean(tTpl.isBridge || tTpl.isWall || tTpl.isGate);
+        const goal = useApproach
           ? this.getTerraformApproachPos(u, target.tileX, target.tileZ, { x: target.x, z: target.z })
           : { x: target.x, z: target.z };
-        const arrived = this.followPath(u, goal.x, goal.z, tTpl.isBridge ? 1.4 : buildReach);
-        if (!arrived) return;
+        const arrived = this.followPath(u, goal.x, goal.z, useApproach ? 1.5 : buildReach);
+        if (!arrived && Math.hypot(target.x - u.x, target.z - u.z) > buildReach + 0.6) return;
       }
       u.facing = Math.atan2(target.x - u.x, target.z - u.z);
       u.animState = 'build';
@@ -4319,8 +5187,8 @@ export class World {
     const player = this.players.get(u.owner);
     const fast = Boolean(player?.fastBuildCheat);
     const speedMult = fast ? 25 : 1;
-    // 100 units of soil per tile; each normal worker digs 1 unit per ~0.45s swing and hauls it to the dump tile!
-    const duration = order.mode === 'level' ? 0.42 : order.stage === 'scoop' ? 0.45 : 0.3;
+    // 100 units of soil per tile; each normal worker digs or levels 1 unit (0.01m) per 0.45s swing!
+    const duration = order.mode === 'level' ? 0.45 : order.stage === 'scoop' ? 0.45 : 0.3;
     order.progress += (SIM_DT * speedMult) / duration;
 
     if (order.progress >= 1.0) {
@@ -4568,12 +5436,579 @@ export class World {
       return;
     }
 
-    const arrived = this.followPath(u, building.x, building.z, bTpl.radius + 1.5);
+    const distToBuilding = Math.hypot(building.x - u.x, building.z - u.z);
+    if (bTpl.isNaval) {
+      const shore = this.getShoreBoardingPos(building, u.x, u.z);
+      // If the Warship is idle slightly offshore, automatically glide it closer to the beach to pick up passengers!
+      if (shore && building.order.type === 'idle' && Math.hypot(building.x - shore.x, building.z - shore.z) > 6.8) {
+        const st = this.terrain.worldToTile(shore.x, shore.z);
+        const shipTile = this.terrain.worldToTile(building.x, building.z);
+        const nearWater = this.navGrid.findNearestWater(st.tx, st.tz, 6, shipTile.tx, shipTile.tz);
+        if (nearWater) {
+          const wp = this.terrain.tileToWorldCenter(nearWater.tx, nearWater.tz);
+          if (Math.hypot(wp.x - building.x, wp.z - building.z) > 1.8) {
+            building.order = { type: 'move', x: wp.x, z: wp.z, attackMove: false };
+            building.path = this.navGrid.findWaterPath(building.x, building.z, wp.x, wp.z);
+            building.pathIndex = 0;
+          }
+        }
+      }
+      const entryDist = bTpl.radius + 6.5;
+      let arrived = distToBuilding <= entryDist;
+      if (!arrived) {
+        const approach = shore ?? { x: building.x, z: building.z };
+        const reachedApproach = this.followPath(u, approach.x, approach.z, 1.8);
+        const nowDist = Math.hypot(building.x - u.x, building.z - u.z);
+        arrived = nowDist <= entryDist || (reachedApproach && nowDist <= 13.5);
+      }
+      if (arrived) {
+        u.garrisonedIn = building.id;
+        u.x = building.x;
+        u.z = building.z;
+        u.prevX = building.x;
+        u.prevZ = building.z;
+        u.order = { type: 'idle' };
+        u.path = [];
+        building.garrisonedIds.push(u.id);
+      }
+      return;
+    }
+
+    const entryDist = bTpl.isBeaconTower ? bTpl.radius + 3.4 : bTpl.radius + 1.8;
+    let arrived = distToBuilding <= entryDist;
+    if (!arrived) {
+      const approach = bTpl.isBeaconTower
+        ? this.getTerraformApproachPos(u, building.tileX, building.tileZ, { x: building.x, z: building.z })
+        : { x: building.x, z: building.z };
+      const reachedApproach = this.followPath(u, approach.x, approach.z, bTpl.isBeaconTower ? 1.6 : entryDist);
+      const nowDist = Math.hypot(building.x - u.x, building.z - u.z);
+      arrived = nowDist <= entryDist || (reachedApproach && nowDist <= (bTpl.isBeaconTower ? bTpl.radius + 5.2 : entryDist + 1.4));
+    }
     if (arrived) {
       u.garrisonedIn = building.id;
       u.order = { type: 'idle' };
       u.path = [];
       building.garrisonedIds.push(u.id);
+    }
+  }
+
+  private updatePlantTreeOrder(u: Entity, order: Extract<UnitOrder, { type: 'plant_tree' }>): void {
+    const uTpl = TEMPLATES[u.templateId];
+    if (order.stage === 'cut') {
+      let source = this.entities.get(order.sourceTreeId);
+      if (!source || !source.alive || !World.isTreeTemplate(source.templateId)) {
+        // Fallback to nearest living tree of the same species within 56m (including fruit saplings & regrowing fruit trees!)
+        let best: Entity | null = null;
+        let bestD2 = 56 * 56;
+        for (const e of this.entities.values()) {
+          if (!e.alive || e.templateId !== order.treeTemplateId) continue;
+          const d2 = (e.x - u.x) * (e.x - u.x) + (e.z - u.z) * (e.z - u.z);
+          if (d2 < bestD2) {
+            bestD2 = d2;
+            best = e;
+          }
+        }
+        if (!best) {
+          this.advanceQueuedOrder(u);
+          return;
+        }
+        source = best;
+        order.sourceTreeId = best.id;
+      }
+
+      const srcTpl = TEMPLATES[source.templateId];
+      const cutRange = srcTpl.radius + uTpl.radius + 2.4;
+      const dist = Math.hypot(source.x - u.x, source.z - u.z);
+      if (dist > cutRange) {
+        const arrived = this.followPath(u, source.x, source.z, cutRange * 0.85);
+        const nowDist = Math.hypot(source.x - u.x, source.z - u.z);
+        if (nowDist > cutRange && !(arrived && nowDist <= cutRange + 3.0)) {
+          return;
+        }
+      }
+
+      u.facing = Math.atan2(source.x - u.x, source.z - u.z);
+      u.animState = 'gather';
+      u.path = [];
+      order.progress += SIM_DT;
+      if (order.progress >= 1.2) {
+        order.stage = 'plant';
+        order.progress = 0;
+        u.path = this.navGrid.findPath(u.x, u.z, order.x, order.z, 3500, false, u.owner);
+        u.pathIndex = 0;
+        u.repathTimer = 1.0;
+      }
+      return;
+    }
+
+    // Stage 2: walk to target dry land spot and plant the sapling cutting!
+    const dist = Math.hypot(order.x - u.x, order.z - u.z);
+    const plantRange = uTpl.radius + 2.1;
+    if (dist > plantRange) {
+      const arrived = this.followPath(u, order.x, order.z, plantRange * 0.85);
+      const nowDist = Math.hypot(order.x - u.x, order.z - u.z);
+      if (nowDist > plantRange && !(arrived && nowDist <= plantRange + 2.8)) {
+        return;
+      }
+    }
+
+    let plantX = order.x;
+    let plantZ = order.z;
+    if (!this.canPlantTreeAt(plantX, plantZ)) {
+      const altSpot = this.findNearestPlantableSpot(order.x, order.z, 6.5);
+      if (!altSpot) {
+        this.advanceQueuedOrder(u);
+        return;
+      }
+      plantX = altSpot.x;
+      plantZ = altSpot.z;
+      order.x = altSpot.x;
+      order.z = altSpot.z;
+    }
+
+    u.facing = Math.atan2(plantX - u.x, plantZ - u.z);
+    u.animState = 'build';
+    u.path = [];
+    order.progress += SIM_DT;
+    if (order.progress >= 1.4) {
+      const treeTpl = TEMPLATES[order.treeTemplateId];
+      const finalSpot = treeTpl ? this.findNearestPlantableSpot(plantX, plantZ, 6.5) : null;
+      if (treeTpl && finalSpot) {
+        const sapling = this.createBaseEntity(order.treeTemplateId, 0, finalSpot.x, finalSpot.z);
+        const tile = this.terrain.worldToTile(finalSpot.x, finalSpot.z);
+        sapling.tileX = tile.tx;
+        sapling.tileZ = tile.tz;
+        sapling.facing = this.rng.range(0, Math.PI * 2);
+        const initGrowth = 0.28;
+        sapling.treeGrowth = initGrowth;
+        const fullAmt = treeTpl.resourceAmount ?? 200;
+        if (treeTpl.isFruitTree) {
+          sapling.fruitProgress = 0;
+          sapling.resourceRemaining = 0;
+        } else {
+          sapling.resourceRemaining = Math.max(25, Math.round(fullAmt * initGrowth));
+        }
+        this.entities.set(sapling.id, sapling);
+        this.events.push({
+          type: 'tree_planted',
+          playerId: u.owner,
+          entityId: sapling.id,
+          templateId: sapling.templateId,
+          x: finalSpot.x,
+          z: finalSpot.z,
+        });
+      }
+      this.advanceQueuedOrder(u);
+    }
+  }
+
+  private updateHybridizeTreeOrder(u: Entity, order: Extract<UnitOrder, { type: 'hybridize_tree' }>): void {
+    const uTpl = TEMPLATES[u.templateId];
+    const findParent = (id: number, tplId: string): Entity | null => {
+      const direct = this.entities.get(id);
+      if (direct && direct.alive && World.isTreeTemplate(direct.templateId)) {
+        return direct;
+      }
+      let best: Entity | null = null;
+      let bestD2 = 56 * 56;
+      for (const e of this.entities.values()) {
+        if (!e.alive || e.templateId !== tplId) continue;
+        const d2 = (e.x - u.x) * (e.x - u.x) + (e.z - u.z) * (e.z - u.z);
+        if (d2 < bestD2) {
+          bestD2 = d2;
+          best = e;
+        }
+      }
+      return best;
+    };
+
+    if (order.stage === 'cutA') {
+      const srcA = findParent(order.treeAId, order.treeATemplateId);
+      if (!srcA) {
+        this.advanceQueuedOrder(u);
+        return;
+      }
+      order.treeAId = srcA.id;
+      const srcTpl = TEMPLATES[srcA.templateId];
+      const cutRange = srcTpl.radius + uTpl.radius + 2.4;
+      if (Math.hypot(srcA.x - u.x, srcA.z - u.z) > cutRange) {
+        const arrived = this.followPath(u, srcA.x, srcA.z, cutRange * 0.85);
+        const nowDist = Math.hypot(srcA.x - u.x, srcA.z - u.z);
+        if (nowDist > cutRange && !(arrived && nowDist <= cutRange + 3.0)) {
+          return;
+        }
+      }
+      u.facing = Math.atan2(srcA.x - u.x, srcA.z - u.z);
+      u.animState = 'gather';
+      u.path = [];
+      order.progress += SIM_DT;
+      if (order.progress >= 1.0) {
+        order.stage = 'cutB';
+        order.progress = 0;
+        const srcB = findParent(order.treeBId, order.treeBTemplateId);
+        if (srcB) {
+          u.path = this.navGrid.findPath(u.x, u.z, srcB.x, srcB.z, 3500, false, u.owner);
+          u.pathIndex = 0;
+          u.repathTimer = 1.0;
+        }
+      }
+      return;
+    }
+
+    if (order.stage === 'cutB') {
+      const srcB = findParent(order.treeBId, order.treeBTemplateId);
+      if (!srcB) {
+        this.advanceQueuedOrder(u);
+        return;
+      }
+      order.treeBId = srcB.id;
+      const srcTpl = TEMPLATES[srcB.templateId];
+      const cutRange = srcTpl.radius + uTpl.radius + 2.4;
+      if (Math.hypot(srcB.x - u.x, srcB.z - u.z) > cutRange) {
+        const arrived = this.followPath(u, srcB.x, srcB.z, cutRange * 0.85);
+        const nowDist = Math.hypot(srcB.x - u.x, srcB.z - u.z);
+        if (nowDist > cutRange && !(arrived && nowDist <= cutRange + 3.0)) {
+          return;
+        }
+      }
+      u.facing = Math.atan2(srcB.x - u.x, srcB.z - u.z);
+      u.animState = 'gather';
+      u.path = [];
+      order.progress += SIM_DT;
+      if (order.progress >= 1.0) {
+        order.stage = 'plant';
+        order.progress = 0;
+        u.path = this.navGrid.findPath(u.x, u.z, order.x, order.z, 3500, false, u.owner);
+        u.pathIndex = 0;
+        u.repathTimer = 1.0;
+      }
+      return;
+    }
+
+    // Stage 3: walk to target empty dry land and plant the new Hybrid Tree Sapling!
+    const plantRange = uTpl.radius + 2.1;
+    if (Math.hypot(order.x - u.x, order.z - u.z) > plantRange) {
+      const arrived = this.followPath(u, order.x, order.z, plantRange * 0.85);
+      const nowDist = Math.hypot(order.x - u.x, order.z - u.z);
+      if (nowDist > plantRange && !(arrived && nowDist <= plantRange + 2.8)) {
+        return;
+      }
+    }
+
+    let plantX = order.x;
+    let plantZ = order.z;
+    if (!this.canPlantTreeAt(plantX, plantZ)) {
+      const altSpot = this.findNearestPlantableSpot(order.x, order.z, 6.5);
+      if (!altSpot) {
+        this.advanceQueuedOrder(u);
+        return;
+      }
+      plantX = altSpot.x;
+      plantZ = altSpot.z;
+      order.x = altSpot.x;
+      order.z = altSpot.z;
+    }
+
+    u.facing = Math.atan2(plantX - u.x, plantZ - u.z);
+    u.animState = 'build';
+    u.path = [];
+    order.progress += SIM_DT;
+    if (order.progress >= 1.4) {
+      const treeTpl = TEMPLATES[order.resultTemplateId];
+      const finalSpot = treeTpl ? this.findNearestPlantableSpot(plantX, plantZ, 6.5) : null;
+      if (treeTpl && finalSpot) {
+        const sapling = this.createBaseEntity(order.resultTemplateId, 0, finalSpot.x, finalSpot.z);
+        const tile = this.terrain.worldToTile(finalSpot.x, finalSpot.z);
+        sapling.tileX = tile.tx;
+        sapling.tileZ = tile.tz;
+        sapling.facing = this.rng.range(0, Math.PI * 2);
+        const initGrowth = 0.28;
+        sapling.treeGrowth = initGrowth;
+        const fullAmt = treeTpl.resourceAmount ?? 560;
+        if (treeTpl.isFruitTree) {
+          sapling.fruitProgress = 0;
+          sapling.resourceRemaining = 0;
+        } else {
+          sapling.resourceRemaining = Math.max(40, Math.round(fullAmt * initGrowth));
+        }
+        this.entities.set(sapling.id, sapling);
+        this.events.push({
+          type: 'tree_hybridized',
+          playerId: u.owner,
+          entityId: sapling.id,
+          templateId: sapling.templateId,
+          x: finalSpot.x,
+          z: finalSpot.z,
+        });
+      }
+      this.advanceQueuedOrder(u);
+    }
+  }
+
+  /**
+   * 1) Saplings slowly grow from small (0.28) to mature trees (1.0) while accumulating Wood.
+   * 2) Mature Fruit Trees slowly grow & ripen a fresh crop of fruit (fruitProgress 0 -> 1.0) harvestable for Food!
+   */
+  private updateGrowingTrees(): void {
+    const stepGrowth = SIM_DT / World.TREE_GROWTH_SECONDS;
+    const stepFruit = SIM_DT / World.FRUIT_GROWTH_SECONDS;
+    for (const e of this.entities.values()) {
+      if (!e.alive) continue;
+      const tpl = TEMPLATES[e.templateId];
+      const fullAmt = tpl.resourceAmount ?? 200;
+
+      if (e.treeGrowth !== undefined && e.treeGrowth < 1) {
+        const prevG = e.treeGrowth;
+        const nextG = Math.min(1, prevG + stepGrowth);
+        e.treeGrowth = nextG;
+        if (!tpl.isFruitTree && e.resourceRemaining > 0) {
+          e.resourceRemaining = nextG >= 1 ? fullAmt : Math.min(fullAmt, e.resourceRemaining + (nextG - prevG) * fullAmt);
+        }
+        continue;
+      }
+
+      if (tpl.isFruitTree && e.fruitProgress !== undefined && e.fruitProgress < 1) {
+        const nextF = Math.min(1, e.fruitProgress + stepFruit);
+        e.fruitProgress = nextF;
+        if (nextF >= 1) {
+          e.resourceRemaining = fullAmt;
+        }
+      }
+    }
+  }
+
+  /**
+   * Worker captures a live wild huntable animal and herds it back into a friendly Pasture!
+   * While herding, the tamed animal physically follows right behind the worker into the enclosure.
+   */
+  private updateCaptureAnimalOrder(u: Entity, order: Extract<UnitOrder, { type: 'capture_animal' }>): void {
+    const uTpl = TEMPLATES[u.templateId];
+    const animal = this.entities.get(order.animalId);
+    if (!animal || !animal.alive || animal.hp <= 0 || animal.pastureId !== undefined) {
+      if (animal && animal.capturedByWorkerId === u.id) {
+        animal.capturedByWorkerId = null;
+      }
+      this.advanceQueuedOrder(u);
+      return;
+    }
+
+    let pasture = this.entities.get(order.pastureId);
+    if (
+      !pasture ||
+      !pasture.alive ||
+      pasture.owner !== u.owner ||
+      pasture.isFoundation ||
+      !TEMPLATES[pasture.templateId]?.isPasture ||
+      this.getPastureAnimalCount(pasture.id) >= (TEMPLATES[pasture.templateId].pastureCapacity ?? 12)
+    ) {
+      const altPasture = this.findNearestAvailablePasture(u.owner, u.x, u.z);
+      if (!altPasture) {
+        if (animal.capturedByWorkerId === u.id) animal.capturedByWorkerId = null;
+        this.advanceQueuedOrder(u);
+        return;
+      }
+      pasture = altPasture;
+      order.pastureId = altPasture.id;
+    }
+
+    const aTpl = TEMPLATES[animal.templateId];
+    const pTpl = TEMPLATES[pasture.templateId];
+
+    if (order.stage === 'approach') {
+      // If another worker already claimed this animal, cancel cleanly
+      if (animal.capturedByWorkerId && animal.capturedByWorkerId !== u.id) {
+        const otherW = this.entities.get(animal.capturedByWorkerId);
+        if (otherW && otherW.alive && otherW.order.type === 'capture_animal' && otherW.order.animalId === animal.id) {
+          this.advanceQueuedOrder(u);
+          return;
+        }
+        animal.capturedByWorkerId = null;
+      }
+
+      const captureRange = aTpl.radius + uTpl.radius + 2.1;
+      const dist = Math.hypot(animal.x - u.x, animal.z - u.z);
+      if (dist > captureRange) {
+        if (u.repathTimer <= 0) {
+          u.path = this.navGrid.findPath(u.x, u.z, animal.x, animal.z, 4500, false, u.owner);
+          u.pathIndex = 0;
+          u.repathTimer = 0.6;
+        }
+        const arrived = this.followPath(u, animal.x, animal.z, captureRange * 0.85);
+        const nowDist = Math.hypot(animal.x - u.x, animal.z - u.z);
+        if (nowDist > captureRange && !(arrived && nowDist <= captureRange + 2.6)) {
+          return;
+        }
+      }
+
+      // Rope & calm the wild animal!
+      u.facing = Math.atan2(animal.x - u.x, animal.z - u.z);
+      u.animState = 'gather';
+      u.path = [];
+      animal.capturedByWorkerId = u.id;
+      this.wildlifeState.delete(animal.id);
+      order.progress += SIM_DT;
+      if (order.progress >= 1.1) {
+        order.stage = 'herd';
+        order.progress = 0;
+        u.path = this.navGrid.findPath(u.x, u.z, pasture.x, pasture.z, 4500, false, u.owner);
+        u.pathIndex = 0;
+        u.repathTimer = 1.0;
+      }
+      return;
+    }
+
+    // Stage 'herd': lead the tamed animal smoothly back to the Pasture!
+    animal.capturedByWorkerId = u.id;
+    const pastureStop = pTpl.radius + uTpl.radius + 1.8;
+    const distPasture = Math.hypot(pasture.x - u.x, pasture.z - u.z);
+    if (distPasture > pastureStop) {
+      const arrived = this.followPath(u, pasture.x, pasture.z, pastureStop * 0.85);
+      // Have the tamed animal trot smoothly behind the worker!
+      const leadDx = u.x - animal.x;
+      const leadDz = u.z - animal.z;
+      const leadD = Math.hypot(leadDx, leadDz);
+      if (leadD > 1.15) {
+        const pullStep = Math.min(leadD - 1.0, Math.max(aTpl.speed ?? 4.5, uTpl.speed ?? 5.5) * 1.15 * SIM_DT);
+        animal.x += (leadDx / leadD) * pullStep;
+        animal.z += (leadDz / leadD) * pullStep;
+        animal.facing = Math.atan2(leadDx, leadDz);
+        animal.animState = 'walk';
+      }
+      const nowDist = Math.hypot(pasture.x - u.x, pasture.z - u.z);
+      if (nowDist > pastureStop && !(arrived && nowDist <= pastureStop + 2.8)) {
+        return;
+      }
+    }
+
+    // House the captured animal inside the Pasture enclosure!
+    const count = this.getPastureAnimalCount(pasture.id);
+    const slotAng = ((count * 2.39996) % (Math.PI * 2));
+    const slotR = 0.7 + (count % 3) * 0.42;
+    animal.x = pasture.x + Math.cos(slotAng) * slotR;
+    animal.z = pasture.z + Math.sin(slotAng) * slotR;
+    animal.prevX = animal.x;
+    animal.prevZ = animal.z;
+    animal.guardX = pasture.x;
+    animal.guardZ = pasture.z;
+    animal.pastureId = pasture.id;
+    animal.capturedByWorkerId = null;
+    animal.hp = animal.maxHp;
+    animal.breedProgress = 0;
+    animal.animState = 'idle';
+    this.wildlifeState.delete(animal.id);
+
+    this.events.push({
+      type: 'animal_captured',
+      playerId: u.owner,
+      animalId: animal.id,
+      pastureId: pasture.id,
+      templateId: animal.templateId,
+      x: pasture.x,
+      z: pasture.z,
+    });
+    this.advanceQueuedOrder(u);
+  }
+
+  /**
+   * 1) Pasture animals graze gently inside their fenced enclosure.
+   * 2) Baby animals born in Pastures grow smoothly (0.42 -> 1.0 adult).
+   * 3) Adult animals inside a Pasture slowly breed & birth new baby animals of the same species!
+   */
+  private updatePastureLivestock(): void {
+    const stepGrowth = SIM_DT / World.ANIMAL_GROWTH_SECONDS;
+    const pastureCounts = new Map<number, number>();
+    for (const e of this.entities.values()) {
+      if (e.alive && e.pastureId !== undefined) {
+        pastureCounts.set(e.pastureId, (pastureCounts.get(e.pastureId) ?? 0) + 1);
+      }
+    }
+
+    const newborns: Array<{ tplId: string; pasture: Entity; x: number; z: number }> = [];
+
+    for (const e of this.entities.values()) {
+      if (!e.alive || e.pastureId === undefined) continue;
+      const pasture = this.entities.get(e.pastureId);
+      if (!pasture || !pasture.alive || pasture.isFoundation) {
+        e.pastureId = undefined;
+        continue;
+      }
+      if (e.hp <= 0) {
+        e.vx = 0;
+        e.vz = 0;
+        e.animState = 'idle';
+        continue;
+      }
+
+      // Gentle grazing stroll inside the Pasture enclosure (radius <= 1.85m around pasture center)
+      const wanderAng = this.time * 0.28 + e.id * 1.9;
+      const wanderR = 0.65 + (e.id % 4) * 0.34;
+      const tx = pasture.x + Math.cos(wanderAng) * wanderR;
+      const tz = pasture.z + Math.sin(wanderAng) * wanderR;
+      const dx = tx - e.x;
+      const dz = tz - e.z;
+      const dist = Math.hypot(dx, dz);
+      if (dist > 0.18) {
+        const step = Math.min(0.85 * SIM_DT, dist);
+        e.x += (dx / dist) * step;
+        e.z += (dz / dist) * step;
+        e.vx = (dx / dist) * (step / SIM_DT);
+        e.vz = (dz / dist) * (step / SIM_DT);
+        e.facing = Math.atan2(dx, dz);
+        e.animState = 'walk';
+      } else {
+        e.vx = 0;
+        e.vz = 0;
+        e.animState = 'idle';
+      }
+
+      // Baby animal grows up into an adult before breeding
+      if (e.animalGrowth !== undefined && e.animalGrowth < 1) {
+        e.animalGrowth = Math.min(1, e.animalGrowth + stepGrowth);
+        continue;
+      }
+
+      // Adult housed animal slowly breeds a baby animal if Pasture has capacity!
+      const cap = TEMPLATES[pasture.templateId]?.pastureCapacity ?? 12;
+      const curCount = pastureCounts.get(pasture.id) ?? 0;
+      if (curCount < cap) {
+        const breedDuration = e.templateId === 'wild_chicken' ? 22.0 : World.ANIMAL_BREED_SECONDS;
+        e.breedProgress = (e.breedProgress ?? 0) + SIM_DT / breedDuration;
+        if (e.breedProgress >= 1.0) {
+          e.breedProgress = 0;
+          const bAng = this.rng.range(0, Math.PI * 2);
+          const bR = this.rng.range(0.45, 1.55);
+          newborns.push({
+            tplId: e.templateId,
+            pasture,
+            x: pasture.x + Math.cos(bAng) * bR,
+            z: pasture.z + Math.sin(bAng) * bR,
+          });
+          pastureCounts.set(pasture.id, curCount + 1);
+        }
+      }
+    }
+
+    for (const nb of newborns) {
+      const tpl = TEMPLATES[nb.tplId];
+      if (!tpl) continue;
+      const baby = this.createBaseEntity(nb.tplId, 0, nb.x, nb.z);
+      baby.guardX = nb.pasture.x;
+      baby.guardZ = nb.pasture.z;
+      baby.facing = this.rng.range(0, Math.PI * 2);
+      baby.resourceRemaining = tpl.resourceAmount ?? 260;
+      baby.pastureId = nb.pasture.id;
+      baby.animalGrowth = 0.42;
+      baby.breedProgress = 0;
+      this.entities.set(baby.id, baby);
+      this.events.push({
+        type: 'animal_born',
+        playerId: nb.pasture.owner,
+        entityId: baby.id,
+        pastureId: nb.pasture.id,
+        templateId: baby.templateId,
+        x: baby.x,
+        z: baby.z,
+      });
     }
   }
 
@@ -4625,13 +6060,17 @@ export class World {
         this.tryAutoAcquireEnemy(u);
         return;
       }
-      if (u.repathTimer <= 0) {
-        const expLimit = !uTpl.isNaval && tTpl.isSeaMonster ? 600 : 4500;
+      const lastWp = u.path.length > 0 ? u.path[u.path.length - 1] : null;
+      const targetMoved = !lastWp || Math.hypot(lastWp.x - target.x, lastWp.z - target.z) > Math.max(2.5, effectiveRange * 0.6);
+      if (u.repathTimer <= 0 && (u.pathIndex >= u.path.length || targetMoved)) {
+        const expLimit = !uTpl.isNaval && (tTpl.isSeaMonster || tTpl.isNaval) ? 600 : dist > 50 ? 3500 : 1800;
         u.path = uTpl.isNaval
           ? this.navGrid.findWaterPath(u.x, u.z, target.x, target.z)
           : this.navGrid.findPath(u.x, u.z, target.x, target.z, expLimit, false, u.owner);
         u.pathIndex = 0;
-        u.repathTimer = !uTpl.isNaval && tTpl.isSeaMonster ? 1.2 : 0.65;
+        const endWp = u.path.length > 0 ? u.path[u.path.length - 1] : null;
+        const reachedTarget = endWp ? Math.hypot(endWp.x - target.x, endWp.z - target.z) <= effectiveRange + 4.5 : false;
+        u.repathTimer = !reachedTarget ? 2.6 : !uTpl.isNaval && tTpl.isSeaMonster ? 1.2 : 0.75;
       }
       this.followPath(u, target.x, target.z, effectiveRange * 0.92);
       return;
@@ -4723,7 +6162,12 @@ export class World {
       const elevationBonus = Math.max(0.85, Math.min(1.25, 1 + elevDiff * 0.04));
 
       const projKind = atk.projectileKind ?? (attacker.templateId === 'rome_velite' ? 'javelin' : 'arrow');
-      const arcMult = projKind === 'flaming_boulder' || projKind === 'boulder' ? 0.28 : 0.14;
+      const arcMult =
+        projKind === 'cannonball'
+          ? 0.08
+          : projKind === 'flaming_boulder' || projKind === 'boulder'
+            ? 0.28
+            : 0.14;
       this.projectiles.push({
         id: this.nextProjectileId++,
         owner: attacker.owner,
@@ -4746,6 +6190,38 @@ export class World {
         splashRadius: atk.splashRadius,
         kind: projKind,
       });
+
+      // Warships with soldiers/marines aboard fire extra deck arrow volleys!
+      if (aTpl.isNaval && aTpl.garrisonArrowBonus && attacker.garrisonedIds.length > 0) {
+        const extraVolleys = Math.min(4, Math.ceil(attacker.garrisonedIds.length / 2));
+        for (let b = 0; b < extraVolleys; b++) {
+          const offAng = attacker.facing + ((b % 2 === 0 ? 1 : -1) * 0.45);
+          const offR = 0.65 + Math.floor(b / 2) * 0.55;
+          const sx = attacker.x + Math.cos(offAng) * offR;
+          const sz = attacker.z + Math.sin(offAng) * offR;
+          this.projectiles.push({
+            id: this.nextProjectileId++,
+            owner: attacker.owner,
+            sourceId: attacker.id,
+            targetId: target.id,
+            startX: sx,
+            startY: aY + 0.55,
+            startZ: sz,
+            x: sx,
+            y: aY + 0.55,
+            z: sz,
+            targetX: target.x,
+            targetY: tY,
+            targetZ: target.z,
+            progress: 0,
+            duration: duration * (1 + (b + 1) * 0.04),
+            arcHeight: Math.min(11.5, 1.6 + dist * 0.16),
+            damage: { hack: 0, pierce: 6 * dmgMult, crush: 0 },
+            elevationBonus,
+            kind: 'arrow',
+          });
+        }
+      }
     } else {
       // Bonus vs cavalry for spear hoplites
       if (attacker.templateId === 'athen_hoplite' && TEMPLATES[target.templateId].isCavalry) {
@@ -5034,13 +6510,14 @@ export class World {
       }
 
       // Great Wall Beacon Tower (3 levels): MUST have garrisoned soldiers to operate!
-      // Auto-ignites on enemy approach, chains fire to beacons in range, rallies armies, & garrisoned ranged soldiers fire at enemies!
+      // Staged realistic signal: Enemy spotted / neighbor smoke seen -> 'igniting' (3s) -> 'burning' (3s) -> 'smoking' (30s)
+      // Once 'smoking', rallies armies & neighboring garrisoned beacons spot the rising smoke and begin their own ignition cascade (A -> B -> C)!
       if (tpl.isBeaconTower) {
-        if (b.beaconLitTimer && b.beaconLitTimer > 0) {
-          b.beaconLitTimer = Math.max(0, b.beaconLitTimer - SIM_DT);
-        }
         if (b.beaconSuppressTimer && b.beaconSuppressTimer > 0) {
           b.beaconSuppressTimer = Math.max(0, b.beaconSuppressTimer - SIM_DT);
+        }
+        if (b.beaconRelayCooldown && b.beaconRelayCooldown > 0) {
+          b.beaconRelayCooldown = Math.max(0, b.beaconRelayCooldown - SIM_DT);
         }
         if (b.beaconRallyCooldown && b.beaconRallyCooldown > 0) {
           b.beaconRallyCooldown = Math.max(0, b.beaconRallyCooldown - SIM_DT);
@@ -5048,19 +6525,106 @@ export class World {
         const soldiers = this.getBeaconGarrisonSoldiers(b);
         if (soldiers.length === 0) {
           // Unstaffed Beacon Tower is completely ineffective!
+          b.beaconState = 'idle';
+          b.beaconStageProgress = 0;
           b.beaconLitTimer = 0;
         } else {
-          const stats = World.getBeaconStats(b.beaconLevel ?? 1);
-          // 1. Auto-detect approaching enemies -> auto-ignite & chain-signal (unless manually extinguished recently)!
+          const level = b.beaconLevel ?? 1;
+          const stats = World.getBeaconStats(level);
+          const suppressed = Boolean(b.beaconSuppressTimer && b.beaconSuppressTimer > 0);
+          const relayBlocked = suppressed || Boolean(b.beaconRelayCooldown && b.beaconRelayCooldown > 0);
+
+          // 1. Check enemy approach OR neighboring Beacon Tower whose thick smoke has already risen ('smoking')!
           const intruder = this.findNearestEnemy(b.owner, b.x, b.z, stats.detectRange);
-          if (intruder && !(b.beaconSuppressTimer && b.beaconSuppressTimer > 0)) {
-            if ((b.beaconLitTimer ?? 0) <= 0) {
-              this.igniteBeacon(b, true);
+          let neighborSmoking = false;
+          if (!intruder && (b.beaconState ?? 'idle') === 'idle' && !relayBlocked) {
+            for (const other of this.entities.values()) {
+              if (
+                other.id === b.id ||
+                !other.alive ||
+                other.isFoundation ||
+                other.owner !== b.owner ||
+                !TEMPLATES[other.templateId]?.isBeaconTower ||
+                other.beaconState !== 'smoking'
+              ) {
+                continue;
+              }
+              const otherStats = World.getBeaconStats(other.beaconLevel ?? 1);
+              const relayDist = Math.max(stats.relayRange, otherStats.relayRange);
+              if (Math.hypot(other.x - b.x, other.z - b.z) <= relayDist) {
+                neighborSmoking = true;
+                break;
+              }
+            }
+          }
+
+          const state = b.beaconState ?? ((b.beaconLitTimer ?? 0) > 0 ? 'smoking' : 'idle');
+          if (state === 'idle') {
+            b.beaconStageProgress = 0;
+            b.beaconLitTimer = 0;
+            if ((intruder && !suppressed) || (neighborSmoking && !relayBlocked)) {
+              b.beaconState = 'igniting';
+              b.beaconStageProgress = 0;
+            }
+          } else if (state === 'igniting') {
+            const nextProg = (b.beaconStageProgress ?? 0) + SIM_DT / World.BEACON_IGNITE_TIME;
+            if (nextProg >= 1) {
+              b.beaconState = 'burning';
+              b.beaconStageProgress = 0;
             } else {
-              b.beaconLitTimer = Math.max(b.beaconLitTimer ?? 0, 15);
+              b.beaconStageProgress = nextProg;
+            }
+          } else if (state === 'burning') {
+            const nextProg = (b.beaconStageProgress ?? 0) + SIM_DT / World.BEACON_SMOKE_TIME;
+            if (nextProg >= 1) {
+              b.beaconState = 'smoking';
+              b.beaconStageProgress = 1;
+              b.beaconLitTimer = World.BEACON_BURN_DURATION;
+              b.beaconRallyCooldown = 4.5;
+              this.events.push({
+                type: 'beacon_lit',
+                playerId: b.owner,
+                x: b.x,
+                z: b.z,
+                level,
+                autoDetected: Boolean(intruder),
+              });
+              this.rallyArmiesToBeacon(b, stats.rallyRange);
+            } else {
+              b.beaconStageProgress = nextProg;
+            }
+          } else if (state === 'smoking') {
+            b.beaconStageProgress = 1;
+            if (intruder && !suppressed) {
+              // Enemy still nearby: keep the full 30-second countdown reset & continue rallying armies
+              b.beaconLitTimer = World.BEACON_BURN_DURATION;
               if ((b.beaconRallyCooldown ?? 0) <= 0) {
                 this.rallyArmiesToBeacon(b, stats.rallyRange);
                 b.beaconRallyCooldown = 4.5;
+              }
+            } else {
+              // No enemy nearby: count down 30 seconds, then begin extinguishing!
+              b.beaconLitTimer = Math.max(0, (b.beaconLitTimer ?? 0) - SIM_DT);
+              if (b.beaconLitTimer <= 0) {
+                b.beaconState = 'extinguishing';
+                b.beaconStageProgress = 0;
+              }
+            }
+          } else if (state === 'extinguishing') {
+            b.beaconLitTimer = 0;
+            if (intruder && !suppressed) {
+              // Real enemy returned while extinguishing -> re-ignite immediately!
+              b.beaconState = 'igniting';
+              b.beaconStageProgress = 0;
+            } else {
+              const nextProg = (b.beaconStageProgress ?? 0) + SIM_DT / World.BEACON_EXTINGUISH_TIME;
+              if (nextProg >= 1) {
+                b.beaconState = 'idle';
+                b.beaconStageProgress = 0;
+                // Brief relay cooldown prevents leftover neighbor smoke from the same wave ping-ponging re-ignition
+                b.beaconRelayCooldown = 28;
+              } else {
+                b.beaconStageProgress = nextProg;
               }
             }
           }
@@ -5183,11 +6747,60 @@ export class World {
         continue;
       }
 
-      const isFleeingPrey = e.templateId === 'deer_herd' || e.templateId === 'wild_gazelle';
-      const isRetaliator = e.templateId === 'wild_boar' || e.templateId === 'wild_elephant';
+      // Housed livestock & animals currently being herded to a pasture are controlled by updatePastureLivestock / capture_animal
+      if (e.pastureId !== undefined || e.capturedByWorkerId) continue;
+
+      const isFleeingPrey =
+        e.templateId === 'deer_herd' ||
+        e.templateId === 'wild_gazelle' ||
+        e.templateId === 'wild_sheep' ||
+        e.templateId === 'wild_goat' ||
+        e.templateId === 'wild_chicken' ||
+        e.templateId === 'wild_camel';
+      const isRetaliator =
+        e.templateId === 'wild_boar' ||
+        e.templateId === 'wild_elephant' ||
+        e.templateId === 'wild_aurochs';
+      const isMarineFauna = e.templateId === 'sea_walrus' || e.templateId === 'sea_whale';
       const isPredator = Boolean(tpl.isPredator);
       const isSeaMonster = Boolean(tpl.isSeaMonster);
-      if (!isFleeingPrey && !isRetaliator && !isPredator) continue;
+      if (!isFleeingPrey && !isRetaliator && !isPredator && !isMarineFauna) continue;
+
+      // Peaceful marine wildlife (Walrus & Whale) gently cruise in their water territory
+      if (isMarineFauna) {
+        if (e.hp <= 0) {
+          e.vx = 0;
+          e.vz = 0;
+          e.animState = 'idle';
+          continue;
+        }
+        const patrolAng = this.time * (e.templateId === 'sea_whale' ? 0.14 : 0.2) + e.id * 1.9;
+        const patrolRad = e.templateId === 'sea_whale' ? 8.5 : 4.2;
+        const targetPx = e.guardX + Math.cos(patrolAng) * patrolRad;
+        const targetPz = e.guardZ + Math.sin(patrolAng) * patrolRad;
+        const pdx = targetPx - e.x;
+        const pdz = targetPz - e.z;
+        const pDist = Math.hypot(pdx, pdz);
+        if (pDist > 0.35) {
+          const step = Math.min((tpl.speed ?? 1.4) * SIM_DT, pDist);
+          const nx = e.x + (pdx / pDist) * step;
+          const nz = e.z + (pdz / pDist) * step;
+          const nt = this.terrain.worldToTile(nx, nz);
+          if (this.terrain.isTileWaterNavigable(nt.tx, nt.tz)) {
+            e.vx = (nx - e.x) / SIM_DT;
+            e.vz = (nz - e.z) / SIM_DT;
+            e.x = nx;
+            e.z = nz;
+            e.facing = Math.atan2(pdx, pdz);
+            e.animState = 'walk';
+          } else {
+            e.vx = 0;
+            e.vz = 0;
+            e.animState = 'idle';
+          }
+        }
+        continue;
+      }
 
       // Slain carcass remains motionless on the ground/water while workers or fishing boats harvest it
       if (e.hp <= 0) {
@@ -5328,15 +6941,21 @@ export class World {
             : e.templateId === 'sea_kraken'
               ? 22
               : 18
-          : e.templateId === 'wild_elephant'
-            ? 14
-            : e.templateId === 'predator_bear'
-              ? 12
-              : e.templateId === 'predator_lion'
-                ? 11
-                : e.templateId === 'predator_wolf'
-                  ? 7
-                  : 5;
+          : e.templateId === 'predator_hippo'
+            ? 17
+            : e.templateId === 'predator_polar_bear'
+              ? 15
+              : e.templateId === 'wild_elephant'
+                ? 14
+                : e.templateId === 'predator_tiger'
+                  ? 13
+                  : e.templateId === 'predator_bear' || e.templateId === 'wild_aurochs'
+                    ? 12
+                    : e.templateId === 'predator_lion'
+                      ? 11
+                      : e.templateId === 'predator_wolf'
+                        ? 7
+                        : 5;
         const chaseSpeed = tpl.speed ?? 4.0;
 
         if (dist <= strikeRange) {
@@ -5438,6 +7057,19 @@ export class World {
         }
       } else if (tpl.kind === 'unit') {
         anyUnitDied = true;
+        if (tpl.isNaval && e.garrisonedIds.length > 0) {
+          // Try rescuing passengers onto nearby shore; anyone trapped far out at sea goes down with the ship!
+          this.ungarrisonAll(e);
+          const drowned = e.garrisonedIds.splice(0);
+          for (const pid of drowned) {
+            const p = this.entities.get(pid);
+            if (p && p.alive) {
+              p.garrisonedIn = null;
+              p.hp = 0;
+              p.alive = false;
+            }
+          }
+        }
       }
 
       this.events.push({ type: 'entity_died', entityId: id, x: e.x, z: e.z, kind: tpl.kind });
@@ -5603,8 +7235,10 @@ export class World {
       return false;
     }
 
+    const isCivilianWorker = Boolean(tpl.isWoman || u.templateId === 'male_citizen');
+
     // Respect guarding military units when triggered from passive idle (not post-build chaining)
-    if (!fromCompletedTask && !tpl.isWoman) {
+    if (!fromCompletedTask && !isCivilianWorker) {
       if (u.stance === 'defensive' || u.stance === 'stand_ground') return false;
       // Only auto-task citizen-soldiers when idling near a friendly economic hub with no enemies nearby
       const nearHub =
@@ -5614,12 +7248,19 @@ export class World {
       if (this.findNearestEnemy(u.owner, u.x, u.z, 30)) return false;
     }
 
-    // 1. Help build any nearby friendly foundation this unit is allowed to construct
-    const foundation = this.findNearestFoundation(u.owner, u.x, u.z, 26);
-    if (foundation && tpl.canBuild?.includes(foundation.templateId)) {
+    // 1. Help build any nearby friendly foundation (including Stone Walls, Gates, Bridges, Tunnels & buildings) this unit is allowed to construct!
+    const foundationRadius = isCivilianWorker ? 52 : 32;
+    const foundation = this.findNearestFoundation(u.owner, u.x, u.z, foundationRadius, tpl.canBuild);
+    if (foundation) {
+      const fTpl = TEMPLATES[foundation.templateId];
+      const useApproach = Boolean(fTpl?.isWall || fTpl?.isGate || fTpl?.isBridge || fTpl?.isTunnel);
+      const goal = useApproach
+        ? this.getTerraformApproachPos(u, foundation.tileX, foundation.tileZ, { x: foundation.x, z: foundation.z })
+        : { x: foundation.x, z: foundation.z };
       u.order = { type: 'build', targetId: foundation.id };
-      u.path = this.navGrid.findPath(u.x, u.z, foundation.x, foundation.z);
+      u.path = this.navGrid.findPath(u.x, u.z, goal.x, goal.z, 3500, false, u.owner);
       u.pathIndex = 0;
+      u.repathTimer = 1.0;
       return true;
     }
 
@@ -5723,7 +7364,11 @@ export class World {
     let bestD2 = maxRadius * maxRadius;
     for (const e of this.entities.values()) {
       if (!e.alive || e.resourceRemaining <= 0) continue;
+      if (World.isUnharvestableTree(e)) continue;
       const tpl = TEMPLATES[e.templateId];
+      if (tpl.isTreasure) continue;
+      // Never auto-dismantle Ancient Ruin Pillars (only when explicitly commanded!) and never auto-slaughter Pasture livestock!
+      if (tpl.isRuinPillar || e.pastureId !== undefined) continue;
       if (tpl.resourceType !== resourceType) continue;
       if (Boolean(tpl.isAquatic) !== aquatic) continue;
       if (tpl.isFarmField && (e.owner !== ownerId || e.isFoundation)) continue;
@@ -5757,10 +7402,12 @@ export class World {
 
     let wounded: Entity | null = null;
     let bestScore = Infinity;
-    const nearby = this.spatialHash.queryRadius(healer.x, healer.z, 18, this.queryBuf);
+    const nearby = this.spatialHash.queryRadius(healer.x, healer.z, 20, this.queryBuf);
     for (let i = 0; i < nearby.length; i++) {
       const c = nearby[i];
-      if (!c.alive || c.owner !== healer.owner || c.id === healer.id || c.garrisonedIn !== null) continue;
+      if (!c.alive || c.owner === 0 || !this.isAlliedOrOwn(healer.owner, c.owner) || c.id === healer.id || c.garrisonedIn !== null) {
+        continue;
+      }
       if (TEMPLATES[c.templateId].kind !== 'unit' || c.hp >= c.maxHp - 0.5) continue;
       const d = Math.hypot(c.x - healer.x, c.z - healer.z);
       if (d < bestScore) {
@@ -5770,24 +7417,325 @@ export class World {
     }
     if (!wounded) {
       healer.animState = 'idle';
+      healer.healingTargetId = null;
       return;
     }
 
     if (bestScore > healRange) {
+      healer.healingTargetId = null;
       this.followPath(healer, wounded.x, wounded.z, healRange * 0.85);
       return;
     }
 
     healer.facing = Math.atan2(wounded.x - healer.x, wounded.z - healer.z);
     healer.animState = 'gather';
+    healer.healingTargetId = wounded.id;
     wounded.hp = Math.min(wounded.maxHp, wounded.hp + baseRate * healMult * SIM_DT);
   }
 
-  private findNearestFoundation(ownerId: number, x: number, z: number, maxRadius: number): Entity | null {
+  private updateHealOrder(healer: Entity, order: Extract<UnitOrder, { type: 'heal' }>): void {
+    const hTpl = TEMPLATES[healer.templateId];
+    if (!hTpl?.isHealer) {
+      this.advanceQueuedOrder(healer);
+      return;
+    }
+    const target = this.entities.get(order.targetId);
+    if (
+      !target ||
+      !target.alive ||
+      target.garrisonedIn !== null ||
+      target.owner === 0 ||
+      !this.isAlliedOrOwn(healer.owner, target.owner) ||
+      TEMPLATES[target.templateId]?.kind !== 'unit' ||
+      target.hp >= target.maxHp - 0.25
+    ) {
+      healer.healingTargetId = null;
+      // Automatically look for another wounded ally nearby once current patient is fully healed!
+      const nextWounded = this.findNearestWoundedAlly(healer.owner, healer.x, healer.z, 24, healer.id);
+      if (nextWounded) {
+        healer.order = { type: 'heal', targetId: nextWounded.id };
+        healer.path = this.navGrid.findPath(healer.x, healer.z, nextWounded.x, nextWounded.z, 1800, false, healer.owner);
+        healer.pathIndex = 0;
+        healer.repathTimer = 0.6;
+      } else {
+        this.advanceQueuedOrder(healer);
+      }
+      return;
+    }
+
+    const healRange = hTpl.healRange ?? 11;
+    const baseRate = hTpl.healRate ?? 9;
+    const player = this.players.get(healer.owner);
+    const healMult =
+      player && (player.researchedTechs.has('tech_temple_healing') || player.researchedTechs.has('tech_maur_edicts'))
+        ? 1.5
+        : 1.0;
+
+    const dist = Math.hypot(target.x - healer.x, target.z - healer.z);
+    if (dist > healRange) {
+      healer.healingTargetId = null;
+      const lastWp = healer.path.length > 0 ? healer.path[healer.path.length - 1] : null;
+      if (healer.repathTimer <= 0 && (!lastWp || Math.hypot(lastWp.x - target.x, lastWp.z - target.z) > 2.4)) {
+        healer.path = this.navGrid.findPath(healer.x, healer.z, target.x, target.z, 1800, false, healer.owner);
+        healer.pathIndex = 0;
+        healer.repathTimer = 0.7;
+      }
+      this.followPath(healer, target.x, target.z, healRange * 0.85);
+      return;
+    }
+
+    healer.facing = Math.atan2(target.x - healer.x, target.z - healer.z);
+    healer.animState = 'gather';
+    healer.path = [];
+    healer.healingTargetId = target.id;
+    target.hp = Math.min(target.maxHp, target.hp + baseRate * healMult * SIM_DT);
+  }
+
+  /**
+   * Scouts are completely unarmed and cannot fight back: whenever a hostile unit,
+   * enemy defensive structure, or live predator comes within 14.5m, immediately flee away!
+   */
+  private updateScoutDangerFlee(scout: Entity): boolean {
+    const dangerRadius = 14.5;
+    const nearby = this.spatialHash.queryRadius(scout.x, scout.z, dangerRadius, this.queryBuf);
+    let repX = 0;
+    let repZ = 0;
+    let threatCount = 0;
+
+    for (let i = 0; i < nearby.length; i++) {
+      const c = nearby[i];
+      if (!c.alive || c.id === scout.id || c.garrisonedIn !== null) continue;
+      const cTpl = TEMPLATES[c.templateId];
+      if (!cTpl || cTpl.isFlying) continue;
+      const isHostilePlayer =
+        c.owner !== 0 &&
+        this.areHostile(scout.owner, c.owner) &&
+        (cTpl.kind === 'unit' || Boolean(cTpl.attack));
+      const isHostilePredator = c.owner === 0 && Boolean(cTpl.isPredator || cTpl.isSeaMonster) && c.hp > 0;
+      if (!isHostilePlayer && !isHostilePredator) continue;
+
+      const dx = scout.x - c.x;
+      const dz = scout.z - c.z;
+      const dist = Math.hypot(dx, dz);
+      const weight = 1 / Math.max(1.5, dist);
+      repX += (dist > 0.05 ? dx / dist : 1) * weight;
+      repZ += (dist > 0.05 ? dz / dist : 0) * weight;
+      threatCount++;
+    }
+
+    if (threatCount > 0) {
+      const len = Math.hypot(repX, repZ) || 1;
+      const dirX = repX / len;
+      const dirZ = repZ / len;
+      const baseAngle = Math.atan2(dirZ, dirX);
+      const needNewFleePath =
+        (scout.scoutFleeTimer ?? 0) <= 0.1 ||
+        scout.path.length === 0 ||
+        scout.pathIndex >= scout.path.length;
+
+      if (needNewFleePath) {
+        const angles = [0, 0.55, -0.55, 1.1, -1.1, 1.65, -1.65, 2.3, -2.3];
+        let goalX = scout.x + dirX * 15;
+        let goalZ = scout.z + dirZ * 15;
+        for (const aOff of angles) {
+          const ang = baseAngle + aOff;
+          const cx = Math.max(4, Math.min(this.terrain.worldSize - 4, scout.x + Math.cos(ang) * 16));
+          const cz = Math.max(4, Math.min(this.terrain.worldSize - 4, scout.z + Math.sin(ang) * 16));
+          const tile = this.terrain.worldToTile(cx, cz);
+          if (this.terrain.isTileDryLand(tile.tx, tile.tz) && this.navGrid.isWalkableFor(tile.tx, tile.tz, scout.owner)) {
+            goalX = cx;
+            goalZ = cz;
+            break;
+          }
+        }
+        scout.order = { type: 'move', x: goalX, z: goalZ };
+        scout.queuedOrders = [{ type: 'explore' }];
+        scout.path = this.navGrid.findPath(scout.x, scout.z, goalX, goalZ, 1200, false, scout.owner);
+        scout.pathIndex = 0;
+        scout.repathTimer = 0.6;
+      }
+      scout.scoutFleeTimer = 1.6;
+      const goal = scout.order.type === 'move' ? scout.order : { x: scout.x + dirX * 14, z: scout.z + dirZ * 14 };
+      this.followPath(scout, goal.x, goal.z, 1.0);
+      return true;
+    }
+
+    if (scout.scoutFleeTimer && scout.scoutFleeTimer > 0) {
+      scout.scoutFleeTimer = Math.max(0, scout.scoutFleeTimer - SIM_DT);
+      if (scout.order.type === 'move') {
+        this.followPath(scout, scout.order.x, scout.order.z, 1.2);
+        return true;
+      }
+    }
+    return false;
+  }
+
+  private updateExploreOrder(scout: Entity, order: Extract<UnitOrder, { type: 'explore' }>): void {
+    const needTarget =
+      order.targetX === undefined ||
+      order.targetZ === undefined ||
+      Math.hypot(order.targetX - scout.x, order.targetZ - scout.z) <= 5.5 ||
+      this.fog.isExploredBy(scout.owner, order.targetX, order.targetZ) ||
+      (this.stuckTicks.get(scout.id) ?? 0) >= 24;
+
+    if (needTarget) {
+      if ((this.stuckTicks.get(scout.id) ?? 0) >= 24 && order.targetX !== undefined && order.targetZ !== undefined) {
+        const bt = this.terrain.worldToTile(order.targetX, order.targetZ);
+        let blocked = this.scoutBlockedTiles.get(scout.id);
+        if (!blocked) {
+          blocked = new Set<number>();
+          this.scoutBlockedTiles.set(scout.id, blocked);
+        }
+        blocked.add(bt.tz * this.terrain.width + bt.tx);
+        if (blocked.size > 40) blocked.clear();
+        this.stuckTicks.set(scout.id, 0);
+      }
+
+      const nextTarget = this.findNextUnexploredLandTarget(scout);
+      if (!nextTarget) {
+        scout.animState = 'idle';
+        return;
+      }
+      order.targetX = nextTarget.x;
+      order.targetZ = nextTarget.z;
+      scout.path = this.navGrid.findPath(scout.x, scout.z, nextTarget.x, nextTarget.z, 1600, false, scout.owner);
+      scout.pathIndex = 0;
+      scout.repathTimer = 1.4;
+      if (scout.path.length === 0) {
+        // Mark unreachable tile so scout immediately picks another frontier on next tick
+        const bt = this.terrain.worldToTile(nextTarget.x, nextTarget.z);
+        let blocked = this.scoutBlockedTiles.get(scout.id);
+        if (!blocked) {
+          blocked = new Set<number>();
+          this.scoutBlockedTiles.set(scout.id, blocked);
+        }
+        blocked.add(bt.tz * this.terrain.width + bt.tx);
+        order.targetX = undefined;
+        order.targetZ = undefined;
+        return;
+      }
+    }
+
+    if (order.targetX !== undefined && order.targetZ !== undefined) {
+      this.followPath(scout, order.targetX, order.targetZ, 2.5);
+    }
+  }
+
+  /**
+   * Scans the player's FogGrid for the best unexplored (0) dry walkable land tile.
+   * Prefers nearby unexplored frontier tiles so the Scout sweeps smoothly across unknown territory!
+   */
+  private findNextUnexploredLandTarget(scout: Entity): { x: number; z: number } | null {
+    const grid = this.fog.getGrid(scout.owner);
+    const w = this.terrain.width;
+    const h = this.terrain.height;
+    const blocked = this.scoutBlockedTiles.get(scout.id);
+    const st = this.terrain.worldToTile(scout.x, scout.z);
+
+    let bestUnexplored: { tx: number; tz: number; score: number } | null = null;
+    let bestFogged: { tx: number; tz: number; score: number } | null = null;
+    const stride = 3;
+
+    for (let tz = 3; tz < h - 3; tz += stride) {
+      for (let tx = 3; tx < w - 3; tx += stride) {
+        const idx = tz * w + tx;
+        if (blocked?.has(idx)) continue;
+        const fogState = grid[idx];
+        if (fogState === 2) continue;
+        if (!this.terrain.isTileDryLand(tx, tz) || !this.navGrid.isWalkableFor(tx, tz, scout.owner)) continue;
+
+        const dist = Math.hypot(tx - st.tx, tz - st.tz);
+        if (dist < 4) continue;
+        // Slight deterministic per-scout angular diversity so multiple scouts split up in different directions!
+        const angle = Math.atan2(tz - st.tz, tx - st.tx);
+        const prefAngle = ((scout.id * 2.39996) % (Math.PI * 2)) - Math.PI;
+        const anglePenalty = Math.abs(Math.atan2(Math.sin(angle - prefAngle), Math.cos(angle - prefAngle))) * 4.5;
+        const score = dist + anglePenalty;
+
+        if (fogState === 0) {
+          if (!bestUnexplored || score < bestUnexplored.score) {
+            bestUnexplored = { tx, tz, score };
+          }
+        } else if (fogState === 1 && dist > 14) {
+          if (!bestFogged || score < bestFogged.score) {
+            bestFogged = { tx, tz, score };
+          }
+        }
+      }
+    }
+
+    const chosen = bestUnexplored ?? bestFogged;
+    if (!chosen) return null;
+    return this.terrain.tileToWorldCenter(chosen.tx, chosen.tz);
+  }
+
+  /**
+   * Checks if any alive land player unit (Worker, Scout, Soldier, Doctor, Caravan) has walked up to
+   * a random Wilderness Treasure — claiming it immediately and awarding its bonus resources!
+   */
+  private checkTreasureClaims(): void {
+    for (const tr of this.entities.values()) {
+      if (!tr.alive || tr.resourceRemaining <= 0) continue;
+      const tTpl = TEMPLATES[tr.templateId];
+      if (!tTpl?.isTreasure) continue;
+
+      const nearby = this.spatialHash.queryRadius(tr.x, tr.z, 2.75, this.queryBuf);
+      let claimer: Entity | null = null;
+      for (let i = 0; i < nearby.length; i++) {
+        const u = nearby[i];
+        if (!u.alive || u.owner === 0 || u.garrisonedIn !== null) continue;
+        const uTpl = TEMPLATES[u.templateId];
+        if (!uTpl || uTpl.kind !== 'unit' || uTpl.isNaval) continue;
+        if (Math.hypot(u.x - tr.x, u.z - tr.z) <= tTpl.radius + uTpl.radius + 1.45) {
+          claimer = u;
+          break;
+        }
+      }
+      if (!claimer) continue;
+
+      const player = this.players.get(claimer.owner);
+      if (!player) continue;
+      const rSpec = tTpl.treasureReward ?? { metal: 180 };
+      const reward: ResourceBag = {
+        food: rSpec.food ?? 0,
+        wood: rSpec.wood ?? 0,
+        stone: rSpec.stone ?? 0,
+        metal: rSpec.metal ?? 0,
+      };
+      player.resources.food += reward.food;
+      player.resources.wood += reward.wood;
+      player.resources.stone += reward.stone;
+      player.resources.metal += reward.metal;
+      player.stats.resourcesGathered += reward.food + reward.wood + reward.stone + reward.metal;
+
+      tr.resourceRemaining = 0;
+      tr.hp = 0;
+      tr.alive = false;
+
+      this.events.push({
+        type: 'treasure_claimed',
+        playerId: claimer.owner,
+        x: tr.x,
+        z: tr.z,
+        templateId: tr.templateId,
+        reward,
+      });
+    }
+  }
+
+  private findNearestFoundation(
+    ownerId: number,
+    x: number,
+    z: number,
+    maxRadius: number,
+    allowedTemplates?: string[]
+  ): Entity | null {
+    if (allowedTemplates && allowedTemplates.length === 0) return null;
     let best: Entity | null = null;
     let bestD2 = maxRadius * maxRadius;
     for (const e of this.entities.values()) {
       if (!e.alive || e.owner !== ownerId || !e.isFoundation) continue;
+      if (allowedTemplates && !allowedTemplates.includes(e.templateId)) continue;
       const d2 = (e.x - x) * (e.x - x) + (e.z - z) * (e.z - z);
       if (d2 < bestD2) {
         bestD2 = d2;

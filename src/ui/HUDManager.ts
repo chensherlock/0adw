@@ -918,9 +918,7 @@ export class HUDManager {
       this.elPeacefulPill.classList.toggle('hidden', !this.world.isPeaceful());
     }
     if (this.elModeBanner) {
-      if (!mode) {
-        this.elModeBanner.classList.add('hidden');
-      } else {
+      if (mode) {
         this.elModeBanner.classList.remove('hidden');
         this.elModeBanner.textContent =
           mode === 'dig'
@@ -930,8 +928,28 @@ export class HUDManager {
             : mode === 'level'
               ? t('toastLevelMode')
               : t('toastRaiseMode');
+      } else if (this.input.plantTreeMode) {
+        this.elModeBanner.classList.remove('hidden');
+        this.elModeBanner.textContent =
+          this.input.plantSourceTreeId !== null ? t('toastPlantSelectSpot') : t('toastPlantSelectTree');
+      } else if (this.input.hybridTreeMode) {
+        this.elModeBanner.classList.remove('hidden');
+        this.elModeBanner.textContent =
+          this.input.hybridTreeBId !== null
+            ? t('toastHybridStep3')
+            : this.input.hybridTreeAId !== null
+              ? t('toastHybridStep2')
+              : t('toastHybridStep1');
+      } else if (this.input.captureAnimalMode) {
+        this.elModeBanner.classList.remove('hidden');
+        this.elModeBanner.textContent = t('toastCaptureSelectAnimal');
+      } else {
+        this.elModeBanner.classList.add('hidden');
       }
     }
+    document.getElementById('cmd-plant-tree')?.classList.toggle('active', this.input.plantTreeMode);
+    document.getElementById('cmd-hybrid-tree')?.classList.toggle('active', this.input.hybridTreeMode);
+    document.getElementById('cmd-capture-animal')?.classList.toggle('active', this.input.captureAnimalMode);
   }
 
   pushToast(message: string, tone: 'info' | 'warn' | 'good' = 'info', jumpPos?: { x: number; z: number }): void {
@@ -1090,9 +1108,24 @@ export class HUDManager {
         extraHtml = `<div class="sel-meta">${tplText.description}</div>`;
       } else {
         const resLabel = tpl.resourceType ? getResourceName(tpl.resourceType) : '';
+        const growthMeta =
+          e.treeGrowth !== undefined && e.treeGrowth < 1
+            ? ` • ${t('saplingGrowingLabel')} ${Math.round(e.treeGrowth * 100)}% (${t('saplingCannotHarvestNote')})`
+            : tpl.isFruitTree && World.isFruitNotRipe(e)
+              ? ` • ${t('fruitGrowingLabel')} ${Math.round((e.fruitProgress ?? 0) * 100)}% (${t('saplingCannotHarvestNote')})`
+              : tpl.isFruitTree
+                ? ` • ${t('fruitRipeBadge')}`
+                : '';
+        const protectMeta = World.isProtectedTree(e) ? ` • ${t('protectedTreeBadge')}` : '';
+        const pastureAnimalMeta =
+          e.pastureId !== undefined
+            ? e.animalGrowth !== undefined && e.animalGrowth < 1
+              ? ` • 🐣 ${t('animalBabyLabel')} ${Math.round(e.animalGrowth * 100)}%`
+              : ` • 🐾 ${t('animalBreedingLabel')} ${Math.round((e.breedProgress ?? 0) * 100)}%`
+            : '';
         extraHtml = isSlainPrey
           ? `<div class="sel-meta">${t('slainMeta')} <b>${Math.ceil(e.resourceRemaining)}</b></div>`
-          : `<div class="sel-meta">${t('remainingPrefix')} ${resLabel}: <b>${Math.ceil(e.resourceRemaining)}</b></div>`;
+          : `<div class="sel-meta">${t('remainingPrefix')} ${resLabel}: <b>${Math.ceil(e.resourceRemaining)}</b>${growthMeta}${protectMeta}${pastureAnimalMeta}</div>`;
       }
     } else if (tpl.kind === 'building') {
       const capPts = e.capturePoints[e.owner] ?? e.captureMax;
@@ -1126,7 +1159,18 @@ export class HUDManager {
         const soldiers = this.world.getBeaconGarrisonSoldiers(e);
         const fillRatio = Math.min(1, e.garrisonedIds.length / Math.max(5, maxGarrison));
         const dmgRed = e.garrisonedIds.length > 0 ? Math.round(Math.min(0.65, Math.max(e.garrisonedIds.length * 0.11, fillRatio * 0.65)) * 100) : 0;
-        const litNote = (e.beaconLitTimer ?? 0) > 0 ? ` • 🔥 ${Math.ceil(e.beaconLitTimer!)}s` : '';
+        const bState = e.beaconState ?? ((e.beaconLitTimer ?? 0) > 0 ? 'smoking' : 'idle');
+        const stPct = Math.round((e.beaconStageProgress ?? 0) * 100);
+        const litNote =
+          bState === 'igniting'
+            ? ` • ${t('beaconStateIgniting')} ${stPct}%`
+            : bState === 'burning'
+              ? ` • ${t('beaconStateBurning')} ${stPct}%`
+              : bState === 'smoking'
+                ? ` • ${t('beaconStateSmoking')} ${Math.ceil(e.beaconLitTimer ?? 0)}s`
+                : bState === 'extinguishing'
+                  ? ` • ${t('beaconStateExtinguishing')} ${stPct}%`
+                  : '';
         beaconMeta = ` • Lv.${lv} (${stats.relayRange}m) • ${soldiers.length > 0 ? `✅ ${t('beaconActiveLabel')}` : `⚠️ ${t('beaconInactiveLabel')}`}${dmgRed > 0 ? ` • 🛡️-${dmgRed}%` : ''}${litNote}`;
       }
       let garrisonRosterHtml = '';
@@ -1155,8 +1199,12 @@ export class HUDManager {
           </div>
         `;
       }
+      const pastureMeta =
+        tpl.isPasture && !e.isFoundation
+          ? ` • 🐾 ${t('pastureHerdLabel')}: <b>${this.world.getPastureAnimalCount(e.id)}/${tpl.pastureCapacity ?? 12}</b>`
+          : '';
       extraHtml = `
-        <div class="sel-meta">${statusText}${tpl.isFarmField ? ` • ${t('resFood')}: ${Math.ceil(e.resourceRemaining)}` : ''}${beaconMeta}</div>
+        <div class="sel-meta">${statusText}${tpl.isFarmField ? ` • ${t('resFood')}: ${Math.ceil(e.resourceRemaining)}` : ''}${pastureMeta}${beaconMeta}</div>
         <div class="sel-stats">🛡️ ${t('hack')} ${armor.hack} • ${t('pierce')} ${armor.pierce} • ${t('crush')} ${armor.crush}${
           maxGarrison > 0 ? ` • 🏰 ${t('garrison')} ${e.garrisonedIds.length}/${maxGarrison}` : ''
         }</div>
@@ -1192,29 +1240,75 @@ export class HUDManager {
         const ord = e.order;
         const isLevel = ord.mode === 'level';
         const isRaiseHaul = ord.mode === 'raise';
-        const dug = SOIL_UNITS_PER_TILE - this.world.terrain.getSoilUnits(ord.tileX, ord.tileZ);
-        const filled = this.world.terrain.getFillUnits(ord.destTileX, ord.destTileZ);
-        const curVal = isRaiseHaul ? filled : dug;
-        const pct = Math.min(100, Math.round((curVal / SOIL_UNITS_PER_TILE) * 100));
         const label = isLevel ? t('levelProgressLabel') : isRaiseHaul ? t('fillProgressLabel') : t('digProgressLabel');
         const fillClass = isLevel ? 'tf-level' : isRaiseHaul ? 'tf-raise' : 'tf-dig';
         const haulingNote = ord.stage === 'dump' ? ` • ${t('carryingSoilLabel')}` : '';
-        const depthMeters = (curVal * 0.01).toFixed(2);
+        let pct: number;
+        let progText: string;
+        if (isLevel) {
+          const lp = this.world.terrain.getLevelProgress(ord.tileX, ord.tileZ);
+          pct = Math.min(100, Math.round(lp.pct * 100));
+          progText = `${lp.doneMeters.toFixed(2)}m / ${lp.totalMeters.toFixed(2)}m (${pct}%) • 均高 ${lp.targetH >= 0 ? '+' : ''}${lp.targetH.toFixed(2)}m`;
+        } else {
+          const dug = SOIL_UNITS_PER_TILE - this.world.terrain.getSoilUnits(ord.tileX, ord.tileZ);
+          const filled = this.world.terrain.getFillUnits(ord.destTileX, ord.destTileZ);
+          const curVal = isRaiseHaul ? filled : dug;
+          pct = Math.min(100, Math.round((curVal / SOIL_UNITS_PER_TILE) * 100));
+          progText = `${(curVal * 0.01).toFixed(2)}m / 1.00m (${pct}%)`;
+        }
         terraformHtml = `
           <div class="terraform-progress-row">
-            <div class="tf-prog-text"><span>${label}${haulingNote}</span><b>${depthMeters}m / 1.00m (${pct}%)</b></div>
+            <div class="tf-prog-text"><span>${label}${haulingNote}</span><b>${progText}</b></div>
             <div class="tf-prog-track"><div class="tf-prog-fill ${fillClass}" style="width:${pct}%"></div></div>
           </div>
         `;
       }
+      const shipCap = this.world.getMaxGarrisonCapacity(e);
+      let shipRosterHtml = '';
+      if (e.owner === this.humanPlayerId && shipCap > 0 && e.garrisonedIds.length > 0) {
+        const chips = e.garrisonedIds
+          .map((uid) => {
+            const gu = this.world.entities.get(uid);
+            if (!gu || !gu.alive) return '';
+            const gTpl = TEMPLATES[gu.templateId];
+            const gText = getTemplateText(gu.templateId);
+            const gPct = Math.round((gu.hp / Math.max(1, gu.maxHp)) * 100);
+            const wBadge = gTpl.attack?.isRanged ? '🏹' : gTpl.attack ? '⚔️' : '🛠️';
+            return `
+              <button class="unit-chip garrison-chip" data-ungarrison-id="${gu.id}" title="${gText.name} (${Math.ceil(gu.hp)}/${gu.maxHp}) — ${t('clickToUngarrisonTip')}">
+                <span class="chip-icon">${renderEntityIcon(gu.templateId, ownerP?.civ, 'chip-icon-img', gTpl.icon)}</span>
+                <span class="garrison-wbadge">${wBadge}</span>
+                <span class="chip-hp"><span style="width:${gPct}%"></span></span>
+              </button>
+            `;
+          })
+          .join('');
+        shipRosterHtml = `
+          <div class="garrison-roster">
+            <div class="garrison-roster-label">${t('garrisonRosterTitle')}</div>
+            <div class="garrison-roster-grid">${chips}</div>
+          </div>
+        `;
+      }
+      const liveOrderLabel =
+        e.order.type === 'gather' && e.order.fishingMethod
+          ? e.order.fishingMethod === 'net'
+            ? t('fishMethodNet')
+            : e.order.fishingMethod === 'spear'
+              ? t('fishMethodSpear')
+              : t('fishMethodRod')
+          : getOrderName(e.order.type);
       extraHtml = `
-        <div class="sel-meta">${tpl.isCitizenSoldier ? `${t('rank')}: <b>${rankLabel}</b> (${Math.floor(e.xp)} XP)` : tplText.shortName}${carryText}</div>
+        <div class="sel-meta">${tpl.isCitizenSoldier ? `${t('rank')}: <b>${rankLabel}</b> (${Math.floor(e.xp)} XP)` : tplText.shortName}${carryText}${
+          shipCap > 0 ? ` • ⚓ ${t('garrison')} ${e.garrisonedIds.length}/${shipCap}` : ''
+        }</div>
         <div class="sel-stats">
           ⚔️ ${tpl.attack ? `${tpl.attack.hack || tpl.attack.pierce || tpl.attack.crush} ${t('dmg')}` : '—'} •
           🛡️ ${t('hack')}:${armor.hack} ${t('pierce')}:${armor.pierce} ${t('crush')}:${armor.crush} •
-          ${t('orderLabel')}: <b>${getOrderName(e.order.type)}</b>
+          ${t('orderLabel')}: <b>${liveOrderLabel}</b>
         </div>
         ${terraformHtml}
+        ${shipRosterHtml}
       `;
     }
 
@@ -1254,6 +1348,10 @@ export class HUDManager {
     this.elSelectionPanel.querySelectorAll<HTMLButtonElement>('[data-ungarrison-id]').forEach((btn) => {
       btn.addEventListener('click', (ev) => {
         ev.stopPropagation();
+        if (tpl.isNaval && !this.world.findShipDisembarkPoint(e)) {
+          this.pushToast(t('toastShipNeedShore'), 'warn');
+          return;
+        }
         const uid = parseInt(btn.dataset.ungarrisonId!, 10);
         this.world.enqueueCommand({
           type: 'ungarrison_one',
@@ -1305,6 +1403,40 @@ export class HUDManager {
     const civ = CIVS[p.civ];
 
     if (owned.length === 0) {
+      // Allow toggling Tree Protection directly when the player selects any tree on the map!
+      if (selected.length === 1 && World.isTreeTemplate(selected[0].templateId)) {
+        const tree = selected[0];
+        const isProt = World.isProtectedTree(tree);
+        const treeSig = `tree_${tree.id}_${isProt ? 1 : 0}_${getLanguage()}`;
+        this.elCommandPanel.classList.remove('hidden');
+        if (treeSig === this.lastCommandSig) return;
+        this.lastCommandSig = treeSig;
+        this.elCommandPanel.innerHTML = `
+          <div class="cmd-grid">
+            <div class="empty-cmd">${isProt ? t('protectedTreeBadge') : t('protectTreeTip')}</div>
+          </div>
+          <div class="cmd-footer-row">
+            <div class="action-row">
+              <button class="mini-btn ${isProt ? 'active' : ''}" id="cmd-toggle-protect-tree" title="${t('protectTreeTip')}">
+                ${isProt ? t('unprotectTreeBtn') : t('protectTreeBtn')}
+              </button>
+            </div>
+          </div>
+        `;
+        document.getElementById('cmd-toggle-protect-tree')?.addEventListener('click', (ev) => {
+          ev.stopPropagation();
+          const willProtect = !World.isProtectedTree(tree);
+          this.world.enqueueCommand({
+            type: 'toggle_protect_tree',
+            playerId: this.humanPlayerId,
+            entityId: tree.id,
+          });
+          this.pushToast(willProtect ? t('toastTreeProtectedSet') : t('toastTreeProtectedRemoved'), willProtect ? 'good' : 'info');
+          this.lastCommandSig = '';
+          this.renderSelectionAndCommands();
+        });
+        return;
+      }
       this.elCommandPanel.classList.add('hidden');
       this.lastCommandSig = `enemy_${selected[0].owner === 0 ? 'res' : 'foe'}_${getLanguage()}`;
       return;
@@ -1327,9 +1459,17 @@ export class HUDManager {
       bProg: first.isFoundation ? Math.round(first.buildProgress * 100) : -1,
       floors: first.floors ?? 1,
       bLv: first.beaconLevel ?? 0,
+      bSt: first.beaconState ?? ((first.beaconLitTimer ?? 0) > 0 ? 'smoking' : 'idle'),
+      bStP:
+        first.beaconState === 'igniting' || first.beaconState === 'burning' || first.beaconState === 'extinguishing'
+          ? Math.floor((first.beaconStageProgress ?? 0) * 10)
+          : 0,
       bLit: (first.beaconLitTimer ?? 0) > 0 ? 1 : 0,
       gMode: first.gateMode ?? '',
       tfAct: anyTerraforming ? 1 : 0,
+      plantAct: this.input.plantTreeMode ? 1 : 0,
+      hybridAct: this.input.hybridTreeMode ? 1 : 0,
+      shipGarr: units.reduce((sum, u) => sum + u.garrisonedIds.length, 0),
       upTgt: first.upgradeTargetTemplateId ?? '',
       upProg: first.upgradeTargetTemplateId ? Math.floor((first.upgradeProgress ?? 0) * 20) : -1,
       garr: first.garrisonedIds.length,
@@ -1386,13 +1526,28 @@ export class HUDManager {
         const uTpl = TEMPLATES[u.templateId];
         return Boolean(uTpl.gather && !uTpl.isNaval);
       });
+      const hasLoadedShip = units.some((u) => Boolean(TEMPLATES[u.templateId]?.isNaval) && u.garrisonedIds.length > 0);
+      const hasScout = units.some((u) => Boolean(TEMPLATES[u.templateId]?.isScout));
+      const hasHealer = units.some((u) => Boolean(TEMPLATES[u.templateId]?.isHealer));
+      const plantActive = this.input.plantTreeMode;
+      const hybridActive = this.input.hybridTreeMode;
+      const captureAnimalActive = this.input.captureAnimalMode;
       const digActive = this.input.terraformMode === 'dig';
       const raiseActive = this.input.terraformMode === 'raise';
       const levelActive = this.input.terraformMode === 'level';
 
       const isTraderOnly = units.every((u) => TEMPLATES[u.templateId]?.isTrader);
+      const isScoutOnly = units.every((u) => TEMPLATES[u.templateId]?.isScout);
+      const isHealerOnly = units.every((u) => TEMPLATES[u.templateId]?.isHealer);
+      const emptyUnitHint = isTraderOnly
+        ? t('traderHint')
+        : isScoutOnly
+          ? t('scoutExploreTip')
+          : isHealerOnly
+            ? t('doctorHealTip')
+            : t('noBuildChamp');
       this.elCommandPanel.innerHTML = `
-        <div class="cmd-grid">${buildButtons || `<div class="empty-cmd">${isTraderOnly ? t('traderHint') : t('noBuildChamp')}</div>`}</div>
+        <div class="cmd-grid">${buildButtons || `<div class="empty-cmd">${emptyUnitHint}</div>`}</div>
         <div class="cmd-footer-row">
           <div class="stance-row">
             ${stances
@@ -1404,15 +1559,33 @@ export class HUDManager {
           </div>
           <div class="action-row">
             ${
+              hasLoadedShip
+                ? `<button class="mini-btn" id="cmd-disembark-ship" title="${t('disembarkAllBtn')}">${t('disembarkAllBtn')}</button>`
+                : ''
+            }
+            ${
+              hasScout
+                ? `<button class="mini-btn" id="cmd-scout-explore" title="${t('scoutExploreTip')}">${t('scoutExploreBtn')}</button>`
+                : ''
+            }
+            ${
+              hasHealer
+                ? `<button class="mini-btn" id="cmd-doctor-heal" title="${t('doctorHealTip')}">${t('doctorHealBtn')}</button>`
+                : ''
+            }
+            ${
               hasLandWorker
                 ? `<button class="mini-btn" id="cmd-shore-fish" title="${t('shoreFishTip')}">${t('shoreFishBtn')}</button>
+                   <button class="mini-btn ${plantActive ? 'active' : ''}" id="cmd-plant-tree" title="${t('plantTreeTip')}">${t('plantTreeBtn')}</button>
+                   <button class="mini-btn ${hybridActive ? 'active' : ''}" id="cmd-hybrid-tree" title="${t('hybridTreeTip')}">${t('hybridTreeBtn')}</button>
+                   <button class="mini-btn ${captureAnimalActive ? 'active' : ''}" id="cmd-capture-animal" title="${t('captureAnimalTip')}">${t('captureAnimalBtn')}</button>
                    <button class="mini-btn terraform-btn ${digActive ? 'active' : ''}" id="cmd-dig" title="${t('digTip')}">${t('digBtn')}</button>
                    <button class="mini-btn terraform-btn ${raiseActive ? 'active' : ''}" id="cmd-raise" title="${t('raiseTip')}">${t('raiseBtn')}</button>
                    <button class="mini-btn terraform-btn ${levelActive ? 'active' : ''}" id="cmd-level" title="${t('levelTip')}">${t('levelBtn')}</button>
                    ${anyTerraforming ? `<button class="mini-btn danger-btn" id="cmd-cancel-terraform" title="${t('cancelTerraformTip')}">${t('cancelTerraformBtn')}</button>` : ''}`
                 : ''
             }
-            <button class="mini-btn" id="cmd-attack-move" title="${t('attackMoveTip')}">${t('attackMoveBtn')}</button>
+            ${!isScoutOnly && !isHealerOnly ? `<button class="mini-btn" id="cmd-attack-move" title="${t('attackMoveTip')}">${t('attackMoveBtn')}</button>` : ''}
             <button class="mini-btn" id="cmd-garrison" title="${t('garrisonTip')}">${t('garrisonBtn')}</button>
           </div>
         </div>
@@ -1463,6 +1636,98 @@ export class HUDManager {
         });
       });
 
+      document.getElementById('cmd-disembark-ship')?.addEventListener('click', (ev) => {
+        ev.stopPropagation();
+        let anyNearShore = false;
+        let anyBlocked = false;
+        for (const id of this.input.selectedIds) {
+          const ship = this.world.entities.get(id);
+          if (!ship || !ship.alive || ship.owner !== this.humanPlayerId) continue;
+          if (!TEMPLATES[ship.templateId]?.isNaval || ship.garrisonedIds.length === 0) continue;
+          if (!this.world.findShipDisembarkPoint(ship)) {
+            anyBlocked = true;
+            continue;
+          }
+          anyNearShore = true;
+          this.world.enqueueCommand({
+            type: 'ungarrison',
+            playerId: this.humanPlayerId,
+            buildingId: ship.id,
+          });
+        }
+        if (!anyNearShore && anyBlocked) {
+          this.pushToast(t('toastShipNeedShore'), 'warn');
+        }
+        this.lastCommandSig = '';
+        this.renderSelectionAndCommands();
+      });
+      document.getElementById('cmd-plant-tree')?.addEventListener('click', (ev) => {
+        ev.stopPropagation();
+        if (this.input.plantTreeMode) {
+          this.input.cancelPlantTreeMode();
+        } else {
+          this.input.startPlantTreeMode();
+        }
+        this.syncTerraformUI();
+      });
+      document.getElementById('cmd-hybrid-tree')?.addEventListener('click', (ev) => {
+        ev.stopPropagation();
+        if (this.input.hybridTreeMode) {
+          this.input.cancelHybridTreeMode();
+        } else {
+          this.input.startHybridTreeMode();
+        }
+        this.syncTerraformUI();
+      });
+      document.getElementById('cmd-capture-animal')?.addEventListener('click', (ev) => {
+        ev.stopPropagation();
+        if (this.input.captureAnimalMode) {
+          this.input.cancelCaptureAnimalMode();
+        } else {
+          this.input.startCaptureAnimalMode();
+        }
+        this.syncTerraformUI();
+      });
+      document.getElementById('cmd-scout-explore')?.addEventListener('click', (ev) => {
+        ev.stopPropagation();
+        const scoutIds: number[] = [];
+        for (const id of this.input.selectedIds) {
+          const e = this.world.entities.get(id);
+          if (e && e.alive && e.owner === this.humanPlayerId && TEMPLATES[e.templateId]?.isScout) {
+            scoutIds.push(id);
+          }
+        }
+        if (scoutIds.length === 0) return;
+        this.world.enqueueCommand({
+          type: 'explore',
+          playerId: this.humanPlayerId,
+          entityIds: scoutIds,
+        });
+        this.pushToast(t('toastScoutExploring'), 'good');
+      });
+      document.getElementById('cmd-doctor-heal')?.addEventListener('click', (ev) => {
+        ev.stopPropagation();
+        const healers: Entity[] = [];
+        for (const id of this.input.selectedIds) {
+          const e = this.world.entities.get(id);
+          if (e && e.alive && e.owner === this.humanPlayerId && TEMPLATES[e.templateId]?.isHealer) {
+            healers.push(e);
+          }
+        }
+        if (healers.length === 0) return;
+        const wounded = this.world.findNearestWoundedAlly(this.humanPlayerId, healers[0].x, healers[0].z, 120, healers[0].id);
+        if (!wounded) {
+          this.pushToast(t('toastNoWoundedNearby'), 'info');
+          return;
+        }
+        this.world.enqueueCommand({
+          type: 'heal',
+          playerId: this.humanPlayerId,
+          entityIds: healers.map((h) => h.id),
+          targetId: wounded.id,
+        });
+        this.pushToast(t('toastDoctorHealing'), 'good', { x: wounded.x, z: wounded.z });
+      });
       document.getElementById('cmd-shore-fish')?.addEventListener('click', (ev) => {
         ev.stopPropagation();
         const landWorkers: Entity[] = [];
@@ -1709,21 +1974,33 @@ export class HUDManager {
       const maxCap = this.world.getMaxGarrisonCapacity(first);
       const soldiers = this.world.getBeaconGarrisonSoldiers(first);
       const hasSoldiers = soldiers.length > 0;
-      const lit = (first.beaconLitTimer ?? 0) > 0;
+      const bState = first.beaconState ?? ((first.beaconLitTimer ?? 0) > 0 ? 'smoking' : 'idle');
+      const stagePct = Math.round((first.beaconStageProgress ?? 0) * 100);
+      const activeSignal = bState !== 'idle';
+      const statusBadge =
+        bState === 'igniting'
+          ? `${t('beaconStateIgniting')} ${stagePct}%`
+          : bState === 'burning'
+            ? `${t('beaconStateBurning')} ${stagePct}%`
+            : bState === 'smoking'
+              ? `${Math.ceil(first.beaconLitTimer ?? 0)}s`
+              : bState === 'extinguishing'
+                ? `${t('beaconStateExtinguishing')} ${stagePct}%`
+                : `${soldiers.length}/${maxCap}`;
       const igniteBtn = `
-        <button class="cmd-btn unique-btn ${!hasSoldiers ? 'disabled' : ''} ${lit ? 'active' : ''}" id="cmd-ignite-beacon"
+        <button class="cmd-btn unique-btn ${!hasSoldiers ? 'disabled' : ''} ${activeSignal ? 'active' : ''}" id="cmd-ignite-beacon"
           title="${hasSoldiers ? t('igniteBeaconTip') : `${t('disabledReasonPrefix')} ${t('beaconNeedsSoldiers')}`}">
           <span class="cmd-icon">🔥</span>
           <span class="cmd-name">${t('igniteBeaconBtn')}</span>
-          <span class="cmd-cost">${lit ? `${Math.ceil(first.beaconLitTimer!)}s` : `${soldiers.length}/${maxCap}`}</span>
+          <span class="cmd-cost">${statusBadge}</span>
         </button>
       `;
-      const extinguishBtn = lit
+      const extinguishBtn = activeSignal
         ? `
           <button class="cmd-btn tech-btn" id="cmd-extinguish-beacon" title="${t('extinguishBeaconTip')}">
             <span class="cmd-icon">💧</span>
             <span class="cmd-name">${t('extinguishBeaconBtn')}</span>
-            <span class="cmd-cost">${Math.ceil(first.beaconLitTimer!)}s</span>
+            <span class="cmd-cost">${statusBadge}</span>
           </button>
         `
         : '';
@@ -1797,15 +2074,24 @@ export class HUDManager {
           ? `Lv.${first.beaconLevel ?? 1} • 範圍 ${World.getBeaconStats(first.beaconLevel ?? 1).relayRange}m • 右鍵軍隊即可進駐`
           : '';
     const footerHint = tunnelHint || (firstTpl.trains ? t('rallyHint') : '');
+    const setRallyBtn =
+      firstTpl.trains && !first.isFoundation
+        ? `<button class="mini-btn" id="cmd-set-rally" title="${t('setRallyTip')}">${t('setRallyBtn')}</button>`
+        : '';
 
     this.elCommandPanel.innerHTML = `
       <div class="cmd-grid">${trainBtns}${techBtns}${upgradeBtnHtml}${!trainBtns && !techBtns && !upgradeBtnHtml ? `<div class="empty-cmd">${tunnelHint || t('econDefStruct')}</div>` : ''}</div>
       <div class="cmd-footer-row">
         ${gateModeRowHtml || `<span class="rally-hint">${footerHint}</span>`}
-        <div class="action-row">${ungarrisonBtn}${demolishBtn}</div>
+        <div class="action-row">${setRallyBtn}${ungarrisonBtn}${demolishBtn}</div>
       </div>
     `;
     wireDemolish();
+
+    document.getElementById('cmd-set-rally')?.addEventListener('click', (ev) => {
+      ev.stopPropagation();
+      this.input.startRallyTargetMode();
+    });
 
     this.elCommandPanel.querySelectorAll<HTMLButtonElement>('[data-wall-upgrade]').forEach((btn) => {
       btn.addEventListener('click', (ev) => {

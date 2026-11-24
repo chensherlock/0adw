@@ -24,6 +24,8 @@ export interface EntityVisualParts {
   beaconTier3?: THREE.Object3D;
   beaconFireGroup?: THREE.Group;
   beaconSmokeGroup?: THREE.Group;
+  beaconLight?: THREE.PointLight;
+  beaconCoalMesh?: THREE.Mesh;
   floor2Roof?: THREE.Object3D;
   floor3Group?: THREE.Object3D;
   fishGroup?: THREE.Group;
@@ -40,20 +42,17 @@ export interface EntityVisualParts {
 
 const BESPOKE_MODELS = new Set([
   'gymnasium',
-  'dock',
   'stone_wall',
   'stone_gate',
   'beacon_tower',
   'stone_bridge',
   'tunnel_portal',
-  'apartment_house',
   'trader',
   'ancient_ruin_pillar',
   'sea_monster',
   'sea_kraken',
   'lake_nessie',
   'merchant_ship',
-  'warship_trireme',
   'fish_shoal',
   'han_ministry',
   'brit_kennel',
@@ -64,6 +63,9 @@ const BESPOKE_MODELS = new Set([
   'maur_pillar',
   'sele_colony',
   'maur_champion',
+  'tree_bamboo',
+  'tree_hybrid_iron_bamboo',
+  'siege_cannon',
 ]);
 
 const matCache = new Map<string, THREE.MeshStandardMaterial>();
@@ -81,6 +83,109 @@ interface AquaticMonsterMatSet {
 }
 
 const aquaticMonsterMatCache = new Map<string, AquaticMonsterMatSet>();
+
+let realisticFlameTexCache: THREE.CanvasTexture | null = null;
+let realisticEmberTexCache: THREE.CanvasTexture | null = null;
+let realisticSmokeTexCache: THREE.CanvasTexture | null = null;
+
+/** Procedural soft organic roaring flame tongue sprite texture for realistic Beacon fire */
+function getRealisticFlameTexture(): THREE.CanvasTexture {
+  if (realisticFlameTexCache) return realisticFlameTexCache;
+  const size = 128;
+  const c = document.createElement('canvas');
+  c.width = size;
+  c.height = size;
+  const ctx = c.getContext('2d')!;
+  ctx.clearRect(0, 0, size, size);
+
+  // Layered flame teardrop with hot white-yellow core, golden body, & wispy orange-red halo
+  const drawLobe = (cx: number, cy: number, rx: number, ry: number, alpha: number) => {
+    ctx.save();
+    ctx.translate(cx, cy);
+    ctx.scale(1, ry / rx);
+    const g = ctx.createRadialGradient(0, 0, rx * 0.05, 0, 0, rx);
+    g.addColorStop(0.0, `rgba(255, 252, 224, ${alpha})`);
+    g.addColorStop(0.24, `rgba(255, 214, 72, ${alpha * 0.92})`);
+    g.addColorStop(0.55, `rgba(255, 108, 18, ${alpha * 0.66})`);
+    g.addColorStop(0.82, `rgba(195, 34, 6, ${alpha * 0.28})`);
+    g.addColorStop(1.0, 'rgba(120, 12, 0, 0)');
+    ctx.fillStyle = g;
+    ctx.beginPath();
+    ctx.arc(0, 0, rx, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+  };
+
+  drawLobe(64, 82, 42, 48, 0.95);
+  drawLobe(56, 60, 28, 44, 0.82);
+  drawLobe(72, 54, 24, 42, 0.78);
+  drawLobe(64, 38, 18, 34, 0.65);
+
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.needsUpdate = true;
+  realisticFlameTexCache = tex;
+  return tex;
+}
+
+/** Procedural glowing hot ember spark sprite texture */
+function getRealisticEmberTexture(): THREE.CanvasTexture {
+  if (realisticEmberTexCache) return realisticEmberTexCache;
+  const size = 64;
+  const c = document.createElement('canvas');
+  c.width = size;
+  c.height = size;
+  const ctx = c.getContext('2d')!;
+  const g = ctx.createRadialGradient(32, 32, 1, 32, 32, 28);
+  g.addColorStop(0.0, 'rgba(255, 255, 235, 1.0)');
+  g.addColorStop(0.25, 'rgba(255, 195, 70, 0.95)');
+  g.addColorStop(0.6, 'rgba(255, 92, 15, 0.45)');
+  g.addColorStop(1.0, 'rgba(200, 40, 0, 0.0)');
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, size, size);
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.needsUpdate = true;
+  realisticEmberTexCache = tex;
+  return tex;
+}
+
+/** Procedural multi-puff volumetric billowing smoke cloud sprite texture (soft organic edges, zero hard polygons!) */
+function getRealisticSmokePuffTexture(): THREE.CanvasTexture {
+  if (realisticSmokeTexCache) return realisticSmokeTexCache;
+  const size = 128;
+  const c = document.createElement('canvas');
+  c.width = size;
+  c.height = size;
+  const ctx = c.getContext('2d')!;
+  ctx.clearRect(0, 0, size, size);
+
+  const blobs: Array<[number, number, number, number, number]> = [
+    [64, 64, 42, 210, 0.44],
+    [48, 56, 30, 228, 0.36],
+    [80, 58, 31, 195, 0.34],
+    [60, 44, 28, 238, 0.3],
+    [54, 78, 29, 175, 0.35],
+    [76, 76, 27, 165, 0.32],
+    [66, 62, 22, 244, 0.25],
+  ];
+  for (const [bx, by, br, lum, alpha] of blobs) {
+    const g = ctx.createRadialGradient(bx, by, br * 0.08, bx, by, br);
+    g.addColorStop(0.0, `rgba(${lum}, ${lum}, ${Math.min(255, lum + 4)}, ${alpha})`);
+    g.addColorStop(0.55, `rgba(${Math.max(40, lum - 30)}, ${Math.max(40, lum - 30)}, ${Math.max(44, lum - 26)}, ${alpha * 0.62})`);
+    g.addColorStop(1.0, 'rgba(90, 90, 95, 0.0)');
+    ctx.fillStyle = g;
+    ctx.beginPath();
+    ctx.arc(bx, by, br, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.needsUpdate = true;
+  realisticSmokeTexCache = tex;
+  return tex;
+}
 
 /** Generates rich tiled PBR canvas textures (diffuse + bumpMap) for textured aquatic monsters */
 function getAquaticMonsterMaterials(kind: 'dragon' | 'kraken' | 'nessie'): AquaticMonsterMatSet {
@@ -731,8 +836,8 @@ export function createEntityVisual(templateId: string, civId: CivId, teamColor: 
       bodyGroup.add(b1);
       for (let i = 0; i < 6; i++) {
         const ang = (i / 6) * Math.PI * 2;
-        const berry = new THREE.Mesh(new THREE.SphereGeometry(0.11, 5, 5), berryMat);
-        berry.position.set(Math.cos(ang) * 0.65, 0.65 + (i % 2) * 0.22, Math.sin(ang) * 0.65);
+        const berry = new THREE.Mesh(new THREE.SphereGeometry(0.05, 5, 5), berryMat);
+        berry.position.set(Math.cos(ang) * 0.52, 0.55 + (i % 2) * 0.16, Math.sin(ang) * 0.52);
         bodyGroup.add(berry);
       }
       break;
@@ -1020,6 +1125,49 @@ export function createEntityVisual(templateId: string, civId: CivId, teamColor: 
       weaponPivot.position.set(0.26, 1.05, 0.15);
       addCyl(weaponPivot, 0.18, 0.14, 0.25, 6, 0, -0.1, 0.1, getMat(0xc49c62, 0.9, 0));
       bodyGroup.add(weaponPivot);
+      break;
+    }
+
+    case 'scout': {
+      // Nimble unarmed hooded scout with olive traveler cloak & slender walking staff
+      const legs = addCyl(bodyGroup, 0.16, 0.22, 0.65, 6, 0, 0.34, 0, getMat(0x5c4a32, 0.9, 0));
+      addBox(bodyGroup, 0.34, 0.56, 0.24, 0, 0.92, 0, getMat(0x6b6a3a, 0.88, 0));
+      const cloak = addBox(bodyGroup, 0.42, 0.72, 0.14, 0, 0.94, -0.14, teamMat);
+      teamMeshes.push(cloak);
+      const head = new THREE.Mesh(new THREE.SphereGeometry(0.18, 7, 6), skinMat);
+      head.position.set(0, 1.4, 0);
+      bodyGroup.add(head);
+      // Walking staff (unarmed)
+      weaponPivot = new THREE.Group();
+      weaponPivot.position.set(0.24, 0.96, 0.08);
+      addCyl(weaponPivot, 0.03, 0.035, 1.45, 5, 0, -0.08, 0.08, getMat(0x6e4f30, 0.9, 0));
+      bodyGroup.add(weaponPivot);
+      void legs;
+      break;
+    }
+
+    case 'doctor':
+    case 'healer': {
+      // Physician in white linen robe, teal healing mantle, & wooden Asclepius staff
+      addCyl(bodyGroup, 0.2, 0.34, 1.02, 8, 0, 0.52, 0, getMat(0xf5f0e2, 0.85, 0));
+      const mantle = addBox(bodyGroup, 0.4, 0.52, 0.28, 0, 1.06, 0, getMat(0x0f766e, 0.82, 0.05));
+      const sash = addBox(bodyGroup, 0.16, 0.64, 0.3, -0.06, 0.96, 0, teamMat);
+      teamMeshes.push(sash);
+      const head = new THREE.Mesh(new THREE.SphereGeometry(0.19, 7, 6), skinMat);
+      head.position.set(0, 1.46, 0);
+      bodyGroup.add(head);
+      // Healing staff with glowing emerald tip
+      weaponPivot = new THREE.Group();
+      weaponPivot.position.set(0.28, 1.02, 0.1);
+      addCyl(weaponPivot, 0.035, 0.04, 1.5, 6, 0, -0.08, 0.06, getMat(0x785535, 0.9, 0));
+      const orb = new THREE.Mesh(
+        new THREE.SphereGeometry(0.09, 8, 6),
+        new THREE.MeshBasicMaterial({ color: 0x34d399 })
+      );
+      orb.position.set(0, 0.7, 0.06);
+      weaponPivot.add(orb);
+      bodyGroup.add(weaponPivot);
+      void mantle;
       break;
     }
 
@@ -1486,34 +1634,99 @@ export function createEntityVisual(templateId: string, civId: CivId, teamColor: 
       bodyGroup.add(tier3);
       parts.beaconTier3 = tier3;
 
-      // Blazing Beacon Signal Fire (visible whenever beaconLitTimer > 0!)
+      // Photorealistic Multi-Layer Particle Beacon Signal Fire (glowing coals + additive flames + rising embers + dynamic light!)
       const fireGroup = new THREE.Group();
-      fireGroup.position.set(0, 5.1, 0);
-      const flameOuterMat = new THREE.MeshBasicMaterial({ color: 0xff5a00, transparent: true, opacity: 0.92 });
-      const flameMidMat = new THREE.MeshBasicMaterial({ color: 0xffa600, transparent: true, opacity: 0.95 });
-      const flameCoreMat = new THREE.MeshBasicMaterial({ color: 0xfff3b0, transparent: true, opacity: 0.98 });
-      const cone1 = new THREE.Mesh(new THREE.ConeGeometry(0.75, 2.1, 7), flameOuterMat);
-      cone1.position.y = 0.95;
-      const cone2 = new THREE.Mesh(new THREE.ConeGeometry(0.52, 1.75, 7), flameMidMat);
-      cone2.position.set(0.14, 0.85, -0.08);
-      const cone3 = new THREE.Mesh(new THREE.ConeGeometry(0.32, 1.25, 6), flameCoreMat);
-      cone3.position.set(-0.08, 0.68, 0.1);
-      fireGroup.add(cone1, cone2, cone3);
+      fireGroup.position.set(0, 5.05, 0);
+      const flameTex = getRealisticFlameTexture();
+      const emberTex = getRealisticEmberTexture();
+
+      // Glowing bed of hot burning charcoal/embers inside the brazier
+      const coalMat = new THREE.MeshStandardMaterial({
+        color: 0x3b1206,
+        emissive: 0xff4500,
+        emissiveIntensity: 2.2,
+        roughness: 0.85,
+      });
+      const coalBed = new THREE.Mesh(new THREE.CylinderGeometry(0.58, 0.68, 0.24, 10), coalMat);
+      coalBed.position.y = 0.04;
+      fireGroup.add(coalBed);
+      parts.beaconCoalMesh = coalBed;
+
+      // Dynamic warm flickering firelight illuminating the stone parapet & battlements
+      const beaconLight = new THREE.PointLight(0xff7a1a, 0, 18, 1.6);
+      beaconLight.position.set(0, 1.25, 0);
+      fireGroup.add(beaconLight);
+      parts.beaconLight = beaconLight;
+
+      // 10 layered swirling additive flame tongue sprites (hot core + roaring outer tongues)
+      for (let fi = 0; fi < 10; fi++) {
+        const isCore = fi < 4;
+        const fMat = new THREE.SpriteMaterial({
+          map: flameTex,
+          color: isCore ? 0xfff0b8 : fi % 2 === 0 ? 0xff9224 : 0xff5a12,
+          transparent: true,
+          opacity: isCore ? 0.94 : 0.82,
+          blending: THREE.AdditiveBlending,
+          depthWrite: false,
+        });
+        const flameSprite = new THREE.Sprite(fMat);
+        flameSprite.userData = {
+          kind: 'flame',
+          idx: fi,
+          isCore,
+          angle: (fi / 10) * Math.PI * 2,
+          radius: isCore ? 0.14 : 0.34,
+          phase: fi * 0.37,
+        };
+        flameSprite.position.set(0, 0.8, 0);
+        flameSprite.scale.set(isCore ? 1.15 : 1.75, isCore ? 1.85 : 2.65, 1);
+        fireGroup.add(flameSprite);
+      }
+
+      // 12 rising glowing ember sparks spiraling upward above the blaze
+      for (let ei = 0; ei < 12; ei++) {
+        const eMat = new THREE.SpriteMaterial({
+          map: emberTex,
+          color: ei % 2 === 0 ? 0xffd26a : 0xff7b22,
+          transparent: true,
+          opacity: 0.9,
+          blending: THREE.AdditiveBlending,
+          depthWrite: false,
+        });
+        const ember = new THREE.Sprite(eMat);
+        ember.userData = {
+          kind: 'ember',
+          idx: ei,
+          phase: ei / 12,
+          swirl: (ei % 2 === 0 ? 1 : -1) * (1.2 + (ei % 3) * 0.45),
+        };
+        ember.scale.set(0.24, 0.24, 1);
+        fireGroup.add(ember);
+      }
+
       fireGroup.visible = false;
       bodyGroup.add(fireGroup);
       parts.beaconFireGroup = fireGroup;
 
-      // Towering Wolf-Smoke Column (狼煙) visible from across the map when lit!
+      // Realistic Towering Volumetric Billowing Wolf-Smoke Plume (狼煙) — 18 soft wind-swept cloud puffs!
       const smokeGroup = new THREE.Group();
       smokeGroup.position.set(0, 5.4, 0);
-      for (let si = 0; si < 7; si++) {
-        const sMat = new THREE.MeshBasicMaterial({
-          color: si < 2 ? 0x52525b : 0x27272a,
+      const smokeTex = getRealisticSmokePuffTexture();
+      for (let si = 0; si < 18; si++) {
+        const sMat = new THREE.SpriteMaterial({
+          map: smokeTex,
+          color: 0x3f3f46,
           transparent: true,
-          opacity: 0.68 - si * 0.075,
+          opacity: 0.55,
+          depthWrite: false,
         });
-        const puff = new THREE.Mesh(new THREE.DodecahedronGeometry(0.62 + si * 0.24, 0), sMat);
-        puff.position.set(0, si * 1.95, 0);
+        const puff = new THREE.Sprite(sMat);
+        puff.userData = {
+          phase: si / 18,
+          driftSeed: si * 1.73,
+          rotDir: si % 2 === 0 ? 1 : -1,
+        };
+        puff.scale.set(1.6, 1.6, 1);
         smokeGroup.add(puff);
       }
       smokeGroup.visible = false;
@@ -1692,47 +1905,104 @@ export function createEntityVisual(templateId: string, civId: CivId, teamColor: 
       break;
     }
 
-    case 'tree_bamboo': {
-      // Slender segmented bamboo grove fallback with crisp pale nodal rings & feathery narrow lanceolate leaf blades
-      const stalkMat = getMat(0x6da842, 0.52, 0.04);
-      const nodeRingMat = getMat(0xcbd59a, 0.68, 0.02);
-      const leafBladeMat = new THREE.MeshStandardMaterial({
-        color: 0x4f9130,
-        roughness: 0.78,
-        side: THREE.DoubleSide,
-      });
+    case 'tree_bamboo':
+    case 'tree_hybrid_iron_bamboo': {
+      // Unmistakable Asian Bamboo Grove (竹林): tall slender segmented green culms with crisp pale nodal rings
+      // & light feathery 0 A.D. lanceolate bamboo leaf sprays on the upper stalks (leaving lower culms clearly visible!)
+      const isIron = templateId === 'tree_hybrid_iron_bamboo';
+      const stalkMatA = getMat(isIron ? 0x2d8a68 : 0x6ea838, 0.42, 0.06);
+      const stalkMatB = getMat(isIron ? 0x3b9d74 : 0x5c9430, 0.46, 0.06);
+      const nodeRingMat = getMat(isIron ? 0xa7f3d0 : 0xdbe2a8, 0.62, 0.02);
+      const leafKey = isIron ? 'bamboo_leaves_iron' : 'bamboo_leaves_std';
+      let leafSprayMat = matCache.get(leafKey);
+      if (!leafSprayMat) {
+        const leafMap = zeroADAssets.loadTexture(`${ASSET_BASE}/textures/bamboo_leaves.png`, true);
+        leafSprayMat = new THREE.MeshStandardMaterial({
+          map: leafMap,
+          color: isIron ? 0xa7f3d0 : 0xdff5c6,
+          roughness: 0.78,
+          metalness: 0.02,
+          alphaTest: 0.36,
+          transparent: false,
+          side: THREE.DoubleSide,
+        });
+        matCache.set(leafKey, leafSprayMat);
+      }
 
-      const stalks: Array<[number, number, number, number, number]> = [
-        [0, 0, 5.4, 0.04, 0.03],
-        [-0.28, 0.2, 4.9, -0.07, 0.05],
-        [0.3, -0.18, 5.1, 0.06, -0.05],
-        [-0.22, -0.3, 4.3, -0.05, -0.07],
-        [0.24, 0.28, 4.6, 0.07, 0.06],
-        [0.05, -0.4, 3.9, 0.02, -0.08],
-        [-0.4, -0.04, 4.1, -0.08, 0.02],
-        [0.42, 0.08, 3.8, 0.09, 0.03],
-        [-0.1, 0.38, 4.2, -0.03, 0.08],
+      // 15 slender vertical & gracefully arching culms tightly clustered like a real bamboo grove
+      const heightBoost = isIron ? 1.16 : 1.0;
+      const stalks: Array<[number, number, number, number, number, number]> = [
+        // [x, z, height, baseRad, leanX, leanZ]
+        [0.0, 0.0, 6.4, 0.056, 0.03, 0.02],
+        [-0.24, 0.16, 6.0, 0.052, -0.05, 0.04],
+        [0.25, -0.14, 6.1, 0.053, 0.05, -0.04],
+        [-0.18, -0.26, 5.5, 0.048, -0.04, -0.06],
+        [0.22, 0.24, 5.7, 0.05, 0.06, 0.05],
+        [-0.44, -0.04, 5.1, 0.046, -0.09, 0.02],
+        [0.44, 0.06, 5.2, 0.046, 0.09, 0.03],
+        [0.04, -0.44, 4.9, 0.044, 0.02, -0.09],
+        [-0.08, 0.42, 5.0, 0.045, -0.03, 0.08],
+        [-0.36, 0.34, 4.6, 0.042, -0.08, 0.07],
+        [0.36, -0.34, 4.7, 0.042, 0.08, -0.07],
+        [-0.34, -0.36, 4.4, 0.04, -0.07, -0.08],
+        [0.34, 0.36, 4.5, 0.04, 0.07, 0.08],
+        [-0.54, 0.18, 4.1, 0.038, -0.11, 0.04],
+        [0.52, -0.18, 4.2, 0.038, 0.11, -0.04],
       ];
-      for (const [bx, bz, bh, tiltX, tiltZ] of stalks) {
-        const culmGroup = new THREE.Group();
-        culmGroup.position.set(bx, 0, bz);
-        culmGroup.rotation.set(tiltX, 0, tiltZ);
-        addCyl(culmGroup, 0.038, 0.058, bh, 7, 0, bh * 0.5, 0, stalkMat);
-        // Pale cream bamboo node rings every ~0.55m
-        for (let ny = 0.55; ny < bh - 0.35; ny += 0.55) {
-          const r = 0.06 - (ny / bh) * 0.018;
-          addCyl(culmGroup, r, r, 0.032, 7, 0, ny, 0, nodeRingMat, false);
+
+      const sprayGeom = new THREE.PlaneGeometry(1.05, 1.05);
+      for (let sIdx = 0; sIdx < stalks.length; sIdx++) {
+        const [bx, bz, rawH, baseR, leanX, leanZ] = stalks[sIdx];
+        const bh = rawH * heightBoost;
+        const sMat = sIdx % 2 === 0 ? stalkMatA : stalkMatB;
+
+        // Build each culm in 3 gracefully tapering & gently curving segments
+        const segs = 3;
+        const segH = bh / segs;
+        let curX = bx;
+        let curY = 0;
+        let curZ = bz;
+        for (let seg = 0; seg < segs; seg++) {
+          const bendMult = 1 + seg * 0.85;
+          const tX = leanX * bendMult;
+          const tZ = leanZ * bendMult;
+          const rBot = baseR * (1 - (seg / segs) * 0.38);
+          const rTop = baseR * (1 - ((seg + 1) / segs) * 0.44);
+
+          const segGroup = new THREE.Group();
+          segGroup.position.set(curX, curY, curZ);
+          segGroup.rotation.set(tZ, 0, -tX);
+
+          addCyl(segGroup, rTop, rBot, segH + 0.03, 7, 0, segH * 0.5, 0, sMat);
+
+          // Crisp pale bamboo node rings (竹節) every ~0.46m along the culm
+          for (let ny = 0.24; ny < segH - 0.05; ny += 0.46) {
+            const frac = ny / segH;
+            const nr = (rBot * (1 - frac) + rTop * frac) * 1.16;
+            addCyl(segGroup, nr, nr, 0.036, 7, 0, ny, 0, nodeRingMat, false);
+          }
+
+          // Light feathery lanceolate bamboo leaf sprays ONLY on upper segments (seg >= 1) so slender green stalks dominate!
+          if (seg >= 1) {
+            const spraysHere = seg === 2 ? 3 : 2;
+            for (let li = 0; li < spraysHere; li++) {
+              const ly = segH * (0.28 + (li / spraysHere) * 0.65);
+              const ang = sIdx * 1.7 + seg * 2.1 + li * ((Math.PI * 2) / spraysHere);
+              const spray = new THREE.Mesh(sprayGeom, leafSprayMat);
+              const sc = seg === 2 ? 0.72 + (li % 2) * 0.18 : 0.58;
+              spray.scale.setScalar(sc);
+              spray.position.set(Math.cos(ang) * 0.34 * sc, ly, Math.sin(ang) * 0.34 * sc);
+              spray.rotation.set(0.32, -ang + Math.PI * 0.5, 0.22);
+              spray.castShadow = true;
+              segGroup.add(spray);
+            }
+          }
+
+          bodyGroup.add(segGroup);
+          curX += Math.sin(tX) * segH;
+          curY += Math.cos(Math.hypot(tX, tZ)) * segH;
+          curZ += Math.sin(tZ) * segH;
         }
-        // Delicate willow-like narrow bamboo leaf sprays fanning from upper nodes
-        for (let lIdx = 0; lIdx < 6; lIdx++) {
-          const ly = bh * (0.58 + (lIdx / 6) * 0.4);
-          const ang = lIdx * 1.15 + bx * 5;
-          const blade = new THREE.Mesh(new THREE.PlaneGeometry(0.14, 0.72), leafBladeMat);
-          blade.position.set(Math.cos(ang) * 0.34, ly, Math.sin(ang) * 0.34);
-          blade.rotation.set(0.55, -ang, 0.25);
-          culmGroup.add(blade);
-        }
-        bodyGroup.add(culmGroup);
       }
       break;
     }
@@ -1954,139 +2224,129 @@ export function createEntityVisual(templateId: string, civId: CivId, teamColor: 
     }
 
     case 'sea_monster': {
-      // Textured Winged Ancient Sea Dragon (海龍) emerging from churning ocean waves!
+      // Authentic Prehistoric Sea Plesiosaur (深海蛇頸龍): extra-long graceful S-curved tapering neck,
+      // sleek reptilian plesiosaur head, broad streamlined barrel torso, 4 huge wing-like flippers & tapered tail!
       const mats = getAquaticMonsterMaterials('dragon');
-      const fangMat = getMat(0xf8fafc, 0.35, 0.1);
       const coils: THREE.Object3D[] = [];
 
-      // Rising S-curved scaled sea dragon neck & horned draconic head
+      // Graceful extra-long slender S-curved Plesiosaur neck rising high above the water
       const neckGroup = new THREE.Group();
       const neckCurve = new THREE.CatmullRomCurve3([
-        new THREE.Vector3(0, -0.4, 0.25),
-        new THREE.Vector3(0, 0.85, 0.52),
-        new THREE.Vector3(0, 1.9, 0.2),
-        new THREE.Vector3(0, 2.55, 0.88),
+        new THREE.Vector3(0, 0.05, 0.72),
+        new THREE.Vector3(0, 1.05, 1.38),
+        new THREE.Vector3(0, 2.25, 1.05),
+        new THREE.Vector3(0, 3.22, 1.48),
       ]);
-      const neckMesh = new THREE.Mesh(new THREE.TubeGeometry(neckCurve, 16, 0.42, 10, false), mats.primary);
-      neckMesh.castShadow = true;
-      neckGroup.add(neckMesh);
-
-      // Ribbed golden-ivory underbelly throat crest
-      const bellyCurve = new THREE.CatmullRomCurve3([
-        new THREE.Vector3(0, -0.2, 0.62),
-        new THREE.Vector3(0, 0.88, 0.84),
-        new THREE.Vector3(0, 1.82, 0.55),
-        new THREE.Vector3(0, 2.24, 1.08),
+      // Tapered segments along the long neck so base is thick & neck narrows smoothly toward the small head
+      const neckPts = neckCurve.getPoints(12);
+      for (let ni = 0; ni < neckPts.length - 1; ni++) {
+        const a = neckPts[ni];
+        const b = neckPts[ni + 1];
+        const t0 = ni / (neckPts.length - 1);
+        const t1 = (ni + 1) / (neckPts.length - 1);
+        const r0 = 0.38 * (1 - t0 * 0.56);
+        const r1 = 0.38 * (1 - t1 * 0.56);
+        const segLen = a.distanceTo(b) + 0.06;
+        const seg = new THREE.Mesh(new THREE.CylinderGeometry(r1, r0, segLen, 10), mats.primary);
+        seg.position.copy(a).lerp(b, 0.5);
+        seg.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), new THREE.Vector3().subVectors(b, a).normalize());
+        seg.castShadow = true;
+        neckGroup.add(seg);
+      }
+      // Smooth pale cream under-throat stripe
+      const throatCurve = new THREE.CatmullRomCurve3([
+        new THREE.Vector3(0, 0.08, 0.98),
+        new THREE.Vector3(0, 1.06, 1.62),
+        new THREE.Vector3(0, 2.18, 1.24),
+        new THREE.Vector3(0, 3.05, 1.56),
       ]);
-      const bellyMesh = new THREE.Mesh(new THREE.TubeGeometry(bellyCurve, 12, 0.2, 8, false), mats.secondary);
-      neckGroup.add(bellyMesh);
+      const throatMesh = new THREE.Mesh(new THREE.TubeGeometry(throatCurve, 12, 0.12, 7, false), mats.secondary);
+      neckGroup.add(throatMesh);
 
-      // Sculpted dragon head, elongated snout, jaw, whiskers, swept horns & glowing amber eyes
-      const sHead = new THREE.Mesh(new THREE.SphereGeometry(0.46, 12, 10), mats.primary);
-      sHead.scale.set(0.88, 0.78, 1.55);
-      sHead.position.set(0, 2.6, 1.24);
+      // Sleek, streamlined small Plesiosaur head & slender snout (NO dragon horns/whiskers!)
+      const sHead = new THREE.Mesh(new THREE.SphereGeometry(0.27, 10, 8), mats.primary);
+      sHead.scale.set(0.84, 0.68, 1.72);
+      sHead.position.set(0, 3.28, 1.76);
       sHead.castShadow = true;
       neckGroup.add(sHead);
-      const snout = new THREE.Mesh(new THREE.CapsuleGeometry(0.24, 0.58, 6, 8), mats.primary);
+      const snout = new THREE.Mesh(new THREE.CapsuleGeometry(0.12, 0.42, 5, 8), mats.primary);
       snout.rotation.x = Math.PI * 0.52;
-      snout.position.set(0, 2.54, 1.72);
+      snout.position.set(0, 3.22, 2.18);
       neckGroup.add(snout);
-      const jaw = new THREE.Mesh(new THREE.CapsuleGeometry(0.2, 0.48, 5, 7), mats.secondary);
-      jaw.rotation.x = Math.PI * 0.58;
-      jaw.position.set(0, 2.25, 1.56);
+      const jaw = new THREE.Mesh(new THREE.CapsuleGeometry(0.1, 0.36, 5, 7), mats.secondary);
+      jaw.rotation.x = Math.PI * 0.55;
+      jaw.position.set(0, 3.06, 2.08);
       neckGroup.add(jaw);
 
-      for (const sx of [-0.22, 0.22]) {
-        const eye = new THREE.Mesh(new THREE.SphereGeometry(0.095, 8, 6), mats.eye);
-        eye.position.set(sx * 1.48, 2.74, 1.44);
+      for (const sx of [-0.17, 0.17]) {
+        const eye = new THREE.Mesh(new THREE.SphereGeometry(0.06, 8, 6), mats.eye);
+        eye.position.set(sx, 3.35, 1.92);
         neckGroup.add(eye);
-        // Swept stag-like dragon horns
-        const horn = new THREE.Mesh(new THREE.ConeGeometry(0.08, 0.85, 6), mats.secondary);
-        horn.position.set(sx * 1.15, 3.08, 0.88);
-        horn.rotation.set(-0.68, 0, sx > 0 ? -0.32 : 0.32);
-        neckGroup.add(horn);
-        // Flowing draconic whiskers
-        const whisker = new THREE.Mesh(new THREE.ConeGeometry(0.03, 0.65, 5), mats.accent);
-        whisker.position.set(sx * 1.25, 2.38, 1.88);
-        whisker.rotation.set(0.45, 0, sx > 0 ? -1.15 : 1.15);
-        neckGroup.add(whisker);
-        // White fangs
-        const fang = new THREE.Mesh(new THREE.ConeGeometry(0.035, 0.2, 5), fangMat);
-        fang.rotation.x = Math.PI;
-        fang.position.set(sx * 0.72, 2.38, 1.88);
-        neckGroup.add(fang);
-      }
-      // Jagged dorsal crest spines down the sea dragon neck
-      for (let sp = 0; sp < 6; sp++) {
-        const spine = new THREE.Mesh(new THREE.ConeGeometry(0.09, 0.48, 4), mats.accent);
-        spine.position.set(0, 0.65 + sp * 0.38, -0.15 + Math.sin(sp * 0.55) * 0.16);
-        spine.rotation.x = -0.82;
-        neckGroup.add(spine);
       }
       bodyGroup.add(neckGroup);
       coils.push(neckGroup);
 
-      // Two breaching scaled dragon body coils arching through the waves + flared tail fin!
-      for (const [cz, ch, cr] of [[-0.95, 1.02, 0.4], [-2.2, 0.74, 0.28]] as const) {
-        const archCurve = new THREE.CatmullRomCurve3([
-          new THREE.Vector3(0, -0.38, cz + 0.62),
-          new THREE.Vector3(0, ch, cz),
-          new THREE.Vector3(0, -0.38, cz - 0.62),
-        ]);
-        const arch = new THREE.Mesh(new THREE.TubeGeometry(archCurve, 12, cr, 9, false), mats.primary);
-        arch.castShadow = true;
-        // Dorsal ridge fin along each breaching coil
-        const ridge = new THREE.Mesh(new THREE.ConeGeometry(0.11, 0.44, 4), mats.accent);
-        ridge.position.set(0, ch + cr * 0.85, cz);
-        ridge.rotation.x = -0.45;
-        const coilGroup = new THREE.Group();
-        coilGroup.add(arch, ridge);
-        bodyGroup.add(coilGroup);
-        coils.push(coilGroup);
+      // Broad, smooth, turtle-like barrel Plesiosaur body rising cleanly from the waves
+      const torsoGroup = new THREE.Group();
+      const torso = new THREE.Mesh(new THREE.SphereGeometry(1.18, 16, 12), mats.primary);
+      torso.scale.set(1.06, 0.62, 1.52);
+      torso.position.set(0, 0.22, -0.35);
+      torso.castShadow = true;
+      torsoGroup.add(torso);
+      const underBelly = new THREE.Mesh(new THREE.SphereGeometry(1.02, 12, 8), mats.secondary);
+      underBelly.scale.set(0.95, 0.42, 1.38);
+      underBelly.position.set(0, -0.05, -0.35);
+      torsoGroup.add(underBelly);
+      bodyGroup.add(torsoGroup);
+      coils.push(torsoGroup);
+
+      // 4 iconic large wing-like swimming Plesiosaur paddle flippers (2 front, 2 rear)!
+      for (const [fx, fz, fLen, fWid] of [
+        [-1.08, 0.32, 1.85, 0.62],
+        [1.08, 0.32, 1.85, 0.62],
+        [-0.95, -1.15, 1.58, 0.54],
+        [0.95, -1.15, 1.58, 0.54],
+      ] as const) {
+        const side = fx > 0 ? 1 : -1;
+        const flipGroup = new THREE.Group();
+        flipGroup.position.set(fx, 0.08, fz);
+        const flipper = new THREE.Mesh(new THREE.SphereGeometry(0.55, 10, 7), mats.primary);
+        flipper.scale.set(fLen, 0.15, fWid);
+        flipper.position.set(side * (fLen * 0.44), -0.04, -0.18);
+        flipper.rotation.set(0.08, side * -0.42, side * -0.12);
+        flipper.castShadow = true;
+        flipGroup.add(flipper);
+        bodyGroup.add(flipGroup);
+        coils.push(flipGroup);
       }
 
-      // Winged Sea-Dragon pectoral fin-wings & forked tail fin!
-      for (const side of [-1, 1]) {
-        const wingGroup = new THREE.Group();
-        wingGroup.position.set(side * 0.42, 0.75, 0.1);
-        const wingMembrane = new THREE.Mesh(new THREE.CircleGeometry(1.18, 6, 0, Math.PI * 0.85), mats.accent);
-        wingMembrane.scale.set(1.25, 0.75, 1);
-        wingMembrane.rotation.set(-0.35, side > 0 ? 0.35 : Math.PI - 0.35, side * -0.4);
-        wingMembrane.position.set(side * 0.65, 0.28, -0.25);
-        wingMembrane.castShadow = true;
-        wingGroup.add(wingMembrane);
-        const wingSpar = new THREE.Mesh(new THREE.CylinderGeometry(0.04, 0.075, 1.45, 6), mats.primary);
-        wingSpar.rotation.z = side * -1.15;
-        wingSpar.position.set(side * 0.58, 0.35, -0.08);
-        wingGroup.add(wingSpar);
-        bodyGroup.add(wingGroup);
-        coils.push(wingGroup);
-      }
-
-      // Sweeping forked dragon tail rising behind last coil
+      // Smoothly tapered swimming Plesiosaur tail trailing behind the body
       const tailGroup = new THREE.Group();
-      tailGroup.position.set(0, 0.1, -2.95);
-      const tailStem = new THREE.Mesh(new THREE.ConeGeometry(0.18, 1.35, 7), mats.primary);
-      tailStem.position.set(0, 0.55, -0.22);
-      tailStem.rotation.x = -0.42;
-      const tailFin = new THREE.Mesh(new THREE.CircleGeometry(0.62, 5), mats.accent);
-      tailFin.position.set(0, 1.15, -0.52);
-      tailFin.rotation.y = Math.PI * 0.5;
-      tailGroup.add(tailStem, tailFin);
+      const tailCurve = new THREE.CatmullRomCurve3([
+        new THREE.Vector3(0, 0.12, -1.75),
+        new THREE.Vector3(0, 0.28, -2.55),
+        new THREE.Vector3(0, 0.04, -3.45),
+      ]);
+      const tailMesh = new THREE.Mesh(new THREE.TubeGeometry(tailCurve, 10, 0.18, 8, false), mats.primary);
+      tailGroup.add(tailMesh);
+      const tailTip = new THREE.Mesh(new THREE.ConeGeometry(0.14, 0.95, 7), mats.primary);
+      tailTip.position.set(0, 0.04, -3.85);
+      tailTip.rotation.x = -Math.PI * 0.5;
+      tailGroup.add(tailTip);
       bodyGroup.add(tailGroup);
       coils.push(tailGroup);
 
       parts.seaMonsterCoils = coils;
 
-      // Churning white sea-foam vortex rings around the Sea Dragon
+      // Concentric water wake ripples around the swimming Plesiosaur
       const rippleMeshes: THREE.Mesh[] = [];
       for (let r = 0; r < 2; r++) {
-        const ringGeom = new THREE.RingGeometry(1.35 + r * 0.65, 1.62 + r * 0.72, 28);
+        const ringGeom = new THREE.RingGeometry(1.42 + r * 0.68, 1.66 + r * 0.72, 28);
         ringGeom.rotateX(-Math.PI / 2);
         const ringMat = new THREE.MeshBasicMaterial({
           color: 0xdcfce7,
           transparent: true,
-          opacity: 0.56,
+          opacity: 0.52,
           side: THREE.DoubleSide,
           depthWrite: false,
         });
@@ -2356,6 +2616,220 @@ export function createEntityVisual(templateId: string, civId: CivId, teamColor: 
       break;
     }
 
+    case 'tree_cedar': {
+      // Majestic Lebanon Cedar (黎巴嫩雪松) — stout reddish-brown trunk + wide flat-tiered dark evergreen boughs!
+      const barkMat = getMat(0x5c3d28, 0.94, 0.02);
+      const cedarLeaf = getMat(0x214a32, 0.88, 0.02);
+      const cedarTip = getMat(0x2d6140, 0.86, 0.02);
+      addCyl(bodyGroup, 0.22, 0.36, 3.6, 8, 0, 1.8, 0, barkMat);
+      for (const [ty, rad, h, mat] of [
+        [2.3, 1.75, 0.58, cedarLeaf],
+        [3.15, 1.5, 0.54, cedarTip],
+        [3.95, 1.15, 0.48, cedarLeaf],
+        [4.55, 0.72, 0.42, cedarTip],
+      ] as const) {
+        const tier = new THREE.Mesh(new THREE.CylinderGeometry(rad * 0.72, rad, h, 9), mat);
+        tier.position.set(0, ty, 0);
+        tier.castShadow = true;
+        bodyGroup.add(tier);
+      }
+      break;
+    }
+
+    case 'tree_willow': {
+      // Graceful Weeping Willow (河岸垂柳) — pale furrowed trunk + cascading emerald drooping frond curtains!
+      const barkMat = getMat(0x6e5d4a, 0.92, 0.02);
+      const willowLeaf = getMat(0x5b9a47, 0.86, 0.02);
+      const willowDrape = getMat(0x73b558, 0.88, 0.02);
+      addCyl(bodyGroup, 0.18, 0.3, 2.35, 8, 0, 1.18, 0, barkMat);
+      const crown = new THREE.Mesh(new THREE.SphereGeometry(1.18, 10, 8), willowLeaf);
+      crown.scale.set(1.15, 0.85, 1.15);
+      crown.position.set(0, 2.85, 0);
+      crown.castShadow = true;
+      bodyGroup.add(crown);
+      // 8 drooping weeping willow curtains around the crown
+      for (let wi = 0; wi < 8; wi++) {
+        const ang = (wi / 8) * Math.PI * 2;
+        const drape = new THREE.Mesh(new THREE.ConeGeometry(0.32, 2.15, 6), willowDrape);
+        drape.position.set(Math.cos(ang) * 0.92, 1.85, Math.sin(ang) * 0.92);
+        drape.rotation.z = Math.cos(ang) * 0.14;
+        drape.rotation.x = -Math.sin(ang) * 0.14;
+        drape.castShadow = true;
+        bodyGroup.add(drape);
+      }
+      break;
+    }
+
+    case 'tree_apple':
+    case 'tree_orange':
+    case 'tree_fig': {
+      // Sunlit Fruit Orchard Tree (蘋果樹 / 柑橘樹 / 無花果樹) — lush leafy crown heavily laden with bright harvestable fruit!
+      const isApple = templateId === 'tree_apple';
+      const isOrange = templateId === 'tree_orange';
+      const barkMat = getMat(isApple ? 0x6b4428 : isOrange ? 0x5c3e26 : 0x7a6e63, 0.92, 0.02);
+      const leafMat = getMat(isApple ? 0x3f8c35 : isOrange ? 0x266b32 : 0x3b6e3c, 0.85, 0.02);
+      const leafLight = getMat(isApple ? 0x52a842 : isOrange ? 0x35823d : 0x4c8248, 0.85, 0.02);
+      const fruitMat = new THREE.MeshStandardMaterial({
+        color: isApple ? 0xdc2626 : isOrange ? 0xf97316 : 0x7e22ce,
+        emissive: isApple ? 0x7f1d1d : isOrange ? 0x9a3412 : 0x3b0764,
+        emissiveIntensity: 0.25,
+        roughness: 0.32,
+        metalness: 0.05,
+      });
+
+      addCyl(bodyGroup, 0.16, 0.26, 2.1, 8, 0, 1.05, 0, barkMat);
+      // Multi-lobe orchard foliage canopy
+      for (const [cx, cy, cz, cr, m] of [
+        [0, 2.55, 0, 1.08, leafMat],
+        [0.62, 2.28, 0.42, 0.72, leafLight],
+        [-0.62, 2.32, 0.35, 0.74, leafMat],
+        [0.25, 2.3, -0.64, 0.72, leafLight],
+        [-0.38, 2.48, -0.52, 0.68, leafMat],
+      ] as const) {
+        const puff = new THREE.Mesh(new THREE.DodecahedronGeometry(cr, 1), m);
+        puff.position.set(cx, cy, cz);
+        puff.castShadow = true;
+        bodyGroup.add(puff);
+      }
+      // 14 plump visible fruits clustered around the outer foliage so players immediately recognize Fruit Trees!
+      const fruitGeom = new THREE.SphereGeometry(isApple || isOrange ? 0.14 : 0.13, 7, 6);
+      for (let fi = 0; fi < 14; fi++) {
+        const ang = fi * 2.39996;
+        const elev = 1.95 + (fi % 4) * 0.34;
+        const rad = 0.88 + (fi % 3) * 0.16;
+        const fruit = new THREE.Mesh(fruitGeom, fruitMat);
+        fruit.position.set(Math.cos(ang) * rad, elev, Math.sin(ang) * rad);
+        bodyGroup.add(fruit);
+      }
+      break;
+    }
+
+    case 'tree_date_palm': {
+      // Fruiting Oasis Date Palm (結果棗椰樹) — slender ringed curved palm + arching fronds + hanging golden date clusters!
+      const trunkMat = getMat(0x8c6d46, 0.94, 0.02);
+      const frondMat = getMat(0x4a8f3b, 0.86, 0.02);
+      const dateMat = new THREE.MeshStandardMaterial({
+        color: 0xd97706,
+        emissive: 0x78350f,
+        emissiveIntensity: 0.25,
+        roughness: 0.38,
+      });
+      // Gently curved segmented palm trunk
+      const palmCurve = new THREE.CatmullRomCurve3([
+        new THREE.Vector3(0, 0, 0),
+        new THREE.Vector3(0.18, 1.4, 0.08),
+        new THREE.Vector3(0.32, 2.9, 0.12),
+        new THREE.Vector3(0.24, 4.1, 0.06),
+      ]);
+      const trunk = new THREE.Mesh(new THREE.TubeGeometry(palmCurve, 10, 0.16, 7, false), trunkMat);
+      trunk.castShadow = true;
+      bodyGroup.add(trunk);
+      // 8 sweeping palm fronds
+      for (let fi = 0; fi < 8; fi++) {
+        const ang = (fi / 8) * Math.PI * 2;
+        const frond = new THREE.Mesh(new THREE.ConeGeometry(0.32, 2.1, 5), frondMat);
+        frond.scale.set(1.0, 1.0, 0.28);
+        frond.position.set(0.24 + Math.cos(ang) * 0.92, 4.02, 0.06 + Math.sin(ang) * 0.92);
+        frond.rotation.set(0, -ang, -Math.PI * 0.42);
+        frond.castShadow = true;
+        bodyGroup.add(frond);
+      }
+      // 4 hanging golden date fruit clusters right beneath the palm crown!
+      for (let di = 0; di < 4; di++) {
+        const ang = (di / 4) * Math.PI * 2 + 0.4;
+        const cluster = new THREE.Mesh(new THREE.SphereGeometry(0.24, 7, 6), dateMat);
+        cluster.scale.set(0.85, 1.35, 0.85);
+        cluster.position.set(0.24 + Math.cos(ang) * 0.42, 3.62, 0.06 + Math.sin(ang) * 0.42);
+        bodyGroup.add(cluster);
+      }
+      break;
+    }
+
+    case 'treasure_chest':
+    case 'treasure_amphora':
+    case 'treasure_relic': {
+      // Gleaming Ancient Wilderness Treasure (隨機寶藏) — ornate bronze-bound chest, gold coins, gems & floating sparkles!
+      const chestWood = getMat(0x5c361e, 0.82, 0.08);
+      const goldMat = new THREE.MeshStandardMaterial({
+        color: 0xfacc15,
+        emissive: 0xb45309,
+        emissiveIntensity: 0.45,
+        roughness: 0.25,
+        metalness: 0.85,
+      });
+      const rubyMat = new THREE.MeshStandardMaterial({
+        color: 0xef4444,
+        emissive: 0x991b1b,
+        emissiveIntensity: 0.55,
+        roughness: 0.18,
+        metalness: 0.2,
+      });
+      const emeraldMat = new THREE.MeshStandardMaterial({
+        color: 0x10b981,
+        emissive: 0x065f46,
+        emissiveIntensity: 0.55,
+        roughness: 0.18,
+        metalness: 0.2,
+      });
+      const amphoraMat = getMat(0xc86a3d, 0.78, 0.05);
+
+      // Low sunlit stone base slab so treasure sits crisply on slopes
+      addBox(bodyGroup, 1.65, 0.18, 1.35, 0, 0.06, 0, getMat(0xb8ad98, 0.92, 0.03));
+
+      // Ornate chest body + bronze/gold straps + half-open lid
+      addBox(bodyGroup, 1.15, 0.58, 0.72, 0, 0.44, 0, chestWood);
+      addBox(bodyGroup, 1.18, 0.09, 0.76, 0, 0.24, 0, goldMat);
+      addBox(bodyGroup, 1.18, 0.09, 0.76, 0, 0.68, 0, goldMat);
+      addBox(bodyGroup, 0.18, 0.22, 0.08, 0, 0.56, 0.37, goldMat);
+      const lid = addBox(bodyGroup, 1.15, 0.22, 0.72, 0, 0.92, -0.26, chestWood);
+      lid.rotation.x = -0.68;
+
+      // Overflowing mound of gleaming gold coins & jewels
+      const coinMound = new THREE.Mesh(new THREE.SphereGeometry(0.46, 10, 8), goldMat);
+      coinMound.scale.set(1.15, 0.48, 0.72);
+      coinMound.position.set(0, 0.76, 0.02);
+      bodyGroup.add(coinMound);
+      const ruby = new THREE.Mesh(new THREE.OctahedronGeometry(0.14, 0), rubyMat);
+      ruby.position.set(-0.22, 0.92, 0.1);
+      const emerald = new THREE.Mesh(new THREE.OctahedronGeometry(0.13, 0), emeraldMat);
+      emerald.position.set(0.24, 0.9, 0.06);
+      bodyGroup.add(ruby, emerald);
+
+      // Flanking clay amphorae or golden chalice for extra silhouette richness
+      if (templateId === 'treasure_amphora') {
+        addCyl(bodyGroup, 0.16, 0.22, 0.68, 8, -0.78, 0.44, 0.18, amphoraMat);
+        addCyl(bodyGroup, 0.14, 0.19, 0.58, 8, 0.78, 0.39, -0.1, amphoraMat);
+      } else if (templateId === 'treasure_relic') {
+        const crown = new THREE.Mesh(new THREE.TorusGeometry(0.24, 0.065, 8, 14), goldMat);
+        crown.rotation.x = Math.PI * 0.5;
+        crown.position.set(0, 1.06, 0.02);
+        bodyGroup.add(crown);
+      } else {
+        addCyl(bodyGroup, 0.12, 0.1, 0.32, 8, 0.74, 0.3, 0.25, goldMat);
+      }
+
+      // Floating glowing golden shimmer sparkles so players spot treasures easily!
+      const sparkleTex = getRealisticEmberTexture();
+      const sparkles: THREE.Sprite[] = [];
+      for (let si = 0; si < 4; si++) {
+        const sMat = new THREE.SpriteMaterial({
+          map: sparkleTex,
+          color: 0xfef08a,
+          transparent: true,
+          opacity: 0.9,
+          blending: THREE.AdditiveBlending,
+          depthWrite: false,
+        });
+        const sp = new THREE.Sprite(sMat);
+        sp.position.set(Math.cos(si * 1.57) * 0.55, 1.15 + (si % 2) * 0.35, Math.sin(si * 1.57) * 0.55);
+        sp.scale.set(0.36, 0.36, 1);
+        bodyGroup.add(sp);
+        sparkles.push(sp);
+      }
+      parts.sparkleSprites = sparkles;
+      break;
+    }
+
     case 'fish_shoal': {
       // Lively animated school of shimmering silver-turquoise Mediterranean fish + water surface ripples!
       const fishGroup = new THREE.Group();
@@ -2542,47 +3016,186 @@ export function createEntityVisual(templateId: string, civId: CivId, teamColor: 
     }
 
     case 'han_ministry': {
-      // Traditional Han Dynasty Imperial Hall with 0 A.D. carved marble, lacquered timber & slate roof tiles!
+      // Traditional Han Dynasty Imperial Academy (漢代官署太學) with carved marble terrace,
+      // vermilion lacquered colonnade & authentic double-tiered curved ceramic barrel-tile roofs (青瓦重簷歇山頂)!
       const terraceMat = getTexMat('textures/stonequarry_marble.png', 'textures/stone_india_01_norm.png', 0xe2dac9, 1.6, 1.2, 0.88, 0.04);
       const lacqRedMat = getTexMat('textures/palisade_main.png', null, 0xb82828, 1.2, 1.2, 0.65, 0.1);
-      const slateRoofMat = getTexMat('textures/hele_tile_c.png', null, 0x526173, 2.4, 2.0, 0.78, 0.08);
+      const roofTileMat = getTexMat(
+        'textures/han_rooftile.png',
+        'textures/han_rooftile_norm.png',
+        0xdde6f0,
+        3.2,
+        1.4,
+        0.58,
+        0.16
+      );
+      const roofTileSideMat = getTexMat(
+        'textures/han_rooftile.png',
+        'textures/han_rooftile_norm.png',
+        0xdde6f0,
+        2.2,
+        1.4,
+        0.58,
+        0.16
+      );
+      const ridgeSlateMat = getMat(0x2c3440, 0.62, 0.18);
+      const eaveTimberMat = getMat(0x5c3620, 0.82, 0.04);
       const goldTrimMat = getMat(0xd4a437, 0.35, 0.72);
 
-      // Two-tiered marble/stone platform with front steps
+      // Helper: builds a traditional Han Dynasty concave hipped ceramic barrel-tile roof tier with upturned eaves & ridge beams!
+      const addHanTiledRoofTier = (
+        yBase: number,
+        baseW: number,
+        baseD: number,
+        ridgeW: number,
+        ridgeD: number,
+        roofH: number
+      ) => {
+        const tier = new THREE.Group();
+        tier.position.y = yBase;
+
+        // Under-eave timber bracket fascia (斗拱簷口)
+        addBox(tier, baseW * 0.92, 0.18, baseD * 0.92, 0, -0.06, 0, eaveTimberMat);
+
+        // Front & Back concave tiled roof slopes (built in 2 pitch bands for authentic sweeping Han eaves!)
+        const makeSlopeBand = (
+          y0: number,
+          y1: number,
+          z0: number,
+          z1: number,
+          w0: number,
+          w1: number,
+          zSign: number,
+          mat: THREE.Material
+        ) => {
+          const hw0 = w0 * 0.5;
+          const hw1 = w1 * 0.5;
+          const geom = new THREE.BufferGeometry();
+          const verts = new Float32Array([
+            -hw0, y0, zSign * z0,
+            hw0, y0, zSign * z0,
+            hw1, y1, zSign * z1,
+            -hw1, y1, zSign * z1,
+          ]);
+          const uvs = new Float32Array([0, 0, 1, 0, 1, 1, 0, 1]);
+          geom.setAttribute('position', new THREE.BufferAttribute(verts, 3));
+          geom.setAttribute('uv', new THREE.BufferAttribute(uvs, 2));
+          geom.setIndex(zSign > 0 ? [0, 1, 2, 0, 2, 3] : [0, 2, 1, 0, 3, 2]);
+          geom.computeVertexNormals();
+          const mesh = new THREE.Mesh(geom, mat);
+          mesh.castShadow = true;
+          mesh.receiveShadow = true;
+          tier.add(mesh);
+        };
+
+        const makeSideBand = (
+          y0: number,
+          y1: number,
+          x0: number,
+          x1: number,
+          d0: number,
+          d1: number,
+          xSign: number,
+          mat: THREE.Material
+        ) => {
+          const hd0 = d0 * 0.5;
+          const hd1 = d1 * 0.5;
+          const geom = new THREE.BufferGeometry();
+          const verts = new Float32Array([
+            xSign * x0, y0, -hd0,
+            xSign * x0, y0, hd0,
+            xSign * x1, y1, hd1,
+            xSign * x1, y1, -hd1,
+          ]);
+          const uvs = new Float32Array([0, 0, 1, 0, 1, 1, 0, 1]);
+          geom.setAttribute('position', new THREE.BufferAttribute(verts, 3));
+          geom.setAttribute('uv', new THREE.BufferAttribute(uvs, 2));
+          geom.setIndex(xSign > 0 ? [0, 2, 1, 0, 3, 2] : [0, 1, 2, 0, 2, 3]);
+          geom.computeVertexNormals();
+          const mesh = new THREE.Mesh(geom, mat);
+          mesh.castShadow = true;
+          mesh.receiveShadow = true;
+          tier.add(mesh);
+        };
+
+        const midY = roofH * 0.36;
+        const midZ = baseD * 0.34 + ridgeD * 0.16;
+        const midW = baseW * 0.72 + ridgeW * 0.28;
+        const midX = baseW * 0.34 + ridgeW * 0.16;
+        const midD = baseD * 0.72 + ridgeD * 0.28;
+
+        for (const sgn of [1, -1]) {
+          // Lower gentle sweeping eave band (飛簷緩坡) + upper steeper barrel-tile roof slope
+          makeSlopeBand(0.02, midY, baseD * 0.5, midZ, baseW, midW, sgn, roofTileMat);
+          makeSlopeBand(midY, roofH, midZ, ridgeD * 0.5, midW, ridgeW, sgn, roofTileMat);
+          makeSideBand(0.02, midY, baseW * 0.5, midX, baseD, midD, sgn, roofTileSideMat);
+          makeSideBand(midY, roofH, midX, ridgeW * 0.5, midD, ridgeD, sgn, roofTileSideMat);
+        }
+
+        // Solid dark cap under the ridge so no light leaks through seams
+        if (ridgeW > 0.2 && ridgeD > 0.2) {
+          addBox(tier, ridgeW + 0.08, 0.12, ridgeD + 0.08, 0, roofH - 0.04, 0, ridgeSlateMat);
+        }
+
+        // 4 diagonal ceramic hip ridges (垂脊) with upturned corner eave ornaments (翹角脊獸)
+        for (const sx of [-1, 1]) {
+          for (const sz of [-1, 1]) {
+            const p0 = new THREE.Vector3(sx * baseW * 0.5, 0.06, sz * baseD * 0.5);
+            const p1 = new THREE.Vector3(sx * ridgeW * 0.5, roofH + 0.04, sz * ridgeD * 0.5);
+            const len = p0.distanceTo(p1);
+            const hip = new THREE.Mesh(new THREE.BoxGeometry(0.14, 0.14, len), ridgeSlateMat);
+            hip.position.copy(p0).add(p1).multiplyScalar(0.5);
+            hip.lookAt(p1);
+            hip.castShadow = true;
+            tier.add(hip);
+            // Upturned corner finial tip (飛簷翹角)
+            const tip = new THREE.Mesh(new THREE.BoxGeometry(0.16, 0.14, 0.34), ridgeSlateMat);
+            tip.position.set(sx * (baseW * 0.5 + 0.06), 0.12, sz * (baseD * 0.5 + 0.06));
+            tip.rotation.y = Math.atan2(sx * baseW, sz * baseD);
+            tip.rotation.x = -0.38;
+            tier.add(tip);
+          }
+        }
+
+        bodyGroup.add(tier);
+      };
+
+      // Two-tiered marble/stone platform with front ceremonial steps
       addBox(bodyGroup, 5.8, 0.45, 5.4, 0, 0.22, 0, darkStoneMat);
       addBox(bodyGroup, 5.1, 0.38, 4.7, 0, 0.62, 0, terraceMat);
       addBox(bodyGroup, 1.6, 0.32, 0.75, 0, 0.36, 2.75, terraceMat);
 
-      // Main lacquered hall + red perimeter columns
+      // Main hall walls + vermilion perimeter columns
       addBox(bodyGroup, 3.9, 1.85, 3.3, 0, 1.72, -0.1, terraceMat);
       for (const cx of [-2.1, -0.75, 0.75, 2.1]) {
         addCyl(bodyGroup, 0.11, 0.12, 1.95, 8, cx, 1.75, 1.85, lacqRedMat);
         addCyl(bodyGroup, 0.11, 0.12, 1.95, 8, cx, 1.75, -1.95, lacqRedMat);
       }
-      // Double-tiered pagoda roof with sweeping eaves & golden ridge crest
-      const lowerRoof = new THREE.Mesh(new THREE.ConeGeometry(4.1, 1.15, 4), slateRoofMat);
-      lowerRoof.position.set(0, 3.22, 0);
-      lowerRoof.rotation.y = Math.PI / 4;
-      lowerRoof.scale.set(1.08, 1.0, 0.96);
-      lowerRoof.castShadow = true;
-      bodyGroup.add(lowerRoof);
 
-      addBox(bodyGroup, 2.6, 0.9, 2.2, 0, 3.85, 0, lacqRedMat);
-      const upperRoof = new THREE.Mesh(new THREE.ConeGeometry(2.85, 1.15, 4), slateRoofMat);
-      upperRoof.position.set(0, 4.78, 0);
-      upperRoof.rotation.y = Math.PI / 4;
-      upperRoof.scale.set(1.06, 1.0, 0.92);
-      upperRoof.castShadow = true;
-      bodyGroup.add(upperRoof);
-      addBox(bodyGroup, 1.5, 0.16, 0.16, 0, 5.38, 0, goldTrimMat);
-      // Red imperial lanterns & silk banner
+      // Lower sweeping Han ceramic barrel-tile roof tier (下層重簷瓦頂)
+      addHanTiledRoofTier(2.68, 5.75, 5.05, 3.1, 2.55, 1.08);
+
+      // Upper lacquered gallery pavilion (二樓重簷閣樓)
+      addBox(bodyGroup, 2.75, 0.92, 2.25, 0, 4.18, 0, lacqRedMat);
+      addBox(bodyGroup, 2.86, 0.14, 2.36, 0, 3.74, 0, goldTrimMat);
+
+      // Upper sweeping Han hip-and-gable ceramic tiled roof tier (上層歇山瓦頂) + main ridge & Chiwen finials (正脊鴟尾)
+      addHanTiledRoofTier(4.62, 4.15, 3.45, 1.95, 0.24, 1.18);
+      addBox(bodyGroup, 2.12, 0.2, 0.22, 0, 5.86, 0, ridgeSlateMat);
+      addBox(bodyGroup, 1.95, 0.1, 0.12, 0, 5.98, 0, goldTrimMat);
+      for (const fx of [-1.06, 1.06]) {
+        const finial = addBox(bodyGroup, 0.18, 0.36, 0.2, fx, 6.02, 0, goldTrimMat);
+        finial.rotation.z = fx < 0 ? 0.28 : -0.28;
+      }
+
+      // Red imperial lanterns, golden academy plaque & silk banner
       for (const lx of [-1.45, 1.45]) {
         const lan = new THREE.Mesh(new THREE.SphereGeometry(0.18, 7, 6), teamMat);
         lan.position.set(lx, 2.35, 1.95);
         bodyGroup.add(lan);
         teamMeshes.push(lan);
       }
-      const plaque = addBox(bodyGroup, 1.25, 0.42, 0.12, 0, 2.52, 1.72, goldTrimMat);
+      const plaque = addBox(bodyGroup, 1.25, 0.42, 0.12, 0, 2.48, 1.72, goldTrimMat);
       const flag = addBox(bodyGroup, 0.95, 0.58, 0.08, 2.35, 3.65, 2.1, teamMat);
       addCyl(bodyGroup, 0.045, 0.055, 3.4, 6, 1.85, 2.2, 2.1, woodMat);
       teamMeshes.push(plaque, flag);
@@ -2831,8 +3444,101 @@ export function createEntityVisual(templateId: string, civId: CivId, teamColor: 
       break;
     }
 
+    case 'siege_cannon': {
+      // Heavy cast-bronze Imperial Bombard Cannon on reinforced oak artillery carriage with spoked wheels & iron cannonballs!
+      const carriageWood = getTexMat('textures/palisade_main.png', null, 0x6b4322, 1.4, 1.2, 0.85, 0.05);
+      const bronzeBarrelMat = getMat(0xa87c32, 0.34, 0.78);
+      const bronzeRingMat = getMat(0xd4a64a, 0.28, 0.84);
+      const ironMat = getMat(0x2f343d, 0.45, 0.72);
+
+      // Twin heavy oak trail cheeks & cross-axle
+      for (const sx of [-0.46, 0.46]) {
+        const cheek = addBox(bodyGroup, 0.18, 0.34, 2.05, sx, 0.54, -0.25, carriageWood);
+        cheek.rotation.x = 0.14;
+      }
+      addBox(bodyGroup, 1.38, 0.18, 0.2, 0, 0.56, 0.34, ironMat);
+      addBox(bodyGroup, 0.96, 0.16, 0.26, 0, 0.34, -1.12, carriageWood);
+
+      // Large spoked artillery wheels with iron rims
+      for (const sx of [-0.72, 0.72]) {
+        const wheelGroup = new THREE.Group();
+        wheelGroup.position.set(sx, 0.56, 0.34);
+        const rim = new THREE.Mesh(new THREE.TorusGeometry(0.54, 0.065, 8, 18), ironMat);
+        rim.rotation.y = Math.PI * 0.5;
+        rim.castShadow = true;
+        wheelGroup.add(rim);
+        const woodRim = new THREE.Mesh(new THREE.TorusGeometry(0.47, 0.05, 6, 16), carriageWood);
+        woodRim.rotation.y = Math.PI * 0.5;
+        wheelGroup.add(woodRim);
+        const hub = addCyl(wheelGroup, 0.13, 0.13, 0.22, 10, 0, 0, 0, bronzeRingMat);
+        hub.rotation.z = Math.PI * 0.5;
+        for (let k = 0; k < 8; k++) {
+          const ang = (k / 8) * Math.PI * 2;
+          const spoke = addCyl(wheelGroup, 0.032, 0.038, 0.94, 5, 0, 0, 0, carriageWood);
+          spoke.rotation.x = ang;
+        }
+        bodyGroup.add(wheelGroup);
+      }
+
+      // Pivoting heavy cast-bronze cannon barrel (angled slightly upward toward +Z)
+      const cannonPivot = new THREE.Group();
+      cannonPivot.position.set(0, 0.92, 0.32);
+      cannonPivot.rotation.x = -0.14;
+
+      const barrel = addCyl(cannonPivot, 0.18, 0.26, 2.15, 14, 0, 0, 0.36, bronzeBarrelMat);
+      barrel.rotation.x = Math.PI * 0.5;
+      // Decorative reinforcement rings along barrel
+      for (const rz of [-0.58, -0.12, 0.42, 1.02, 1.38]) {
+        const rr = 0.27 - (rz + 0.6) * 0.035;
+        const band = new THREE.Mesh(new THREE.TorusGeometry(rr, 0.032, 6, 14), bronzeRingMat);
+        band.position.set(0, 0, rz);
+        cannonPivot.add(band);
+      }
+      // Cascabel breech knob & trunnions
+      const breech = new THREE.Mesh(new THREE.SphereGeometry(0.24, 10, 8), bronzeBarrelMat);
+      breech.position.set(0, 0, -0.74);
+      cannonPivot.add(breech);
+      const knob = new THREE.Mesh(new THREE.SphereGeometry(0.11, 8, 6), bronzeRingMat);
+      knob.position.set(0, 0, -0.98);
+      cannonPivot.add(knob);
+      // Dark hollow muzzle bore
+      const bore = addCyl(cannonPivot, 0.12, 0.12, 0.08, 10, 0, 0, 1.42, getMat(0x111318, 0.9, 0.1));
+      bore.rotation.x = Math.PI * 0.5;
+      // Glowing red-orange slow-match touchhole spark
+      const ember = new THREE.Mesh(
+        new THREE.SphereGeometry(0.06, 6, 6),
+        new THREE.MeshBasicMaterial({ color: 0xff6b00 })
+      );
+      ember.position.set(0, 0.26, -0.52);
+      cannonPivot.add(ember);
+
+      bodyGroup.add(cannonPivot);
+      weaponPivot = cannonPivot;
+
+      // Team-colored side banner & stacked iron cannonballs on carriage
+      const banner = addBox(bodyGroup, 0.06, 0.42, 0.52, -0.56, 0.85, -0.55, teamMat);
+      teamMeshes.push(banner);
+      for (const [bx, by, bz] of [[-0.14, 0.52, -0.78], [0.14, 0.52, -0.78], [0, 0.68, -0.78]]) {
+        const ball = new THREE.Mesh(new THREE.SphereGeometry(0.11, 8, 6), ironMat);
+        ball.position.set(bx, by, bz);
+        bodyGroup.add(ball);
+      }
+      break;
+    }
+
     default: {
-      addBox(bodyGroup, 1, 1, 1, 0, 0.5, 0, teamMat);
+      if (templateId.startsWith('tree_')) {
+        addCyl(bodyGroup, 0.16, 0.26, 2.0, 6, 0, 1.0, 0, getMat(0x6d5740, 0.92, 0));
+        const crown = new THREE.Mesh(
+          new THREE.DodecahedronGeometry(1.05, 0),
+          getMat(templateId === 'tree_hybrid_royal_orchard' ? 0xeab308 : 0x4f7f42, 0.86, 0)
+        );
+        crown.position.set(0, 2.55, 0);
+        crown.castShadow = true;
+        bodyGroup.add(crown);
+      } else {
+        addBox(bodyGroup, 1, 1, 1, 0, 0.5, 0, teamMat);
+      }
       break;
     }
   }

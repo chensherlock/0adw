@@ -88,6 +88,18 @@ export class SceneManager {
   private readonly beaconRangeRing: THREE.Mesh;
   private readonly soilProgressGroup = new THREE.Group();
   private readonly shoreFishingGroup = new THREE.Group();
+  private readonly healingEffectsGroup = new THREE.Group();
+  private readonly healLineMat = new THREE.LineBasicMaterial({ color: 0x34d399, transparent: true, opacity: 0.85 });
+  private readonly healHaloGeom = new THREE.RingGeometry(0.45, 0.72, 18);
+  private readonly healHaloMat = new THREE.MeshBasicMaterial({
+    color: 0x10b981,
+    transparent: true,
+    opacity: 0.62,
+    side: THREE.DoubleSide,
+    depthWrite: false,
+  });
+  private readonly healSparkGeom = new THREE.OctahedronGeometry(0.11, 0);
+  private readonly healSparkMat = new THREE.MeshBasicMaterial({ color: 0x6ee7b7, transparent: true, opacity: 0.9 });
   private readonly rodMat = new THREE.MeshStandardMaterial({ color: 0x8b5a2b, roughness: 0.85 });
   private readonly lineMat = new THREE.LineBasicMaterial({ color: 0xe2e8f0, transparent: true, opacity: 0.88 });
   private readonly bobberMat = new THREE.MeshBasicMaterial({ color: 0xef4444 });
@@ -104,9 +116,26 @@ export class SceneManager {
     side: THREE.DoubleSide,
   });
   private readonly rodGeom = new THREE.CylinderGeometry(0.02, 0.035, 2.35, 5);
+  private readonly spearShaftGeom = new THREE.CylinderGeometry(0.026, 0.034, 2.75, 6);
+  private readonly spearShaftMat = new THREE.MeshStandardMaterial({ color: 0x6b4423, roughness: 0.8 });
+  private readonly spearTipGeom = new THREE.ConeGeometry(0.085, 0.36, 5);
+  private readonly spearTipMat = new THREE.MeshStandardMaterial({ color: 0xd4a64a, roughness: 0.35, metalness: 0.72 });
   private readonly bobberGeom = new THREE.SphereGeometry(0.11, 6, 5);
   private readonly netGeom = new THREE.CircleGeometry(1.15, 10);
   private readonly fishRippleGeom = new THREE.RingGeometry(0.35, 0.52, 16);
+  private readonly protectedTreesGroup = new THREE.Group();
+  private readonly protectedFencePostGeom = new THREE.CylinderGeometry(0.055, 0.068, 0.86, 6);
+  private readonly protectedFenceRailGeom = new THREE.BoxGeometry(0.92, 0.08, 0.06);
+  private readonly protectedFenceMat = new THREE.MeshStandardMaterial({
+    color: 0x9c6e42,
+    roughness: 0.88,
+    metalness: 0.04,
+  });
+  private readonly protectedFenceCapMat = new THREE.MeshStandardMaterial({
+    color: 0xd9b382,
+    roughness: 0.78,
+    metalness: 0.05,
+  });
   private readonly tunnelTexLoader = new THREE.TextureLoader();
   private tunnelRockTex: THREE.Texture | null = null;
   private tunnelFloorTex: THREE.Texture | null = null;
@@ -135,12 +164,20 @@ export class SceneManager {
   private readonly arrowGeom = new THREE.CylinderGeometry(0.03, 0.03, 0.95, 4);
   private readonly boltGeom = new THREE.CylinderGeometry(0.055, 0.055, 1.55, 5);
   private readonly boulderGeom = new THREE.DodecahedronGeometry(0.32, 0);
+  private readonly cannonballGeom = new THREE.SphereGeometry(0.22, 8, 6);
   private readonly arrowMat = new THREE.MeshBasicMaterial({ color: 0xfef08a });
   private readonly javelinMat = new THREE.MeshBasicMaterial({ color: 0xfca5a5 });
   private readonly fireArrowMat = new THREE.MeshBasicMaterial({ color: 0xff6b00 });
   private readonly boltMat = new THREE.MeshBasicMaterial({ color: 0xe2e8f0 });
   private readonly boulderMat = new THREE.MeshStandardMaterial({ color: 0x9ca3af, roughness: 0.92 });
   private readonly flamingBoulderMat = new THREE.MeshBasicMaterial({ color: 0xff5500 });
+  private readonly cannonballMat = new THREE.MeshStandardMaterial({
+    color: 0x1e293b,
+    emissive: 0xff5500,
+    emissiveIntensity: 0.85,
+    roughness: 0.35,
+    metalness: 0.85,
+  });
 
   constructor(container: HTMLElement, world: World) {
     this.renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
@@ -242,6 +279,9 @@ export class SceneManager {
     this.netGeom.rotateX(-Math.PI / 2);
     this.fishRippleGeom.rotateX(-Math.PI / 2);
     this.scene.add(this.shoreFishingGroup);
+    this.healHaloGeom.rotateX(-Math.PI / 2);
+    this.scene.add(this.healingEffectsGroup);
+    this.scene.add(this.protectedTreesGroup);
 
     // Dedicated X-Ray Scene for underground vaulted tunnels + REAL 0 A.D. animated underground workers & travelers!
     const xrayHemi = new THREE.HemisphereLight(0xffe8c2, 0x3b2c1a, 1.35);
@@ -435,7 +475,8 @@ export class SceneManager {
     z: number,
     mode: TerraformMode | null,
     isValid: boolean,
-    pendingSrc?: { x: number; y: number; z: number } | null
+    pendingSrc?: { x: number; y: number; z: number } | null,
+    levelTargetH?: number
   ): void {
     if (!mode) {
       this.terraformRing.visible = false;
@@ -447,6 +488,9 @@ export class SceneManager {
     const curY = Math.max(WATER_LEVEL + 0.08, y + 0.18);
     this.terraformRing.visible = true;
     this.terraformRing.position.set(x, curY, z);
+    // In 'level' mode, highlight the full 3x3 patch (selected tile + surrounding 1-tile ring)!
+    const ringScale = mode === 'level' ? 2.65 : 1.0;
+    this.terraformRing.scale.set(ringScale, 1, ringScale);
     const ringHex = !isValid
       ? 0xef4444
       : pendingSrc
@@ -458,12 +502,14 @@ export class SceneManager {
             : 0x22c55e;
     this.terraformRingMat.color.setHex(ringHex);
 
-    // Show crisp ground elevation badge above hovered tile (e.g. "⛰ 高 2.4m" or "⛰ 3.1m → 1.4m")!
+    // Show crisp ground elevation badge above hovered tile (e.g. "⛰ 高 2.4m", "⛰ 3.1m → 1.4m", or "📐 3×3 均高 +2.4m")!
     this.terraformElevSprite.visible = true;
     this.terraformElevSprite.position.set(x, curY + 1.55, z);
     const elevStr = pendingSrc
       ? `⛰ ${pendingSrc.y.toFixed(1)}m → ${y.toFixed(1)}m`
-      : `⛰ 高度 ${y >= 0 ? '+' : ''}${y.toFixed(1)}m`;
+      : mode === 'level' && levelTargetH !== undefined
+        ? `📐 3×3 均高 ${levelTargetH >= 0 ? '+' : ''}${levelTargetH.toFixed(2)}m`
+        : `⛰ 高度 ${y >= 0 ? '+' : ''}${y.toFixed(1)}m`;
     const elevKey = `${elevStr}_${ringHex}`;
     if (this.lastTerraformElevKey !== elevKey) {
       this.lastTerraformElevKey = elevKey;
@@ -730,6 +776,14 @@ export class SceneManager {
       if (tpl.isRuinPillar) {
         const ratio = Math.max(0.28, e.resourceRemaining / Math.max(1, tpl.resourceAmount ?? 380));
         mv.parts.bodyGroup.scale.y = 0.35 + ratio * 0.65;
+      } else if (e.treeGrowth !== undefined) {
+        const g = Math.max(0.25, Math.min(1, e.treeGrowth));
+        const sc = 0.26 + g * 0.74;
+        mv.parts.bodyGroup.scale.set(sc, sc, sc);
+      } else if (e.animalGrowth !== undefined) {
+        const g = Math.max(0.35, Math.min(1, e.animalGrowth));
+        const sc = 0.44 + g * 0.56;
+        mv.parts.bodyGroup.scale.set(sc, sc, sc);
       }
 
       // Smooth shortest-arc angular turn for units & ALL land/sea wildlife (so dead animals collapse properly!)
@@ -808,11 +862,13 @@ export class SceneManager {
           }
         } else {
           const sY = e.isFoundation ? 0.18 + e.buildProgress * 0.82 : 1.0;
-          mv.parts.bodyGroup.scale.y = sY;
           if (tpl.isApartment) {
             const floors = e.floors ?? 2;
+            mv.parts.bodyGroup.scale.y = sY * (floors >= 3 ? 1.32 : 1.0);
             if (mv.parts.floor2Roof) mv.parts.floor2Roof.visible = floors < 3;
             if (mv.parts.floor3Group) mv.parts.floor3Group.visible = floors >= 3;
+          } else {
+            mv.parts.bodyGroup.scale.y = sY;
           }
           // Animated Stone Gate double doors & Crimson Lock Bar
           if (tpl.isGate && mv.parts.gateDoorLeft && mv.parts.gateDoorRight) {
@@ -823,39 +879,121 @@ export class SceneManager {
               mv.parts.gateLockBar.visible = e.gateMode === 'locked' && openAmt < 0.15;
             }
           }
-          // Great Wall Beacon Tower 3 visual tiers + blazing signal fire & soaring wolf-smoke column!
+          // Great Wall Beacon Tower 3 visual tiers + photorealistic staged fire, embers & billowing volumetric wolf-smoke!
           if (tpl.isBeaconTower) {
             const lv = e.beaconLevel ?? 1;
             if (mv.parts.beaconTier2) mv.parts.beaconTier2.visible = lv >= 2;
             if (mv.parts.beaconTier3) mv.parts.beaconTier3.visible = lv >= 3;
-            const lit = (e.beaconLitTimer ?? 0) > 0;
-            const fireBaseY = lv >= 3 ? 8.15 : lv === 2 ? 6.5 : 5.05;
+            const bState = e.beaconState ?? ((e.beaconLitTimer ?? 0) > 0 ? 'smoking' : 'idle');
+            const stageP = Math.max(0, Math.min(1, e.beaconStageProgress ?? 0));
+            const fireBaseY = lv >= 3 ? 8.18 : lv === 2 ? 6.52 : 5.05;
+
+            const flameIntensity =
+              bState === 'smoking'
+                ? 1.0
+                : bState === 'burning'
+                  ? 0.72 + stageP * 0.28
+                  : bState === 'igniting'
+                    ? 0.16 + stageP * 0.48
+                    : bState === 'extinguishing'
+                      ? Math.max(0, 1 - stageP * 1.25)
+                      : 0;
+            const smokeIntensity =
+              bState === 'smoking'
+                ? 1.0
+                : bState === 'burning'
+                  ? 0.16 + stageP * 0.84
+                  : bState === 'igniting'
+                    ? stageP * 0.14
+                    : bState === 'extinguishing'
+                      ? Math.max(0, 1 - stageP)
+                      : 0;
+
             if (mv.parts.beaconFireGroup) {
-              mv.parts.beaconFireGroup.visible = lit;
-              if (lit) {
+              mv.parts.beaconFireGroup.visible = flameIntensity > 0.01;
+              if (flameIntensity > 0.01) {
                 mv.parts.beaconFireGroup.position.y = fireBaseY;
-                const flick = 0.88 + Math.sin(elapsedSec * 14 + e.id * 2.1) * 0.18;
-                const sway = Math.cos(elapsedSec * 9 + e.id) * 0.1;
-                mv.parts.beaconFireGroup.scale.set(0.95 + sway, flick, 0.95 - sway);
+                if (mv.parts.beaconCoalMesh) {
+                  const cMat = mv.parts.beaconCoalMesh.material as THREE.MeshStandardMaterial;
+                  cMat.emissiveIntensity = (1.1 + Math.sin(elapsedSec * 9 + e.id) * 0.35) * flameIntensity * 1.9;
+                }
+                if (mv.parts.beaconLight) {
+                  const flick = 0.82 + Math.sin(elapsedSec * 16 + e.id * 2.3) * 0.14 + Math.cos(elapsedSec * 27 + e.id) * 0.08;
+                  mv.parts.beaconLight.intensity = 4.2 * flameIntensity * flick;
+                }
+                const children = mv.parts.beaconFireGroup.children;
+                for (let ci = 0; ci < children.length; ci++) {
+                  const child = children[ci];
+                  const ud = child.userData;
+                  if (ud.kind === 'flame') {
+                    const sprite = child as THREE.Sprite;
+                    const cyc = (elapsedSec * (ud.isCore ? 2.5 : 1.85) + ud.phase + e.id * 0.31) % 1.0;
+                    const angle = ud.angle + elapsedSec * (ud.isCore ? 1.4 : -0.95);
+                    const rad = ud.radius * (1 - cyc * 0.48) * (0.65 + flameIntensity * 0.35);
+                    const rise = cyc * (ud.isCore ? 1.05 : 1.55) * flameIntensity;
+                    sprite.position.set(
+                      Math.cos(angle) * rad + Math.sin(elapsedSec * 7 + ud.idx) * 0.08 * cyc,
+                      0.45 + rise,
+                      Math.sin(angle) * rad + Math.cos(elapsedSec * 6.3 + ud.idx) * 0.08 * cyc
+                    );
+                    const wScale = (ud.isCore ? 1.05 : 1.68) * (1 - cyc * 0.42) * (0.45 + flameIntensity * 0.65);
+                    const hScale = (ud.isCore ? 1.65 : 2.55) * (0.75 + Math.sin(cyc * Math.PI) * 0.45) * (0.4 + flameIntensity * 0.72);
+                    sprite.scale.set(wScale, hScale, 1);
+                    const sMat = sprite.material as THREE.SpriteMaterial;
+                    sMat.rotation = Math.sin(elapsedSec * 5 + ud.idx) * 0.22;
+                    sMat.opacity = Math.sin(cyc * Math.PI) * (ud.isCore ? 0.92 : 0.78) * flameIntensity;
+                  } else if (ud.kind === 'ember') {
+                    const sprite = child as THREE.Sprite;
+                    const cyc = (elapsedSec * 0.95 + ud.phase + e.id * 0.19) % 1.0;
+                    const theta = cyc * Math.PI * 3.5 * ud.swirl + ud.idx;
+                    const r = 0.22 + cyc * 1.15;
+                    sprite.position.set(
+                      Math.cos(theta) * r + cyc * 0.75,
+                      0.55 + cyc * (4.6 + lv * 0.8) * flameIntensity,
+                      Math.sin(theta) * r + cyc * 0.45
+                    );
+                    const sc = (0.14 + (1 - cyc) * 0.14) * flameIntensity;
+                    sprite.scale.set(sc, sc, 1);
+                    const sMat = sprite.material as THREE.SpriteMaterial;
+                    sMat.opacity = Math.sin(cyc * Math.PI) * 0.95 * flameIntensity;
+                  }
+                }
+              } else if (mv.parts.beaconLight) {
+                mv.parts.beaconLight.intensity = 0;
               }
             }
+
             if (mv.parts.beaconSmokeGroup) {
-              mv.parts.beaconSmokeGroup.visible = lit;
-              if (lit) {
-                mv.parts.beaconSmokeGroup.position.y = fireBaseY + 0.45;
+              mv.parts.beaconSmokeGroup.visible = smokeIntensity > 0.02;
+              if (smokeIntensity > 0.02) {
+                mv.parts.beaconSmokeGroup.position.y = fireBaseY + 1.1;
                 const puffs = mv.parts.beaconSmokeGroup.children;
+                const maxPlumeHeight = (15.5 + lv * 2.8) * (0.32 + smokeIntensity * 0.68);
                 for (let pi = 0; pi < puffs.length; pi++) {
-                  const cyc = (elapsedSec * 0.42 + pi / puffs.length + e.id * 0.17) % 1.0;
-                  const puff = puffs[pi];
-                  puff.position.set(
-                    Math.sin(elapsedSec * 1.1 + pi * 1.4) * (0.25 + cyc * 1.45),
-                    cyc * (11.5 + lv * 2.2),
-                    Math.cos(elapsedSec * 0.9 + pi) * (0.2 + cyc * 0.9)
-                  );
-                  const sc = 0.55 + cyc * 1.45;
-                  puff.scale.setScalar(sc);
-                  const mat = (puff as THREE.Mesh).material as THREE.MeshBasicMaterial;
-                  mat.opacity = Math.max(0.05, (1 - cyc) * 0.62);
+                  const puff = puffs[pi] as THREE.Sprite;
+                  const ud = puff.userData;
+                  const cyc = (elapsedSec * 0.26 + ud.phase + e.id * 0.13) % 1.0;
+                  // Coherent wind drift (+X/+Z breeze curve) + gentle turbulent curl as wolf-smoke rises!
+                  const windX = cyc * cyc * 4.8 + Math.sin(elapsedSec * 0.95 + ud.driftSeed) * (0.28 + cyc * 1.35);
+                  const windZ = cyc * cyc * 2.4 + Math.cos(elapsedSec * 0.82 + ud.driftSeed) * (0.22 + cyc * 1.05);
+                  puff.position.set(windX, cyc * maxPlumeHeight, windZ);
+
+                  const sc = (1.1 + cyc * (3.6 + lv * 0.45)) * (0.55 + smokeIntensity * 0.55);
+                  puff.scale.set(sc, sc * (0.94 + Math.sin(ud.driftSeed) * 0.08), 1);
+
+                  const sMat = puff.material as THREE.SpriteMaterial;
+                  sMat.rotation = elapsedSec * 0.22 * ud.rotDir + ud.driftSeed;
+                  // Warm fire-lit umber at the base -> dense dark charcoal wolf-smoke -> soft fading pale mist aloft
+                  if (cyc < 0.18) {
+                    sMat.color.setHex(0x6b432b);
+                  } else if (cyc < 0.58) {
+                    sMat.color.setHex(0x303136);
+                  } else {
+                    sMat.color.setHex(0x5b6069);
+                  }
+                  const fadeIn = Math.min(1, cyc / 0.12);
+                  const fadeOut = Math.pow(1 - cyc, 0.85);
+                  sMat.opacity = Math.max(0, fadeIn * fadeOut * 0.72 * smokeIntensity);
                 }
               }
             }
@@ -1004,7 +1142,10 @@ export class SceneManager {
             // Lively animal strike animation: pounce/lunge forward, bear rear-up / elephant tusk thrust / lion bite!
             const atkCycle = (elapsedSec * 5.6 + e.id * 1.7) % (Math.PI * 2);
             const strike = Math.pow(Math.max(0, Math.sin(atkCycle)), 1.4);
-            const isRearing = e.templateId === 'predator_bear' || e.templateId === 'wild_elephant';
+            const isRearing =
+              e.templateId === 'predator_bear' ||
+              e.templateId === 'predator_polar_bear' ||
+              e.templateId === 'wild_elephant';
             mv.parts.bodyGroup.rotation.z = Math.sin(atkCycle) * 0.08;
             mv.parts.bodyGroup.rotation.x = isRearing ? -strike * 0.34 : strike * 0.24;
             mv.parts.bodyGroup.position.set(
@@ -1012,6 +1153,12 @@ export class SceneManager {
               strike * (isRearing ? 0.32 : 0.2),
               Math.cos(mv.smoothFacing) * strike * 0.42
             );
+          } else if (e.templateId === 'sea_whale' || e.templateId === 'sea_walrus') {
+            // Smooth oceanic swimming & gentle wave bob for Whales and Walruses
+            const wavePhase = elapsedSec * (e.templateId === 'sea_whale' ? 1.25 : 2.1) + e.id * 1.3;
+            mv.parts.bodyGroup.rotation.z = Math.sin(wavePhase * 0.8) * 0.06;
+            mv.parts.bodyGroup.rotation.x = Math.cos(wavePhase) * 0.08;
+            mv.parts.bodyGroup.position.set(0, -0.18 + Math.sin(wavePhase) * 0.14, 0);
           } else {
             mv.parts.bodyGroup.rotation.z = 0;
             mv.parts.bodyGroup.rotation.x = 0;
@@ -1119,6 +1266,8 @@ export class SceneManager {
     this.syncBeaconRangeRing(world, humanPlayerId, selectedIds);
     this.syncSoilProgressOverlays(world, humanPlayerId);
     this.syncShoreFishingVisuals(world, elapsedSec);
+    this.syncHealingVisuals(world, elapsedSec);
+    this.syncProtectedTreeVisuals(world);
 
     // 3. Sync Projectiles
     const activeProj = new Set<number>();
@@ -1126,7 +1275,10 @@ export class SceneManager {
       activeProj.add(p.id);
       let mesh = this.projectileMeshes.get(p.id);
       if (!mesh) {
-        if (p.kind === 'flaming_boulder') {
+        if (p.kind === 'cannonball') {
+          mesh = new THREE.Mesh(this.cannonballGeom, this.cannonballMat);
+          mesh.scale.setScalar(1.25);
+        } else if (p.kind === 'flaming_boulder') {
           mesh = new THREE.Mesh(this.boulderGeom, this.flamingBoulderMat);
           mesh.scale.setScalar(1.35);
         } else if (p.kind === 'boulder') {
@@ -1528,9 +1680,9 @@ export class SceneManager {
       const handZ = u.z + dirZ * 0.35;
 
       const waterY = WATER_LEVEL + 0.08;
-      const useCastNet = u.id % 2 === 1;
+      const method = u.order.fishingMethod ?? 'rod';
 
-      if (useCastNet) {
+      if (method === 'net') {
         // Cast fishing net expanding & rippling across the water onto the fish shoal!
         const castCycle = (elapsedSec * 0.85 + u.id * 0.37) % 1.0;
         const flyT = Math.min(1, castCycle * 2.2);
@@ -1555,6 +1707,35 @@ export class SceneManager {
           const rip = new THREE.Mesh(this.fishRippleGeom, this.fishRippleMat);
           rip.position.set(fish.x, waterY + 0.02, fish.z);
           rip.scale.setScalar(1.0 + (castCycle - 0.45) * 2.2);
+          this.shoreFishingGroup.add(rip);
+        }
+      } else if (method === 'spear') {
+        // Fishing Spear (魚槍刺魚): barbed wooden/bronze harpoon thrusting down into the water with splash ripples!
+        const jabCycle = (elapsedSec * 1.35 + u.id * 0.41) % 1.0;
+        const thrust = jabCycle < 0.35 ? jabCycle / 0.35 : Math.max(0, 1 - (jabCycle - 0.35) / 0.65);
+        const startX = handX - dirX * 0.35 + dirX * thrust * 1.05;
+        const startY = handY + 0.55 - thrust * 0.35;
+        const startZ = handZ - dirZ * 0.35 + dirZ * thrust * 1.05;
+        const tipX = startX + dirX * 2.25;
+        const tipY = startY - 1.35;
+        const tipZ = startZ + dirZ * 2.25;
+
+        const shaft = new THREE.Mesh(this.spearShaftGeom, this.spearShaftMat);
+        shaft.position.set((startX + tipX) * 0.5, (startY + tipY) * 0.5, (startZ + tipZ) * 0.5);
+        shaft.lookAt(tipX, tipY, tipZ);
+        shaft.rotateX(Math.PI / 2);
+        this.shoreFishingGroup.add(shaft);
+
+        const tip = new THREE.Mesh(this.spearTipGeom, this.spearTipMat);
+        tip.position.set(tipX, tipY, tipZ);
+        tip.lookAt(tipX + (tipX - startX), tipY + (tipY - startY), tipZ + (tipZ - startZ));
+        tip.rotateX(Math.PI / 2);
+        this.shoreFishingGroup.add(tip);
+
+        if (thrust > 0.65) {
+          const rip = new THREE.Mesh(this.fishRippleGeom, this.fishRippleMat);
+          rip.position.set(tipX, waterY + 0.02, tipZ);
+          rip.scale.setScalar(0.85 + (thrust - 0.65) * 4.2);
           this.shoreFishingGroup.add(rip);
         }
       } else {
@@ -1593,6 +1774,52 @@ export class SceneManager {
     }
   }
 
+  /** Renders an octagonal 3D wooden post-and-rail protective fence (圍籬) around every player-protected tree! */
+  private syncProtectedTreeVisuals(world: World): void {
+    this.protectedTreesGroup.clear();
+    const sides = 8;
+    const radius = 1.12;
+    for (const e of world.entities.values()) {
+      if (!e.alive || !e.protectedByPlayer) continue;
+      const fenceGroup = new THREE.Group();
+      const baseY = world.terrain.getHeightAt(e.x, e.z);
+      fenceGroup.position.set(e.x, baseY, e.z);
+
+      for (let i = 0; i < sides; i++) {
+        const ang = (i / sides) * Math.PI * 2;
+        const nextAng = ((i + 1) / sides) * Math.PI * 2;
+        const px = Math.cos(ang) * radius;
+        const pz = Math.sin(ang) * radius;
+        const postY = world.terrain.getHeightAt(e.x + px, e.z + pz) - baseY;
+
+        // Vertical timber corner post
+        const post = new THREE.Mesh(this.protectedFencePostGeom, this.protectedFenceMat);
+        post.position.set(px, postY + 0.36, pz);
+        post.castShadow = true;
+        post.receiveShadow = true;
+        fenceGroup.add(post);
+
+        // Two horizontal wooden rails linking this post to the next post
+        const nx = Math.cos(nextAng) * radius;
+        const nz = Math.sin(nextAng) * radius;
+        const nextPostY = world.terrain.getHeightAt(e.x + nx, e.z + nz) - baseY;
+        const midX = (px + nx) * 0.5;
+        const midZ = (pz + nz) * 0.5;
+        const midY = (postY + nextPostY) * 0.5;
+        const railYaw = Math.atan2(nx - px, nz - pz) + Math.PI * 0.5;
+
+        for (const railH of [0.28, 0.58]) {
+          const rail = new THREE.Mesh(this.protectedFenceRailGeom, railH > 0.4 ? this.protectedFenceCapMat : this.protectedFenceMat);
+          rail.position.set(midX, midY + railH, midZ);
+          rail.rotation.y = railYaw;
+          rail.castShadow = true;
+          fenceGroup.add(rail);
+        }
+      }
+      this.protectedTreesGroup.add(fenceGroup);
+    }
+  }
+
   /** Shows the Great Wall Beacon Tower's signal/rally radius ring on the terrain when selected */
   private syncBeaconRangeRing(world: World, humanPlayerId: number, selectedIds: Set<number>): void {
     if (selectedIds.size !== 1) {
@@ -1611,8 +1838,62 @@ export class SceneManager {
     this.beaconRangeRing.scale.set(stats.relayRange, 1, stats.relayRange);
     const mat = this.beaconRangeRing.material as THREE.MeshBasicMaterial;
     const hasSoldiers = world.getBeaconGarrisonSoldiers(e).length > 0;
-    mat.color.setHex((e.beaconLitTimer ?? 0) > 0 ? 0xff6b00 : hasSoldiers ? 0xfbbf24 : 0x94a3b8);
+    const bState = e.beaconState ?? ((e.beaconLitTimer ?? 0) > 0 ? 'smoking' : 'idle');
+    mat.color.setHex(
+      bState === 'smoking'
+        ? 0xff5500
+        : bState === 'burning' || bState === 'igniting'
+          ? 0xf97316
+          : hasSoldiers
+            ? 0xfbbf24
+            : 0x94a3b8
+    );
     this.beaconRangeRing.visible = true;
+  }
+
+  /** Renders glowing emerald healing beams, ground halos, & rising healing sparkles when Doctors/Healers treat wounded allies! */
+  private syncHealingVisuals(world: World, elapsedSec: number): void {
+    this.healingEffectsGroup.clear();
+    for (const u of world.entities.values()) {
+      if (!u.alive || u.garrisonedIn !== null || !u.healingTargetId) continue;
+      const target = world.entities.get(u.healingTargetId);
+      if (!target || !target.alive || target.garrisonedIn !== null) continue;
+
+      const uY = world.terrain.getHeightAt(u.x, u.z) + 1.25;
+      const tY = world.terrain.getHeightAt(target.x, target.z);
+
+      // Gentle arching emerald beam from Doctor's staff to wounded unit
+      const midX = (u.x + target.x) * 0.5;
+      const midZ = (u.z + target.z) * 0.5;
+      const midY = Math.max(uY, tY + 1.1) + 0.55 + Math.sin(elapsedSec * 6 + u.id) * 0.14;
+      const beamGeom = new THREE.BufferGeometry().setFromPoints([
+        new THREE.Vector3(u.x, uY, u.z),
+        new THREE.Vector3(midX, midY, midZ),
+        new THREE.Vector3(target.x, tY + 1.0, target.z),
+      ]);
+      this.healingEffectsGroup.add(new THREE.Line(beamGeom, this.healLineMat));
+
+      // Pulsing emerald ground halo under the wounded unit
+      const halo = new THREE.Mesh(this.healHaloGeom, this.healHaloMat);
+      halo.position.set(target.x, tY + 0.12, target.z);
+      const pulse = 0.88 + Math.sin(elapsedSec * 5 + target.id) * 0.14;
+      halo.scale.setScalar(pulse);
+      this.healingEffectsGroup.add(halo);
+
+      // 3 rising emerald healing sparkles around the patient
+      for (let si = 0; si < 3; si++) {
+        const cyc = (elapsedSec * 1.1 + si / 3 + target.id * 0.17) % 1.0;
+        const ang = elapsedSec * 2.4 + si * 2.094;
+        const sp = new THREE.Mesh(this.healSparkGeom, this.healSparkMat);
+        sp.position.set(
+          target.x + Math.cos(ang) * 0.42,
+          tY + 0.3 + cyc * 1.65,
+          target.z + Math.sin(ang) * 0.42
+        );
+        sp.scale.setScalar(Math.sin(cyc * Math.PI) * 1.15);
+        this.healingEffectsGroup.add(sp);
+      }
+    }
   }
 
   /**
@@ -1711,14 +1992,22 @@ export class SceneManager {
       }
 
       marker.group.position.set(pos.x, groundY, pos.z);
-      const pct = Math.max(0, Math.min(1, info.current / Math.max(1, info.max)));
-      marker.patchMesh.scale.setScalar(0.35 + pct * 0.65);
+      const lvlProg = info.mode === 'level' ? world.terrain.getLevelProgress(info.tx, info.tz) : null;
+      const pct = lvlProg
+        ? Math.max(0, Math.min(1, lvlProg.pct))
+        : Math.max(0, Math.min(1, info.current / Math.max(1, info.max)));
+      const ringScale = info.mode === 'level' ? 2.65 : 1.0;
+      marker.group.children[0].scale.set(ringScale, 1, ringScale);
+      marker.patchMesh.scale.setScalar((0.35 + pct * 0.65) * ringScale);
       marker.patchMat.opacity = 0.16 + pct * 0.48;
       marker.patchMat.color.setHex(info.mode === 'raise' ? 0x7c5a32 : info.mode === 'level' ? 0x6b7c54 : 0x452d17);
       marker.ringMat.color.setHex(info.mode === 'raise' ? 0x22c55e : info.mode === 'level' ? 0x38bdf8 : 0xf59e0b);
 
       const heightLabel = `${groundY >= 0 ? '+' : ''}${groundY.toFixed(1)}m`;
-      const key = `${info.mode}_${info.current}_${info.max}_${heightLabel}`;
+      const labelText = lvlProg
+        ? `📐 ${lvlProg.doneMeters.toFixed(2)}m/${lvlProg.totalMeters.toFixed(2)}m • 均${lvlProg.targetH >= 0 ? '+' : ''}${lvlProg.targetH.toFixed(1)}m`
+        : `${info.mode === 'raise' ? '⬆' : '⛏'} ${(info.current * 0.01).toFixed(2)}m/1.00m • 高${heightLabel}`;
+      const key = `${info.mode}_${labelText}_${Math.round(pct * 100)}`;
       if (marker.lastKey !== key) {
         marker.lastKey = key;
         const ctx = marker.canvas.getContext('2d');
@@ -1733,13 +2022,11 @@ export class SceneManager {
           ctx.fill();
           ctx.stroke();
 
-          // Label text: exact 0.01m excavation depth + live ground elevation!
-          const icon = info.mode === 'raise' ? '⬆' : info.mode === 'level' ? '📐' : '⛏';
-          const depthMeters = (info.current * 0.01).toFixed(2);
-          ctx.font = 'bold 20px system-ui, sans-serif';
+          // Label text: exact 0.01m excavation / 3x3 leveling progress + target elevation!
+          ctx.font = 'bold 18px system-ui, sans-serif';
           ctx.fillStyle = '#f8fafc';
           ctx.textAlign = 'center';
-          ctx.fillText(`${icon} ${depthMeters}m/1.00m • 高${heightLabel}`, 128, 33);
+          ctx.fillText(labelText, 128, 33);
 
           // Progress bar track + fill
           ctx.fillStyle = 'rgba(255, 255, 255, 0.16)';

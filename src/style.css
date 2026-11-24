@@ -334,9 +334,10 @@ body {
 }
 
 .minimap-card {
+  position: relative;
   padding: 4px;
-  width: 152px;
-  height: 152px;
+  width: 192px;
+  height: 192px;
   flex-shrink: 0;
   display: flex;
   align-items: center;
@@ -344,11 +345,42 @@ body {
 }
 
 #minimap-canvas {
-  width: 144px;
-  height: 144px;
+  width: 184px;
+  height: 184px;
   border-radius: 4px;
-  border: 1px solid rgba(255, 255, 255, 0.16);
+  border: 1px solid rgba(255, 255, 255, 0.18);
   cursor: crosshair;
+}
+
+.minimap-mode-btn {
+  position: absolute;
+  top: 7px;
+  right: 7px;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border-radius: 5px;
+  border: 1px solid rgba(242, 207, 124, 0.45);
+  background: rgba(15, 19, 26, 0.78);
+  color: #f8fafc;
+  font-size: 13px;
+  line-height: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s, box-shadow 0.15s;
+}
+
+.minimap-mode-btn:hover {
+  background: rgba(30, 41, 59, 0.94);
+  border-color: var(--gold-bright);
+}
+
+.minimap-mode-btn.active {
+  background: rgba(217, 155, 38, 0.92);
+  border-color: #fef08a;
+  box-shadow: 0 0 8px rgba(250, 204, 21, 0.55);
 }
 
 .selection-card {
@@ -1001,25 +1033,56 @@ body {
 
 /* ==================== RICH CIV & TERRAIN SETUP MODAL ==================== */
 .modal-card-wide {
-  width: min(1140px, 96vw);
-  max-height: 92vh;
+  width: min(1780px, 98vw);
+  max-height: 96vh;
   display: flex;
   flex-direction: column;
 }
 
+.modal-card-wide .modal-header {
+  padding: 9px 16px;
+}
+
+.modal-card-wide .modal-header h2 {
+  font-size: 16px;
+}
+
+.modal-card-wide .modal-footer {
+  padding: 8px 16px 10px;
+}
+
+.modal-card-wide .field-row {
+  gap: 3px;
+  font-size: 12px;
+}
+
+.modal-card-wide .field-row select,
+.modal-card-wide .field-row input {
+  padding: 5px 8px;
+  font-size: 12.5px;
+}
+
+.modal-card-wide .controls-guide {
+  padding: 6px 10px;
+  font-size: 11.5px;
+  line-height: 1.35;
+}
+
 .setup-body-scroll {
   overflow-y: auto;
-  max-height: calc(92vh - 118px);
+  max-height: calc(96vh - 96px);
+  padding: 10px 14px;
+  gap: 8px;
 }
 
 .setup-section {
   display: flex;
   flex-direction: column;
-  gap: 7px;
+  gap: 5px;
 }
 
 .setup-section-title {
-  font-size: 12.5px;
+  font-size: 12px;
   font-weight: 700;
   letter-spacing: 0.04em;
   text-transform: uppercase;
@@ -1028,17 +1091,17 @@ body {
 
 .civ-card-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(245px, 1fr));
-  gap: 7px;
+  grid-template-columns: repeat(auto-fill, minmax(212px, 1fr));
+  gap: 5px;
 }
 
 .civ-card {
   display: flex;
   flex-direction: column;
-  gap: 5px;
+  gap: 3px;
   text-align: left;
-  padding: 10px 11px;
-  border-radius: 8px;
+  padding: 6px 8px;
+  border-radius: 7px;
   border: 1.5px solid var(--border-subtle);
   background: rgba(255, 255, 255, 0.035);
   color: var(--text-main);
@@ -1072,39 +1135,41 @@ body {
 .civ-card-head {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
   padding-left: 4px;
 }
 
 .civ-card-emblem {
-  width: 30px;
-  height: 30px;
+  width: 24px;
+  height: 24px;
   border-radius: 50%;
   object-fit: cover;
-  border: 2px solid var(--civ-accent, var(--border-bronze));
+  border: 1.5px solid var(--civ-accent, var(--border-bronze));
   background: rgba(0, 0, 0, 0.4);
   flex-shrink: 0;
 }
 
 .civ-card-title {
-  font-size: 14px;
+  font-size: 13px;
   font-weight: 800;
   color: var(--text-main);
+  line-height: 1.15;
 }
 
 .civ-card-bonus {
-  font-size: 11px;
+  font-size: 10.5px;
   color: var(--gold-bright);
+  line-height: 1.2;
 }
 
 .civ-card-traits {
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: 1px;
   padding-left: 4px;
-  font-size: 11.5px;
+  font-size: 10.5px;
   color: var(--text-muted);
-  line-height: 1.35;
+  line-height: 1.25;
 }
 
 .civ-card-traits b {
@@ -1113,17 +1178,17 @@ body {
 
 .map-card-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(185px, 1fr));
-  gap: 7px;
+  grid-template-columns: repeat(auto-fill, minmax(176px, 1fr));
+  gap: 5px;
 }
 
 .map-card {
   display: flex;
   flex-direction: column;
-  gap: 3px;
+  gap: 2px;
   text-align: left;
-  padding: 8px 10px;
-  border-radius: 7px;
+  padding: 6px 8px;
+  border-radius: 6px;
   border: 1.5px solid var(--border-subtle);
   background: rgba(255, 255, 255, 0.035);
   color: var(--text-main);
@@ -1144,28 +1209,29 @@ body {
 .map-card-head {
   display: flex;
   align-items: center;
-  gap: 6px;
-  font-size: 12.5px;
+  gap: 5px;
+  font-size: 12px;
   font-weight: 700;
+  line-height: 1.2;
 }
 
 .map-swatch {
-  width: 11px;
-  height: 11px;
+  width: 10px;
+  height: 10px;
   border-radius: 3px;
   border: 1px solid rgba(255, 255, 255, 0.35);
   flex-shrink: 0;
 }
 
 .map-card-desc {
-  font-size: 11px;
+  font-size: 10.5px;
   color: var(--text-muted);
-  line-height: 1.3;
+  line-height: 1.2;
 }
 
 .setup-inline-row {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(5, minmax(0, 1fr));
   gap: 8px;
 }
 
@@ -1395,19 +1461,19 @@ body.app-ready .modal-backdrop {
 
 .setup-players-list {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(310px, 1fr));
-  gap: 7px;
+  grid-template-columns: repeat(auto-fill, minmax(265px, 1fr));
+  gap: 5px;
 }
 
 .player-slot-row {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 7px 10px;
-  border-radius: 7px;
+  gap: 6px;
+  padding: 4px 8px;
+  border-radius: 6px;
   background: rgba(255, 255, 255, 0.04);
   border: 1px solid var(--border-subtle);
-  font-size: 12.5px;
+  font-size: 12px;
 }
 
 .player-color-dot {
@@ -1547,4 +1613,13 @@ body.app-ready .modal-backdrop {
 
 .tribute-btn:hover {
   background: rgba(184, 145, 70, 0.32);
+}
+
+/* ==================== AI PROXY AUTOPILOT BUTTON ==================== */
+.top-btn.ai-proxy-active {
+  background: linear-gradient(135deg, rgba(16, 185, 129, 0.42), rgba(245, 158, 11, 0.34));
+  border-color: #34d399;
+  color: #ecfdf5;
+  box-shadow: 0 0 10px rgba(16, 185, 129, 0.55);
+  font-weight: 700;
 }
